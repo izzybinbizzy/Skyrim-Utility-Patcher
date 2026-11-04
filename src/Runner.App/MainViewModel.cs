@@ -68,6 +68,8 @@ public sealed partial class MainViewModel : Observable
 	public string MessageKind { get; set => Set(ref field, value); } = "";
 	public string EstimateText { get; set => Set(ref field, value); } = "";
 	public bool StopAfterAsked { get; set => Set(ref field, value); }
+	// the LOG box shows the detailed log (every line) when ticked, else the simple step-by-step one
+	public bool DetailedLog { get; set { if (Set(ref field, value)) { _logPath = null; TailLog(); } } }
 	// the step the setup's last run stopped at ("" = nothing to run again): the "Run again from ..." button
 	public string RetryFrom { get; set { if (Set(ref field, value)) OnPropertyChanged(nameof(RetryText)); } } = "";
 	public string RetryText => RetryFrom == "" ? "" : "Run _again from " + StepCatalog.Name(RetryFrom);
@@ -335,9 +337,16 @@ public sealed partial class MainViewModel : Observable
 	static Journal Fresh(List<Journal> a_runs, Journal a_j) =>
 		a_runs.FirstOrDefault(j => string.Equals(j.Folder, a_j.Folder, StringComparison.OrdinalIgnoreCase)) ?? a_j;
 
+	// a run folder's log to show: the simple one unless the detailed one is asked for, or the run is older than the simple log
+	public static string LogFile(string a_folder, bool a_detailed)
+	{
+		var simple = Path.Combine(a_folder, RunLog.SimpleName);
+		return !a_detailed && File.Exists(simple) ? simple : Path.Combine(a_folder, "log.txt");
+	}
+
 	void TailLog()
 	{
-		var path = _run == null ? null : Path.Combine(_run.Folder, "log.txt");
+		var path = _run == null ? null : LogFile(_run.Folder, DetailedLog);
 		if (path != _logPath) {
 			_logPath = path;
 			_logPos = 0;

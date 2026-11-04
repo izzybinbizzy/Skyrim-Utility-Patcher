@@ -217,6 +217,8 @@
         <DockPanel>
           <DockPanel DockPanel.Dock="Top" Margin="0,0,0,6">
             <CheckBox DockPanel.Dock="Right" x:Name="Follow" Content="Follow" IsChecked="True" Foreground="{DynamicResource Muted}"/>
+            <CheckBox DockPanel.Dock="Right" Content="Detailed" IsChecked="{Binding DetailedLog}" Margin="0,0,14,0" Foreground="{DynamicResource Muted}"
+                      ToolTip="Every line of the run, for finding a fault. Unticked: the run step by step in plain words."/>
             <TextBlock Text="LOG" Style="{StaticResource H2}" Margin="0"/>
           </DockPanel>
           <TextBox x:Name="LogBox" IsReadOnly="True" IsUndoEnabled="False" FontFamily="{DynamicResource MonoFont}" FontSize="{DynamicResource SizeLog}"

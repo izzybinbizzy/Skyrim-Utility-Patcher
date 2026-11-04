@@ -2737,4 +2737,65 @@ public static class Program
 		}
 		Check(read.Contains("Logo") && read.Any(n => n.EndsWith(".png", StringComparison.OrdinalIgnoreCase)), "the header logo and its file are among them: " + string.Join(", ", read));
 	}
+
+	static void T_ToolErrorsSayWhatAKnownErrorMeans()
+	{
+		var mem = ToolErrors.Explain("dyndolod", "DynDOLOD: EOutOfMemory: OUT OF MEMORY while reading textures");
+		Check(mem != null && mem.What.Contains("memory", StringComparison.Ordinal) && mem.Help == "https://dyndolod.info/FAQ", "a sheson tool's out of memory, any letter case, with its FAQ");
+		Check(ToolErrors.Explain("synthesis", "Out of memory") == null, "a tool's own error is only matched for that tool");
+		Check(ToolErrors.Explain("texgen", "the tool crashed") == null, "an error no page names keeps the tool's own words");
+		var master = ToolErrors.Explain("snowfixer", "Snow.esp: Missing Master Skyrim2.esm");
+		Check(master != null && master.Help == null, "a missing master is known for every step");
+		var lines = ToolErrors.Simple("DynDOLOD", StepState.Failed, "Out of memory", mem);
+		Equal(4, lines.Count, "what, what to do, help, the tool's words: " + string.Join(" | ", lines));
+		Check(lines[0] == "DynDOLOD did not finish: " + mem!.What && lines[1].StartsWith("What to do: ", StringComparison.Ordinal) &&
+			lines[2] == "Help: https://dyndolod.info/FAQ" && lines[3] == "The tool's own words: Out of memory", "the lines in order");
+		var plain = ToolErrors.Simple("TexGen", StepState.Failed, "the tool crashed", null);
+		Check(plain.Count == 2 && plain[0] == "TexGen did not finish: the tool crashed" && plain[1].Contains("detailed log", StringComparison.Ordinal), "an unknown error points to the detailed log");
+		Equal("TexGen was stopped.", ToolErrors.Simple("TexGen", StepState.Stopped, "cancelled", mem).Single(), "a stop is only a stop");
+	}
+
+	static void T_RunLogKeepsASimpleLogBesideTheDetailedOne()
+	{
+		var dir = Path.Combine(Path.GetTempPath(), "SUP simple log " + Guid.NewGuid().ToString("N"));
+		try {
+			using (var log = new RunLog(dir)) {
+				log.Say("the detailed line");
+				log.Detail("a detail");
+				log.Simple("the simple line");
+			}
+			var simple = File.ReadAllLines(Path.Combine(dir, RunLog.SimpleName));
+			var detailed = File.ReadAllText(Path.Combine(dir, "log.txt"));
+			Check(simple.Length == 1 && System.Text.RegularExpressions.Regex.IsMatch(simple[0], @"^\d\d:\d\d  the simple line$"), "the simple log holds only its own line, with the time: " + string.Join(" | ", simple));
+			Check(detailed.Contains("the detailed line", StringComparison.Ordinal) && !detailed.Contains("the simple line", StringComparison.Ordinal), "the detailed log keeps its own lines");
+			Equal(Path.Combine(dir, RunLog.SimpleName), MainViewModel.LogFile(dir, false), "the window shows the simple log by default");
+			Equal(Path.Combine(dir, "log.txt"), MainViewModel.LogFile(dir, true), "and the detailed one when ticked");
+			File.Delete(Path.Combine(dir, RunLog.SimpleName));
+			Equal(Path.Combine(dir, "log.txt"), MainViewModel.LogFile(dir, false), "a run older than the simple log shows its detailed log");
+		} finally {
+			Directory.Delete(dir, true);
+		}
+	}
+
+	static void T_FailedRunsSimpleLogSaysWhatToDo()
+	{
+		using var f = new FakeMo2();
+		StepRegistry.Replace(new FakeStep("snowfixer", (ctx, s) => WriteOutput(ctx, "snowfixer", "Output A", "OutA.esp")));
+		StepRegistry.Replace(new FakeStep("autoblend", (ctx, s) => throw new StepFailedException("Blend.esp requires master Gone.esm")));
+		f.WriteSetup(("snowfixer", new JsonObject { ["output_mod"] = "Output A" }), ("autoblend", []));
+		var r = Runner.Run(new RunRequest(f.SetupFile, f.Data));
+		Equal(RunState.Failed, r.State, "failed");
+		var simple = File.ReadAllLines(Path.Combine(r.Folder, RunLog.SimpleName)).Select(l => l[7..]).ToList();
+		var all = string.Join(" | ", simple);
+		Check(simple[0].Contains("started: 2 step(s)", StringComparison.Ordinal), "the run's start: " + all);
+		Check(simple.Any(l => l.StartsWith("1/2 ", StringComparison.Ordinal) && l.EndsWith(" started", StringComparison.Ordinal)) &&
+			simple.Any(l => l == "2/2 AutoBlend started"), "each step's start, numbered: " + all);
+		Check(simple.Any(l => l.Contains(" finished in ", StringComparison.Ordinal)), "the first step's end: " + all);
+		Check(simple.Any(l => l == "AutoBlend did not finish: A plugin needs a master plugin that is not loaded."), "the failure in plain words: " + all);
+		Check(simple.Any(l => l.StartsWith("What to do: Install and tick the missing master", StringComparison.Ordinal)), "what to do: " + all);
+		Check(simple.Any(l => l == "The tool's own words: Blend.esp requires master Gone.esm"), "the tool's own words: " + all);
+		Check(simple[^1].StartsWith("Failed: stopped at AutoBlend", StringComparison.Ordinal), "the verdict last: " + all);
+		var detailed = File.ReadAllText(Path.Combine(r.Folder, "log.txt"));
+		Check(detailed.Contains("! what it means: A plugin needs a master", StringComparison.Ordinal), "the detailed log says what it means too");
+	}
 }
