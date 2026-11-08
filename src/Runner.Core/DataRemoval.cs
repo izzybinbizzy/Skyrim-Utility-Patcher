@@ -1,4 +1,3 @@
-using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 
 namespace ToolRunner;
@@ -7,7 +6,7 @@ namespace ToolRunner;
 // run records, learned tool settings, themes, the change history) and the run backups it made in each setup's backup folder.
 // The output mods the tools made stay in Mod Organizer: they are part of the player's load order, and Mod Organizer removes them.
 // Refused while a run or a queue goes, and while a run still needs its profile put back.
-public static partial class DataRemoval
+public static class DataRemoval
 {
 	public sealed record Plan(List<string> Remove, List<string> Kept, string? Refused);
 
@@ -79,32 +78,20 @@ public static partial class DataRemoval
 		return failed;
 	}
 
-	[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-	struct SHFILEOPSTRUCT
-	{
-		public nint Hwnd;
-		public uint Func;
-		public string From;
-		public string? To;
-		public ushort Flags;
-		[MarshalAs(UnmanagedType.Bool)] public bool AnyOperationsAborted;
-		public nint NameMappings;
-		public string? ProgressTitle;
-	}
-
-	[DllImport("shell32.dll", CharSet = CharSet.Unicode, EntryPoint = "SHFileOperationW")]
-	static extern int SHFileOperation(ref SHFILEOPSTRUCT a_op);
-
-	const uint FO_DELETE = 3;
-	const ushort FOF_SILENT = 0x4, FOF_NOCONFIRMATION = 0x10, FOF_ALLOWUNDO = 0x40, FOF_NOERRORUI = 0x400;
-
-	// to the Recycle Bin (never erased): null = gone, else why not
+	// to the Recycle Bin (never erased) through Windows' own file operation, as Microsoft.VisualBasic's FileSystem calls it - never a
+	// hand-rolled SHFileOperationW (one once renamed a file instead of recycling it); null = gone, else why not
 	static string? Recycle(string a_path)
 	{
-		var op = new SHFILEOPSTRUCT {
-			Func = FO_DELETE, From = Path.GetFullPath(a_path) + "\0\0", Flags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI,
-		};
-		var rc = SHFileOperation(ref op);
-		return rc != 0 ? $"Windows answered {rc}" : op.AnyOperationsAborted ? "it was stopped" : File.Exists(a_path) || Directory.Exists(a_path) ? "it is still there" : null;
+		try {
+			var full = Path.GetFullPath(a_path);
+			if (Directory.Exists(full)) {
+				Microsoft.VisualBasic.FileIO.FileSystem.DeleteDirectory(full, Microsoft.VisualBasic.FileIO.UIOption.OnlyErrorDialogs, Microsoft.VisualBasic.FileIO.RecycleOption.SendToRecycleBin);
+			} else if (File.Exists(full)) {
+				Microsoft.VisualBasic.FileIO.FileSystem.DeleteFile(full, Microsoft.VisualBasic.FileIO.UIOption.OnlyErrorDialogs, Microsoft.VisualBasic.FileIO.RecycleOption.SendToRecycleBin);
+			}
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException or OperationCanceledException or System.Security.SecurityException) {
+			return e.Message;
+		}
+		return File.Exists(a_path) || Directory.Exists(a_path) ? "it is still there" : null;
 	}
 }
