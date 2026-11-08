@@ -24,7 +24,7 @@ public sealed class CheckContext
 public static class StepRegistry
 {
 	static readonly Dictionary<string, IStep> Steps = new IStep[] {
-		new ShaderStep(), new CleanSaveStep(), new WryeBashStep(), new SynthesisStep(), new SnowFixerStep(), new AutoBlendStep(), new PgPatcherStep(),
+		new ShaderStep(), new CleanSaveStep(), new WryeBashStep(), new SynthesisStep(), new LandscapeFixerStep(), new PgPatcherStep(),
 		new XLodGenStep(), new AcmosStep(), new GrassStep(), new TreeLodGenStep(), new TexGenStep(), new DynDolodStep(),
 		new AnvilLodStep(), new PandoraStep(), new PlaySaveStep(),
 	}.ToDictionary(s => s.Key);
@@ -226,7 +226,7 @@ public static class StepKit
 		a_ctx.Log.Detail($"{a_image} closed");
 	}
 
-	public static Func<IReadOnlyCollection<int>> PidsOf(string a_image) => () => Procs.ByImage(a_image).Select(p => p.Id).ToList();
+	public static Func<IReadOnlyCollection<int>> PidsOf(string a_image) => () => Procs.Pids(a_image);
 
 	// the Executables entry exists and points at a file that exists
 	public static IEnumerable<Issue> CheckExecutable(CheckContext a_c, string a_step, string? a_title)

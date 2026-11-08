@@ -39,13 +39,28 @@ public partial class App : Application
 				Shutdown(1);
 				return;
 			}
-			MessageBox.Show("Something went wrong: " + e.Exception.Message + "\n\nIt is written in crash.txt in the data folder. A run that is going is not affected.",
-				"Skyrim Utility Patcher", MessageBoxButton.OK, MessageBoxImage.Warning);
+			var text = "Something went wrong: " + e.Exception.Message + "\n\nIt is written in crash.txt in the data folder. A run that is going is not affected.";
+			// the themed box over the window (every pop-up wears the theme); Windows' own box only when the window cannot carry one
+			try {
+				if (MainWindow is { IsLoaded: true } owner && Ask.Show(owner, "Something went wrong", text, "Open the data folder", "Close")) {
+					System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(AppPaths.Data) { UseShellExecute = true });
+				} else if (MainWindow is not { IsLoaded: true }) {
+					MessageBox.Show(text, Brand.Name, MessageBoxButton.OK, MessageBoxImage.Warning);
+				}
+			} catch (Exception e2) when (e2 is InvalidOperationException or System.ComponentModel.Win32Exception) {
+				MessageBox.Show(text, Brand.Name, MessageBoxButton.OK, MessageBoxImage.Warning);
+			}
 		};
 		AppDomain.CurrentDomain.UnhandledException += (_, e) => {
 			if (e.ExceptionObject is Exception ex) {
 				LogCrash(ex);
 			}
+		};
+		// a background task that failed with nobody waiting on it (a start, a check, a look at Mod Organizer) is written down too,
+		// instead of vanishing without a trace
+		TaskScheduler.UnobservedTaskException += (_, e) => {
+			LogCrash(e.Exception);
+			e.SetObserved();
 		};
 		var args = a_e.Args;
 		if (Cli.Handles(args)) {
@@ -62,6 +77,7 @@ public partial class App : Application
 		}
 		// the theme picked last time, before the window is drawn
 		Theme.ApplySaved();
+		WindowFrame.PaintEveryWindowOnOpen();
 		var w = new MainWindow();
 		if (Theme.Icon is { } icon) {
 			w.Icon = icon;
@@ -118,6 +134,7 @@ public partial class App : Application
 	static int Page(string a_dir)
 	{
 		Directory.CreateDirectory(a_dir);
+		Theme.Apply(Theme.Default, false);
 		var w = new MainWindow { ShowActivated = false, ShowInTaskbar = false, WindowStartupLocation = WindowStartupLocation.Manual, Left = -30000, Top = -30000 };
 		w.Show();
 		Pump(w, 2500);
@@ -217,6 +234,8 @@ public partial class App : Application
 	static int Snapshot(string a_dir)
 	{
 		Directory.CreateDirectory(a_dir);
+		// the built-in look exactly as a start with no theme picked lays it out (its accent brushes last, over the Fluent theme's)
+		Theme.Apply(Theme.Default, false);
 		var w = new MainWindow { ShowActivated = false, ShowInTaskbar = false, WindowStartupLocation = WindowStartupLocation.Manual, Left = -30000, Top = -30000 };
 		w.Show();
 		Pump(w, 2500);

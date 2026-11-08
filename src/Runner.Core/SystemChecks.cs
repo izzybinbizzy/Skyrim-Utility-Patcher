@@ -18,7 +18,7 @@ public static partial class SystemChecks
 			try {
 				outList.AddRange(a_check());
 			} catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Security.SecurityException or System.ComponentModel.Win32Exception or
-			                            ArgumentException or NotSupportedException or InvalidOperationException) {
+			                            ArgumentException or NotSupportedException or InvalidOperationException or DllNotFoundException or EntryPointNotFoundException) {
 				outList.Add(new Issue("", false, $"could not check {a_what}: {e.Message}"));
 			}
 		}
@@ -30,10 +30,43 @@ public static partial class SystemChecks
 		Guard("whether Windows waits to restart", () => Power(RestartPending(), null));
 		Guard("the battery", () => Power(false, Battery()));
 		Guard("the folders' path lengths", () => LongPaths(folders.Select(f => f.Dir)));
+		Guard("the PC's memory", () => Memory(MemoryProbe()));
 		var notes = new List<Issue>();
 		Guard("for folders that cause trouble", () => TroubleFolders(ReadTrouble(folders, notes)).ToList());
 		outList.AddRange(notes);
 		return outList;
+	}
+
+	// ---- the PC's memory (the memory audit of 2026-11-07): the LOD tools are the usual "out of memory" (dyndolod.info/FAQ), so a
+	// PC low on memory is told before an hour of work, never stopped - the tools may still manage
+	[StructLayout(LayoutKind.Sequential)]
+	struct MemoryStatus
+	{
+		public uint Length, Load;
+		public ulong TotalPhys, AvailPhys, TotalPageFile, AvailPageFile, TotalVirtual, AvailVirtual, AvailExtendedVirtual;
+	}
+
+	[LibraryImport("kernel32.dll", SetLastError = true)]
+	[return: MarshalAs(UnmanagedType.Bool)]
+	private static partial bool GlobalMemoryStatusEx(ref MemoryStatus a_status);
+
+	// (total, free) physical memory in GB, or null when Windows does not say
+	public static Func<(double Total, double Free)?> MemoryProbe { get; set; } = () => {
+		var m = new MemoryStatus { Length = (uint)Marshal.SizeOf<MemoryStatus>() };
+		return GlobalMemoryStatusEx(ref m) ? (m.TotalPhys / 1073741824.0, m.AvailPhys / 1073741824.0) : null;
+	};
+
+	public static IEnumerable<Issue> Memory((double Total, double Free)? a_mem)
+	{
+		if (a_mem is not { } m) {
+			yield break;
+		}
+		if (m.Total < 8) {
+			yield return new Issue("", false, $"this PC has {m.Total:0.#} GB of memory - DynDOLOD and TexGen can run out on a large load order (their FAQ: use their x64 version, " +
+				"let Windows manage the page file, close other programs)");
+		} else if (m.Free < 3) {
+			yield return new Issue("", false, $"only {m.Free:0.#} GB of memory is free right now - close what you do not need before a run (the LOD tools are the usual ones to run out)");
+		}
 	}
 
 	// ---- 440: administrator on one side only

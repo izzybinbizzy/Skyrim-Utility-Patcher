@@ -76,7 +76,7 @@ public sealed class GrassStep : IStep
 		}
 		// no space and no quote in the wrapper's path: MO2 passes it through cmd /c (the user's temp folder holds the user name,
 		// which often has a space - ProgramData does not)
-		var work = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "MO2ToolRunner", "fasterngio");
+		var work = Path.Combine(Brand.WorkRoot, "fasterngio");
 		if (work.IndexOfAny([' ', '"', '&', '^']) >= 0) {
 			throw new StepFailedException("FasterNGIO's wrapper needs a folder path without spaces - this PC's ProgramData has one: " + work);
 		}
@@ -170,6 +170,7 @@ public sealed class GrassStep : IStep
 					a_ctx.Activity(Key, $"the game builds the grass cache - start {launches} ({have} files so far)");
 					InGame.NoGameRunning(a_ctx);
 					var sw = Stopwatch.StartNew();
+					a_ctx.GameLaunched = DateTime.Now;
 					using var g = Process.GetProcessById(a_ctx.Control.LaunchGame(a_s.Str("launch_executable") ?? "SKSE", InGame.FreshGamePid(), a_ctx.Cancel));
 					var lastN = -1;
 					var still = Stopwatch.StartNew();
@@ -193,7 +194,8 @@ public sealed class GrassStep : IStep
 					}
 					if (File.Exists(flag)) {
 						if (launches == 1 && sw.Elapsed < TimeSpan.FromMinutes(a_s.Int("first_start_min", 5))) {
-							throw new StepFailedException($"the first start crashed after {sw.Elapsed.TotalMinutes:0.0} minutes - a broken setup, not a normal grass-cache crash; read the crash log");
+							throw new StepFailedException($"the first start crashed after {sw.Elapsed.TotalMinutes:0.0} minutes - a broken setup, not a normal grass-cache crash" +
+								InGame.CrashNote(InGame.SkseLogs(a_ctx.Setup, a_ctx.Mo2), a_ctx.Mo2.OverwriteDir, a_ctx.GameLaunched ?? a_ctx.Journal.Started));
 						}
 						idle = Files.CountFiles(ow) <= have ? idle + 1 : 0;
 						if (launches - 1 >= a_s.Int("max_restarts", 15)) {
@@ -231,7 +233,7 @@ public sealed class ShaderStep : IStep
 
 	public sealed record Cache(string ShaderMod, string OutputMod, string? SettingsMod);
 
-	static List<Cache> Caches(StepSettings a_s)
+	internal static List<Cache> Caches(StepSettings a_s)
 	{
 		var list = (a_s.Raw["caches"] as JsonArray)?.OfType<JsonObject>()
 			.Select(o => new Cache(Setup.Str(o, "shader_mod") ?? "", Setup.Str(o, "output_mod") ?? "", Setup.Str(o, "settings_mod"))).Where(c => c.ShaderMod != "" && c.OutputMod != "").ToList() ?? [];
@@ -417,6 +419,9 @@ public sealed class ShaderStep : IStep
 					InGame.NoGameRunning(a_ctx);
 					var sw = Stopwatch.StartNew();
 					g?.Dispose();
+					a_ctx.GameLaunched = DateTime.Now;
+					// shaders already in the cache came from an earlier start of this step: only new ones show THIS start works
+					var atLaunch = Files.CountFiles(owCache);
 					g = Process.GetProcessById(a_ctx.Control.LaunchGame(a_s.Str("launch_executable") ?? "SKSE", InGame.FreshGamePid(), a_ctx.Cancel));
 					a_ctx.Activity("shaders", $"{a_c.ShaderMod}: the game compiles the shader cache at its main menu");
 					var sane = false;
@@ -426,7 +431,10 @@ public sealed class ShaderStep : IStep
 						a_ctx.Cancel.ThrowIfCancellationRequested();
 						var log = InGame.NewestShaderLog(logs);
 						var logFresh = log != null && File.GetLastWriteTimeUtc(log) >= started.AddSeconds(-5);
-						// the shader mod must say it runs within a few minutes (it stands down beside a DLL it refuses - 2026-10-09)
+						var n = Files.CountFiles(owCache);
+						// the shader mod must show it runs within a few minutes (it stands down beside a DLL it refuses - 2026-10-09).
+						// Shaders arriving in the cache ARE that sign: a log can be elsewhere (SKSE's log folder moved) or late - a
+						// player's run of 2026-11-04 failed here with 101 shaders already written
 						if (!sane && sw.Elapsed > TimeSpan.FromSeconds(45)) {
 							var text = logFresh ? Files.ReadSharedText(log!) : "";
 							var bad = Regex.Match(text, @"^.*(Incompatible DLL|Remove it to use|disabled itself|will not run).*$", RegexOptions.Multiline);
@@ -434,14 +442,17 @@ public sealed class ShaderStep : IStep
 								Procs.KillTree(g.Id);
 								throw new StepFailedException("the shader mod stood down at start - nothing will compile: " + bad.Value.Trim());
 							}
-							if (logFresh && Regex.IsMatch(text, "Loading Settings Complete|Loaded theme|Shader compilation started|ShaderTiming")) {
+							if (n > atLaunch || logFresh && Regex.IsMatch(text, "Loading Settings Complete|Loaded theme|Shader compilation started|ShaderTiming")) {
 								sane = true;
 							} else if (sw.Elapsed > TimeSpan.FromMinutes(a_s.Int("sanity_min", 3))) {
+								// never blamed on the shader mod while something else holds the game: what is on screen is named
+								var shows = InGame.WhatTheGameShows(a_ctx, started);
 								Procs.KillTree(g.Id);
-								throw new StepFailedException($"the shader mod wrote no log this start in {a_s.Int("sanity_min", 3)} minutes - is it ticked and loading?");
+								throw new StepFailedException(shows != "" ?
+									$"the game stopped at something this step does not know - {shows}. Answer or close it in game once (or turn off the mod that shows it), then run again from this step" :
+									$"the shader mod gave no sign of running in {a_s.Int("sanity_min", 3)} minutes (no log, no shaders written) - is it ticked and loading?");
 							}
 						}
-						var n = Files.CountFiles(owCache);
 						if (n != lastN) {
 							lastN = n;
 							lastChange.Restart();
@@ -456,7 +467,7 @@ public sealed class ShaderStep : IStep
 							result = done.Trim();
 						} else if (remaining == 0 && n >= a_s.Int("min_files", 50) && lastChange.Elapsed > TimeSpan.FromSeconds(30)) {
 							result = $"compile finished: remaining=0 ({n} files)";
-						} else if (remaining == null && n >= a_s.Int("min_files", 50) && lastChange.Elapsed > quiet &&
+						} else if (sane && remaining == null && n >= a_s.Int("min_files", 50) && lastChange.Elapsed > quiet &&
 						           (!logFresh || DateTime.UtcNow - File.GetLastWriteTimeUtc(log!) > quiet)) {
 							result = $"compile finished by quiet: no new shader and no shader log line for {quiet.TotalMinutes:0} minutes ({n} files)";
 							verified = false;
@@ -468,11 +479,14 @@ public sealed class ShaderStep : IStep
 							Procs.KillTree(g.Id);
 							throw new StepFailedException($"the shader cache passed its {a_s.Deadline(180).TotalMinutes:0} minute limit");
 						}
-						Thread.Sleep(10000);
+						// a Stop ends the wait at once (the game is ended by the stop itself)
+						a_ctx.Cancel.WaitHandle.WaitOne(10000);
 					}
 					if (result != null) {
 						break;
 					}
+					// a game ended by Stop is never started again
+					a_ctx.Cancel.ThrowIfCancellationRequested();
 					if (++restarts > a_s.Int("max_restarts", 3)) {
 						throw new StepFailedException($"the game stopped {restarts} times while compiling shaders");
 					}

@@ -21,8 +21,7 @@ public static partial class ToolUpdates
 		["treelodgen"] = new("195679", null, "https://www.nexusmods.com/skyrimspecialedition/mods/195679?tab=files"),
 		["pgpatcher"] = new("120946", null, "https://www.nexusmods.com/skyrimspecialedition/mods/120946?tab=files"),
 		["pandora"] = new("133232", null, "https://www.nexusmods.com/skyrimspecialedition/mods/133232?tab=files"),
-		["snowfixer"] = new("191632", null, "https://www.nexusmods.com/skyrimspecialedition/mods/191632?tab=files"),
-		["autoblend"] = new("188398", null, "https://www.nexusmods.com/skyrimspecialedition/mods/188398?tab=files"),
+		["landscapefixer"] = new("198142", null, "https://www.nexusmods.com/skyrimspecialedition/mods/198142?tab=files"),
 		["acmos"] = new("79205", null, "https://www.nexusmods.com/skyrimspecialedition/mods/79205?tab=files"),
 		["grass"] = new("194151", null, "https://www.nexusmods.com/skyrimspecialedition/mods/194151?tab=files"),
 		["anvillod"] = new("194477", null, "https://www.nexusmods.com/skyrimspecialedition/mods/194477?tab=files"),
@@ -106,10 +105,26 @@ public static partial class ToolUpdates
 		return false;
 	}
 
+	// one client for the program's life (a client per check leaves its sockets waiting for minutes - the classic exhaustion), its
+	// connections renewed every few minutes (a changed DNS answer is followed), an answer bigger than 1 MB refused (a page's
+	// version is a few hundred bytes; nothing far off may fill memory), and named by the program's own name
+	static readonly HttpClient Http = MakeClient();
+
+	static HttpClient MakeClient()
+	{
+		// the client owns its handler (disposeHandler) and both live as long as the program
+#pragma warning disable CA2000
+		var c = new HttpClient(new SocketsHttpHandler { PooledConnectionLifetime = TimeSpan.FromMinutes(5), AutomaticDecompression = System.Net.DecompressionMethods.All }, true) {
+			Timeout = TimeSpan.FromSeconds(20), MaxResponseContentBufferSize = 1024 * 1024,
+		};
+#pragma warning restore CA2000
+		c.DefaultRequestHeaders.UserAgent.ParseAdd("Skyrim-Utility-Patcher/" + (typeof(ToolUpdates).Assembly.GetName().Version?.ToString(2) ?? "1.0"));
+		return c;
+	}
+
 	public static async Task<List<Result>> Check(Setup a_setup, Mo2Instance a_mo2, CancellationToken a_ct)
 	{
-		using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
-		http.DefaultRequestHeaders.UserAgent.ParseAdd("MO2-Tool-Runner/1.0");
+		var http = Http;
 		var outList = new List<Result>();
 		foreach (var step in a_setup.EnabledSteps) {
 			var s = new StepSettings(step.Settings);

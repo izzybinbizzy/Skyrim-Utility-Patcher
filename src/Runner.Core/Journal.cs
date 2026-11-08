@@ -140,6 +140,10 @@ public sealed class Journal
 
 	public bool Unfinished => State == RunState.Running || NeedsRestore;
 
+	// the save to play is being made: the run's profile is already put back (it is not Unfinished - nothing to restore), but its
+	// game still runs, so the window keeps it as the running run (Stop and the close guard reach it)
+	public bool InGameAfter { get; set; }
+
 	// is the program that wrote it still alive? (a run that is still going is never "unfinished")
 	public bool OwnerAlive => Pid != 0 && Procs.Alive(Pid) && IsRunner(Pid) &&
 		(PidStarted == null || Procs.StartTime(Pid) is { } s && Math.Abs((s - PidStarted.Value).TotalSeconds) < 2);
@@ -148,15 +152,32 @@ public sealed class Journal
 	{
 		try {
 			using var p = System.Diagnostics.Process.GetProcessById(a_pid);
-			return p.ProcessName.Contains("Tool Runner", StringComparison.OrdinalIgnoreCase) ||
-			       p.ProcessName.Contains("Runner.App", StringComparison.OrdinalIgnoreCase) ||
-			       p.ProcessName.Contains("Runner.Tests", StringComparison.OrdinalIgnoreCase);
+			// a copy the player renamed is known by the product name inside its file (the start time check above keeps a reused
+			// PID out)
+			return IsRunnerName(p.ProcessName) || IsRunnerName(ProductOf(p));
 		} catch (ArgumentException) {
 			return false;
 		} catch (InvalidOperationException) {
 			return false;
 		}
 	}
+
+	// the program under its name or any it had ("Skyrim Utility Patcher", "MO2 Tool Runner", ...), its project names when built
+	// without one, and the offline tests' own process. The rename of 2026-11-03 had left this on the old names only: every real
+	// run then read as dead to the window - Stop now sent nothing, closing the window neither asked nor stopped the run, and a
+	// running run showed as interrupted (his finds of 2026-11-04); the tests did not see it, their own process name matched
+	static string ProductOf(System.Diagnostics.Process a_p)
+	{
+		try {
+			return a_p.MainModule?.FileVersionInfo.ProductName ?? "";
+		} catch (Exception e) when (e is System.ComponentModel.Win32Exception or InvalidOperationException or NotSupportedException) {
+			return "";
+		}
+	}
+
+	public static bool IsRunnerName(string a_processName) =>
+		Brand.AllNames.Any(n => string.Equals(a_processName, n, StringComparison.OrdinalIgnoreCase)) ||
+		a_processName is "Runner.App" or "Runner.Tests";
 
 	public static IEnumerable<Journal> All(string a_runsDir)
 	{

@@ -173,12 +173,36 @@ public static class Uia
 		return s.Length > a_max ? s[..a_max] : s;
 	}
 
+	// what the text boxes of a window hold (a log box's content is its value, never its name)
+	public static List<string> EditTexts(AutomationElement a_root)
+	{
+		var outList = new List<string>();
+		foreach (var e in All(a_root, ControlType.Edit).Concat(All(a_root, ControlType.Document))) {
+			try {
+				if (e.TryGetCurrentPattern(ValuePattern.Pattern, out var p) && ((ValuePattern)p).Current.Value is { Length: > 0 } v) {
+					outList.Add(v);
+				}
+			} catch (Exception gone) when (Gone(gone) || gone is InvalidOperationException) {
+			}
+		}
+		return outList;
+	}
+
 	// the small boxes a tool shows (Windows' #32770 dialogs and task dialogs, Qt message boxes), with their text and buttons
 	public static List<Box> Boxes(IReadOnlyCollection<int> a_pids)
 	{
 		var outList = new List<Box>();
 		foreach (var h in Native.TopWindowsOf(a_pids)) {
 			var cls = Native.ClassName(h);
+			// only a window that can be a box, or hold one, becomes a UI Automation element: Windows' dialogs and message boxes, Qt
+			// windows (a Qt box shows inside its window's tree), and any window another window owns - the boxes of Delphi tools
+			// (xLODGen, TexGen, DynDOLOD), WPF and WinForms carry their toolkit's own class but are always owned. A tool's unowned main
+			// window is left out: .NET's UI Automation client keeps every element it ever made (measured 2026-11-07: about 1 KB a call,
+			// growing without end, when every window of a tool was read every two seconds)
+			if (!(cls is "#32770" or "QMessageBox" || cls.Contains("MessageBox", StringComparison.OrdinalIgnoreCase) || cls.StartsWith("Qt", StringComparison.Ordinal) ||
+			      Native.IsOwned(h))) {
+				continue;
+			}
 			var e = FromHandle(h);
 			if (e == null) {
 				continue;

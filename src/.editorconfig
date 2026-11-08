@@ -1,0 +1,31 @@
+# The resource rules a long-running Windows program lives by (the memory audit of 2026-11-07): an object that holds a Windows
+# handle, a file, a process or a COM reference is disposed on every path, a type that owns one is disposable itself and
+# releases it, and Dispose follows the standard pattern. TreatWarningsAsErrors turns each into a build error.
+root = true
+
+[*.cs]
+# dispose objects before losing scope
+dotnet_diagnostic.CA2000.severity = warning
+# types that own disposable fields should be disposable
+dotnet_diagnostic.CA1001.severity = warning
+# disposable fields should be disposed
+dotnet_diagnostic.CA2213.severity = warning
+# implement IDisposable correctly
+dotnet_diagnostic.CA1063.severity = warning
+# Dispose calls GC.SuppressFinalize
+dotnet_diagnostic.CA1816.severity = warning
+# Dispose methods call base class Dispose
+dotnet_diagnostic.CA2215.severity = warning
+# disposable types with native resources declare a finalizer
+dotnet_diagnostic.CA2216.severity = warning
+# forward the CancellationToken (a Stop must reach every wait)
+dotnet_diagnostic.CA2016.severity = warning
+# do not ignore the result of a method whose result is the point (a new object, a disposable)
+dotnet_diagnostic.CA1806.severity = warning
+
+# the offline tests make and drop throwaway objects on purpose, each in a test that ends at once
+[Runner.Tests/**.cs]
+dotnet_diagnostic.CA2000.severity = none
+dotnet_diagnostic.CA1001.severity = none
+dotnet_diagnostic.CA2213.severity = none
+dotnet_diagnostic.CA1806.severity = none

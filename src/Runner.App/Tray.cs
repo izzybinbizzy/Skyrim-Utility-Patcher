@@ -122,8 +122,16 @@ public sealed unsafe partial class Tray : IDisposable
 		return ShellNotifyIcon(NIM_MODIFY, &d);
 	}
 
+	bool _disposed;
+
+	// once only (a second DestroyIcon could hit a handle Windows already gave to someone else); also called when the process ends
+	// any other way, so no ghost icon stays in the notification area after a crash
 	public void Dispose()
 	{
+		if (_disposed) {
+			return;
+		}
+		_disposed = true;
 		if (_added) {
 			var d = Data();
 			_ = ShellNotifyIcon(NIM_DELETE, &d);

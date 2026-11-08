@@ -4,14 +4,38 @@ using System.Text.RegularExpressions;
 
 namespace ToolRunner.Steps;
 
-// SnowFixer and AutoBlend (one author, one launcher): their settings are saved in the tool, one button starts it, a box says
-// "complete". Each writes into a folder of its own (`tool_writes`) that is emptied first and moved into the output mod after.
+// Landscape Fixer's launcher (Cl3mus): its settings are saved in the tool, one button starts it, a box says "complete". It
+// writes into a folder of its own (`tool_writes`) that is emptied first and moved into the output mod after.
 public abstract class LauncherStep : IStep
 {
 	public abstract string Key { get; }
 	protected abstract string TitleRx { get; }
 	protected abstract string[] StartNames { get; }
-	protected abstract string LogName { get; }
+	protected abstract string SettingsFile(RunContext a_ctx);
+
+	// the tool keeps one Mod Organizer, profile and output in its own settings, whatever it was last pointed at: without this it
+	// builds from that other profile and writes into that other mods folder. The file goes back after the step
+	public static string PointedAt(string? a_settings, string a_instance, string a_profile, string a_game, string a_output)
+	{
+		var json = a_settings is { Length: > 0 } ? JsonNode.Parse(a_settings)?.AsObject() ?? [] : [];
+		json["ModManager"] = 1;
+		json["Mo2InstancePath"] = a_instance;
+		json["Mo2ProfileName"] = a_profile;
+		json["GameLocation"] = a_game;
+		json["OutputLocation"] = a_output;
+		return json.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
+	}
+
+	void PointAtThisRun(RunContext a_ctx, string a_output)
+	{
+		var file = SettingsFile(a_ctx);
+		// the instance is the folder that holds ModOrganizer.ini (its base folder can point elsewhere - a mods folder moved off it)
+		var text = PointedAt(File.Exists(file) ? File.ReadAllText(file) : null, Path.GetDirectoryName(a_ctx.Mo2.IniPath)!, a_ctx.Profile.Name, a_ctx.Mo2.GameDir, a_output);
+		StepKit.KeepFile(a_ctx, file);
+		Directory.CreateDirectory(Path.GetDirectoryName(file)!);
+		Files.WriteAtomic(file, text);
+		a_ctx.Log.Detail($"{StepCatalog.Name(Key)}: pointed at this profile and {Path.GetFileName(a_output)}");
+	}
 
 	public IEnumerable<Issue> Check(CheckContext a_c, StepSettings a_s)
 	{
@@ -24,10 +48,57 @@ public abstract class LauncherStep : IStep
 		}
 	}
 
+	// the folder beside its program that holds its translations (each a JSON file with its button's words), or null
+	protected virtual string? TranslationFolder => null;
+
+	// the plugin a finished run writes last (null = none known)
+	protected virtual string? OutputPlugin => null;
+
+	// the names its start button may carry: its own words in every language it ships ("run" > "generate" in each translation file
+	// - his checklist 439: a tool set to another language is understood too), then the English ones
+	public static List<string> StartButtonNames(string? a_translations, IEnumerable<string> a_english)
+	{
+		var names = new List<string>();
+		if (a_translations != null && Directory.Exists(a_translations)) {
+			foreach (var f in Directory.EnumerateFiles(a_translations, "*.json")) {
+				try {
+					// a file of another shape (a list, a plain value) is passed over - indexing it by name would throw and stop the step
+					if (JsonNode.Parse(Files.ReadSharedText(f)) is JsonObject root && root["run"] is JsonObject run &&
+					    run["generate"] is JsonValue v && v.TryGetValue<string>(out var n) && n.Trim() != "") {
+						names.Add(n.Trim());
+					}
+				} catch (Exception e) when (e is JsonException or IOException or UnauthorizedAccessException) {
+				}
+			}
+		}
+		names.AddRange(a_english);
+		return names.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+	}
+
+	static bool Exited(System.Diagnostics.Process a_p)
+	{
+		try {
+			return a_p.HasExited;
+		} catch (InvalidOperationException) {
+			return true;
+		}
+	}
+
+	static string Short(string a_t) => a_t.Length > 400 ? "..." + a_t[^400..] : a_t;
+
+	// what its window says, for a failure: its text boxes (Landscape Fixer's run log) last, the labels before them
+	static string WindowSays(System.Windows.Automation.AutomationElement a_w)
+	{
+		var log = Uia.EditTexts(a_w).OrderBy(t => t.Length).LastOrDefault() ?? "";
+		return Short(Uia.TextOf(a_w, 1500) + (log.Trim() == "" ? "" : " | its log: " + log.Trim()));
+	}
+
 	public void Run(RunContext a_ctx, StepSettings a_s)
 	{
 		var mod = a_s.OutputMod!;
-		var image = a_s.Str("image") ?? a_s.Req("executable") + ".exe";
+		var name = StepCatalog.Name(Key);
+		// the process to watch: the setup's own, else the program MO2's entry starts (its title need not be the file's name)
+		var image = a_s.Str("image") ?? (a_ctx.Mo2.Executable(a_s.Req("executable"))?.Binary is { Length: > 0 } binary ? Path.GetFileName(binary) : a_s.Req("executable") + ".exe");
 		StepKit.ParkMod(a_ctx, Key, mod);
 		var tw = a_s.Str("tool_writes");
 		var toolDir = tw is { Length: > 0 } ? a_ctx.Mo2.ModDir(tw) : null;
@@ -35,38 +106,60 @@ public abstract class LauncherStep : IStep
 			// its files to the backup (recorded, put back if the step does not finish); the folder and its meta.ini stay
 			StepKit.ParkMod(a_ctx, Key, tw!);
 		}
-		var logPath = Path.Combine(toolDir ?? a_ctx.Mo2.ModDir(mod), LogName);
+		var outDir = toolDir ?? a_ctx.Mo2.ModDir(mod);
 		var t0 = DateTime.UtcNow;
-		using (new Toggle(a_ctx, [mod, .. a_s.List("enable_during")], a_s.List("disable_during"), StepCatalog.Name(Key), a_ctx.Cancel)) {
+		PointAtThisRun(a_ctx, outDir);
+		var exeDir = a_ctx.Mo2.Executable(a_s.Req("executable"))?.Binary is { Length: > 0 } bin ? Path.GetDirectoryName(bin) : null;
+		var names = StartButtonNames(exeDir != null && TranslationFolder != null ? Path.Combine(exeDir, TranslationFolder) : null, StartNames).ToArray();
+		using (new Toggle(a_ctx, [mod, .. a_s.List("enable_during")], a_s.List("disable_during"), name, a_ctx.Cancel)) {
 			try {
-				var proc = a_ctx.Control.RunExecutable(a_s.Req("executable"), image, a_s.Str("args"), a_ctx.Cancel);
-				var w = StepKit.WaitWindow(a_ctx, image, t => Regex.IsMatch(t, TitleRx), TimeSpan.FromMinutes(3), StepCatalog.Name(Key) + "'s window");
-				Thread.Sleep(2000);
-				Uia.Press(Uia.Button(w, StartNames) ?? throw new StepFailedException($"{StepCatalog.Name(Key)} has no {StartNames[0]} button"));
-				a_ctx.Activity(Key, StepCatalog.Name(Key) + " is patching");
-				var finished = false;
-				Waits.Tool(a_ctx, Key, proc, a_s.Deadline(60), () => {
-					foreach (var box in Uia.Boxes(StepKit.PidsOf(image)())) {
-						if (Regex.IsMatch(box.Text, @"Working\.\.\.")) {
-							continue;
-						}
-						// the finished box also shows the whole log (which can hold the word "error") - its headline decides
-						var head = box.Text.Split("collapsiblePane")[0];
-						a_ctx.Log.Detail($"{StepCatalog.Name(Key)} says: {head.Trim()}");
-						if (!Regex.IsMatch(head, "complete|finished|done", RegexOptions.IgnoreCase) && Regex.IsMatch(head, "error|failed|exception", RegexOptions.IgnoreCase)) {
-							throw new StepFailedException($"{StepCatalog.Name(Key)}: {head.Trim()}");
-						}
-						if (Regex.IsMatch(head, "complete|finished|done", RegexOptions.IgnoreCase)) {
-							finished = true;
-						}
-						if (Uia.Button(box.Element, "OK", "Close", "Finish", "Exit") is { } ok) {
-							Uia.Press(ok);
-						}
+				using var proc = a_ctx.Control.RunExecutable(a_s.Req("executable"), image, a_s.Str("args"), a_ctx.Cancel);
+				var w = StepKit.WaitWindow(a_ctx, image, t => Regex.IsMatch(t, TitleRx), TimeSpan.FromMinutes(3), name + "'s window");
+				// its button, once its window has finished laying itself out (usable, on screen)
+				System.Windows.Automation.AutomationElement? go = null;
+				for (var sw = System.Diagnostics.Stopwatch.StartNew(); go == null; Thread.Sleep(1000)) {
+					a_ctx.Cancel.ThrowIfCancellationRequested();
+					go = Uia.Button(w, names) is { } b && Uia.Usable(b) ? b : null;
+					if (go == null && (Exited(proc) || sw.Elapsed > TimeSpan.FromMinutes(1))) {
+						throw new StepFailedException($"{name} shows no usable {StartNames[0]} button. Its window shows: {WindowSays(w)}");
 					}
-					// done = its "complete" box, or it exited; a quiet log counts only once the tool also used no CPU for the
-					// idle minutes (a quiet phase mid-run is normal)
-					return finished || proc.HasExited ? Waits.Poll.Done : Waits.Poll.Wait;
-				}, a_onIdle: () => finished = File.Exists(logPath) && File.GetLastWriteTimeUtc(logPath) > t0);
+				}
+				Uia.Press(go);
+				// it started = its button goes grey while it works. Landscape Fixer refuses a run it cannot do (no game, no profile)
+				// only on its status line - never a box - so that line is what the step names
+				for (var sw = System.Diagnostics.Stopwatch.StartNew(); Uia.Usable(go); Thread.Sleep(500)) {
+					a_ctx.Cancel.ThrowIfCancellationRequested();
+					UnknownBox(name, image);
+					// a run so short its button went grey and back between two looks has still written its output
+					if (Files.NewestWrite(outDir) > t0) {
+						break;
+					}
+					if (Exited(proc)) {
+						throw new StepFailedException($"{name} closed when {Uia.Name(go)} was pressed");
+					}
+					if (sw.Elapsed > TimeSpan.FromSeconds(30)) {
+						throw new StepFailedException($"{name} did not start working when {Uia.Name(go)} was pressed. Its window shows: {WindowSays(w)}");
+					}
+				}
+				a_ctx.Activity(Key, name + " is patching");
+				// done = its button usable again (its run ended) or it closed; a box during a run is none it shows on its own way, so
+				// it is named and left for the player (his 2026-11-06 rule: an unknown box is never read as something known)
+				Waits.Tool(a_ctx, Key, proc, a_s.Deadline(60), () => {
+					UnknownBox(name, image);
+					return Exited(proc) || Uia.Usable(go) ? Waits.Poll.Done : Waits.Poll.Wait;
+				});
+				// a run that ended without writing anything stopped on an error, which its own log box holds
+				if (Files.NewestWrite(outDir) <= t0) {
+					throw new StepFailedException($"{name} ended without writing anything into {Path.GetFileName(outDir)}. " +
+						(Exited(proc) ? "It closed." : "Its window shows: " + WindowSays(w)));
+				}
+				// its plugin is the last thing it writes: meshes without a fresh plugin are a run that stopped part way (they never
+				// replace the last good output)
+				if (OutputPlugin is { } plugin && !(File.Exists(Path.Combine(outDir, plugin)) && File.GetLastWriteTimeUtc(Path.Combine(outDir, plugin)) > t0)) {
+					throw new StepFailedException($"{name} stopped before it wrote {plugin} - its run did not finish. " +
+						(Exited(proc) ? "It closed." : "Its window shows: " + WindowSays(w)));
+				}
+				a_ctx.Log.Detail($"{name} finished its run");
 			} finally {
 				StepKit.CloseTool(a_ctx, image);
 			}
@@ -84,22 +177,32 @@ public abstract class LauncherStep : IStep
 		}
 		a_ctx.SetAfter(mod);
 	}
+
+	static void UnknownBox(string a_name, string a_image)
+	{
+		if (Uia.Boxes(StepKit.PidsOf(a_image)()).FirstOrDefault() is { } box) {
+			// its whole text goes into the log (the failure line keeps it too); the tool is then closed so the profile can be put back
+			throw new StepFailedException($"{a_name} showed a box this step does not know, so the step stopped without answering it (the tool is closed " +
+				$"so your profile can be put back; run {a_name} yourself to see the box again). It said: {box.Text.Trim()}");
+		}
+	}
 }
 
-public sealed class SnowFixerStep : LauncherStep
+// Landscape Fixer (Cl3mus, GPL-3.0) replaced his SnowFixer and AutoBlend: one run, one output, one plugin
+public sealed class LandscapeFixerStep : LauncherStep
 {
-	public override string Key => "snowfixer";
-	protected override string TitleRx => "^Snow Fixer$";
-	protected override string[] StartNames => ["Start"];
-	protected override string LogName => "SnowFixer-log.txt";
-}
+	public override string Key => "landscapefixer";
+	protected override string TitleRx => "^Landscape Fixer";
+	protected override string[] StartNames => ["Generate", "Start"];
+	protected override string? TranslationFolder => "LandscapeFixer_translations";
+	protected override string? OutputPlugin => "LandscapeFixer.esp";
 
-public sealed class AutoBlendStep : LauncherStep
-{
-	public override string Key => "autoblend";
-	protected override string TitleRx => "^AutoBlend$";
-	protected override string[] StartNames => ["Start Patching", "Start"];
-	protected override string LogName => "AutoBlend-log.txt";
+	// it keeps one settings file per Mod Organizer instance, named after the folder holding that instance's ModOrganizer.ini
+	protected override string SettingsFile(RunContext a_ctx) =>
+		Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "LandscapeFixer", "instances", InstanceFile(a_ctx.Mo2.IniPath));
+
+	public static string InstanceFile(string a_ini) =>
+		string.Concat(Path.GetFileName(Path.GetDirectoryName(Path.GetFullPath(a_ini)))!.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c)) + ".json";
 }
 
 // PGPatcher --autostart. A setup may keep several settings sets (ENB / PBR / Vanilla) beside its file and pick one; the live
@@ -153,12 +256,18 @@ public sealed class PgPatcherStep : IStep
 					throw new StepFailedException("PGPatcher's settings have no output section - run PGPatcher once by hand to make them");
 				}
 				output["dir"] = a_ctx.Mo2.ModDir(mod);
+				if (conf["params"]?["game"] is JsonObject game) {
+					game["dir"] = a_ctx.Mo2.GameDir;
+				}
+				if (conf["params"]?["modmanager"] is JsonObject manager && manager.ContainsKey("mo2instancedir")) {
+					manager["mo2instancedir"] = Path.GetDirectoryName(a_ctx.Mo2.IniPath)!;
+				}
 				Files.WriteAtomic(live, conf.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
 				a_ctx.Log.Detail($"PGPatcher settings: {a_s.Str("settings") ?? "its own"} (output {mod})");
 			}
 			using (new Toggle(a_ctx, [], [mod, .. a_s.List("disable_during")], "PGPatcher", a_ctx.Cancel)) {
 				try {
-					var proc = a_ctx.Control.RunExecutable(a_s.Req("executable"), image, a_s.Str("args") ?? "--autostart", a_ctx.Cancel);
+					using var proc = a_ctx.Control.RunExecutable(a_s.Req("executable"), image, a_s.Str("args") ?? "--autostart", a_ctx.Cancel);
 					var esp = Path.Combine(a_ctx.Mo2.ModDir(mod), "PGPatcher.esp");
 					a_ctx.Activity(Key, "PGPatcher is patching");
 					Waits.Tool(a_ctx, Key, proc, a_s.Deadline(60), () => {
@@ -230,9 +339,18 @@ public sealed class SynthesisStep : IStep
 				var tRun = DateTime.UtcNow;
 				var logs = Path.Combine(Path.GetDirectoryName(exePath)!, "logs");
 				string? runLog = null;
-				var proc = a_ctx.Control.RunExecutable(a_s.Req("executable"), image, null, a_ctx.Cancel);
-				var w = StepKit.WaitWindow(a_ctx, image, t => t.Contains("Synthesis", StringComparison.Ordinal), TimeSpan.FromMinutes(10), "Synthesis's window");
-				Press(a_ctx, w, proc);
+				UseMo2Game(a_ctx, exePath);
+				using var proc = a_ctx.Control.RunExecutable(a_s.Req("executable"), image, null, a_ctx.Cancel);
+				// the first look waits for its window to come; a later one only briefly (a gone window is caught by Press's exit check,
+				// never waited on for minutes)
+				var found = false;
+				System.Windows.Automation.AutomationElement Win()
+				{
+					var w = Window(a_ctx, image, found ? TimeSpan.FromSeconds(30) : TimeSpan.FromMinutes(10));
+					found = true;
+					return w;
+				}
+				Press(a_ctx, Win, proc);
 				a_ctx.Activity(Key, "Synthesis is running its patchers");
 				// judged by its window (its timers and patcher states change while it works), never by its CPU alone; a patcher
 				// that failed is read off Synthesis's own log the moment its run ends (2026-10-27: one failed, no Synthesis.esp)
@@ -254,7 +372,7 @@ public sealed class SynthesisStep : IStep
 						}
 					}
 					return Waits.Poll.Wait;
-				}, a_progress: () => Uia.TextOf(w, int.MaxValue));
+				}, a_progress: () => Uia.WaitWindow(StepKit.PidsOf(image), t => t.Contains("Synthesis", StringComparison.Ordinal), TimeSpan.FromSeconds(2), a_ctx.Cancel) is { } open ? Uia.TextOf(open, int.MaxValue) : "");
 			} finally {
 				StepKit.CloseTool(a_ctx, image);
 			}
@@ -293,11 +411,11 @@ public sealed class SynthesisStep : IStep
 	// its Run button: an enabled one on screen (it has two "GoButton"s - 2026-10-27 the first one pressed nothing and the window
 	// sat on its main screen), pressed, and the run proven started by its window changing; else the other one, else the step fails
 	// naming what the window shows - never a window left open doing nothing
-	static void Press(RunContext a_ctx, System.Windows.Automation.AutomationElement a_w, System.Diagnostics.Process a_proc)
+	static void Press(RunContext a_ctx, Func<System.Windows.Automation.AutomationElement> a_w, System.Diagnostics.Process a_proc)
 	{
 		var idle = TimeSpan.FromMinutes(Math.Max(1, a_ctx.Setup.IdleMinutes));
 		var sw = System.Diagnostics.Stopwatch.StartNew();
-		List<System.Windows.Automation.AutomationElement> Buttons() => Uia.All(a_w, System.Windows.Automation.ControlType.Button)
+		List<System.Windows.Automation.AutomationElement> Buttons() => Uia.All(a_w(), System.Windows.Automation.ControlType.Button)
 			.Where(b => Regex.IsMatch(Uia.AutomationId(b) + " " + Uia.Name(b), @"^GoButton|\bRun\b|RunPatchers", RegexOptions.IgnoreCase) && Uia.Usable(b)).ToList();
 		// a window that went away reads as "no buttons, new text" - so a closed Synthesis is caught first, never taken for a start
 		void StillOpen(string a_when)
@@ -313,7 +431,7 @@ public sealed class SynthesisStep : IStep
 			a_ctx.Cancel.ThrowIfCancellationRequested();
 			StillOpen("before its Run button showed");
 			// the whole window is searched; only the message is cut short
-			var txt = Uia.TextOf(a_w, int.MaxValue);
+			var txt = Uia.TextOf(a_w(), int.MaxValue);
 			if (StillBlocked(ref blockedSince, Regex.IsMatch(txt, "Build required|Blocking Error"), DateTime.UtcNow)) {
 				throw new StepFailedException("Synthesis still wants a build inside Mod Organizer: " + Short(txt));
 			}
@@ -325,7 +443,7 @@ public sealed class SynthesisStep : IStep
 		}
 		foreach (var b in go) {
 			// the whole window, so a change far down a big pipeline still counts as the start (the fifth review, N3)
-			var before = Uia.TextOf(a_w, int.MaxValue);
+			var before = Uia.TextOf(a_w(), int.MaxValue);
 			if (!Uia.Press(b)) {
 				continue;
 			}
@@ -334,15 +452,59 @@ public sealed class SynthesisStep : IStep
 				a_ctx.Cancel.ThrowIfCancellationRequested();
 				Thread.Sleep(1500);
 				StillOpen("right after Run was pressed");
-				if (Uia.TextOf(a_w, int.MaxValue) != before || Buttons().Count == 0) {
+				if (Uia.TextOf(a_w(), int.MaxValue) != before || Buttons().Count == 0) {
 					a_ctx.Log.Detail("Synthesis: Run pressed, its patchers started");
 					return;
 				}
 			}
 			a_ctx.Log.Warn("Synthesis: a Run button pressed, nothing changed in 45 s - trying the next one");
 		}
-		throw new StepFailedException("Synthesis did not start its patchers when Run was pressed. Its window shows: " + Short(Uia.TextOf(a_w, int.MaxValue)));
+		throw new StepFailedException("Synthesis did not start its patchers when Run was pressed. Its window shows: " + Short(Uia.TextOf(a_w(), int.MaxValue)));
 	}
+
+	// Synthesis finds the game through Steam; with a game copy of Mod Organizer's own that is a folder MO2 does not map, every plugin
+	// "could not be found". The file goes back after the step; a data folder the player set is left alone
+	static void UseMo2Game(RunContext a_ctx, string a_exe)
+	{
+		var file = Path.Combine(Path.GetDirectoryName(a_exe)!, "PipelineSettings.json");
+		if (!File.Exists(file)) {
+			return;
+		}
+		var text = File.ReadAllText(file);
+		var set = WithDataFolder(text, Path.Combine(a_ctx.Mo2.GameDir, "Data"));
+		if (set != text) {
+			StepKit.KeepFile(a_ctx, file);
+			Files.WriteAtomic(file, set);
+			a_ctx.Log.Detail("Synthesis: pointed at the game Mod Organizer runs for this step");
+		}
+	}
+
+	// every profile whose data folder is unset (null or left out) gets the game MO2 runs; one the player set is kept
+	public static string WithDataFolder(string a_settings, string a_data)
+	{
+		JsonNode? root;
+		try {
+			root = JsonNode.Parse(a_settings);
+		} catch (System.Text.Json.JsonException) {
+			return a_settings;
+		}
+		// (a file of another layout keeps the old way: every unset value named in it is set)
+		if (root is not JsonObject top || top["Profiles"] is not JsonArray profiles) {
+			return Regex.Replace(a_settings, @"""DataPathOverride""\s*:\s*null", m => "\"DataPathOverride\": " + System.Text.Json.JsonSerializer.Serialize(a_data));
+		}
+		var changed = false;
+		foreach (var p in profiles.OfType<JsonObject>()) {
+			if (p["DataPathOverride"] is null) {
+				p["DataPathOverride"] = a_data;
+				changed = true;
+			}
+		}
+		return changed ? top.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true }) : a_settings;
+	}
+
+	// found again each time: the window seen first can be its start-up window, gone a moment later, and a gone window reads as empty
+	static System.Windows.Automation.AutomationElement Window(RunContext a_ctx, string a_image, TimeSpan a_wait) =>
+		StepKit.WaitWindow(a_ctx, a_image, t => t.Contains("Synthesis", StringComparison.Ordinal), a_wait, "Synthesis's window");
 
 	static bool Exited(System.Diagnostics.Process a_p)
 	{
@@ -372,14 +534,14 @@ public sealed class SynthesisStep : IStep
 		a_ctx.Activity("synthesis", "building Synthesis's patchers");
 		// the build copy is the run's own: closed by its PID after the build (else the run inside MO2 finds Synthesis running)
 		a_ctx.Control.Started.Add(Mo2Control.StartDetached(Mo2Control.Quote(a_exe), Path.GetDirectoryName(a_exe)!));
-		var w = StepKit.WaitWindow(a_ctx, a_image, t => t.Contains("Synthesis", StringComparison.Ordinal), TimeSpan.FromMinutes(5), "Synthesis's window");
 		var sw = System.Diagnostics.Stopwatch.StartNew();
+		var last = "";
 		try {
 			// the build copy shows the same loading-time blocking error as the run: it counts only once it stays 30 s; a "failed" at once
 			DateTime? blockedSince = null;
 			while (sw.Elapsed < TimeSpan.FromMinutes(a_s.Int("build_min", 15))) {
 				a_ctx.Cancel.ThrowIfCancellationRequested();
-				var txt = Uia.TextOf(w);
+				var txt = last = Uia.TextOf(Window(a_ctx, a_image, TimeSpan.FromMinutes(5)));
 				if (txt.Contains("Building complete", StringComparison.Ordinal)) {
 					a_ctx.Log.Detail("Synthesis: building complete");
 					return;
@@ -391,7 +553,7 @@ public sealed class SynthesisStep : IStep
 				}
 				Thread.Sleep(3000);
 			}
-			throw new StepFailedException($"Synthesis did not finish building within {a_s.Int("build_min", 15)} minutes");
+			throw new StepFailedException($"Synthesis did not finish building within {a_s.Int("build_min", 15)} minutes. Its window shows: {(last.Length > 300 ? last[^300..] : last)}");
 		} finally {
 			StepKit.CloseTool(a_ctx, a_image);
 		}
@@ -417,7 +579,7 @@ public sealed class WryeBashStep : IStep
 		var patch = a_s.Str("patch") ?? "Bashed Patch, 0.esp";
 		var t0 = DateTime.UtcNow;
 		try {
-			a_ctx.Control.RunExecutable(a_s.Req("executable"), image, null, a_ctx.Cancel);
+			a_ctx.Control.RunExecutable(a_s.Req("executable"), image, null, a_ctx.Cancel).Dispose();
 			a_ctx.Guide.Ask(Key, $"In Wrye Bash: right-click \"{patch}\" in the Mods tab, Rebuild Patch, build it with your options, then close Wrye Bash and press Done.", a_ctx.Cancel);
 			var sw = System.Diagnostics.Stopwatch.StartNew();
 			while (Procs.Running(image)) {
@@ -496,7 +658,7 @@ public sealed class PandoraStep : IStep
 			Files.WriteAtomic(settings, conf.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
 			using (new Toggle(a_ctx, a_s.List("enable_during"), a_s.List("disable_during"), "Pandora", a_ctx.Cancel)) {
 				try {
-					var proc = a_ctx.Control.RunExecutable(a_s.Req("executable"), image, a_s.Str("args") ?? "--auto_run --auto_close", a_ctx.Cancel);
+					using var proc = a_ctx.Control.RunExecutable(a_s.Req("executable"), image, a_s.Str("args") ?? "--auto_run --auto_close", a_ctx.Cancel);
 					a_ctx.Activity(Key, "Pandora is building behaviour files");
 					Waits.Tool(a_ctx, Key, proc, a_s.Deadline(20), () => {
 						foreach (var box in Uia.Boxes(StepKit.PidsOf(image)())) {

@@ -49,6 +49,60 @@ public sealed class Profile(Mo2Instance a_mo2, string a_name, Func<bool> a_mo2Ru
 
 	public bool IsOn(string a_mod) => States().TryGetValue(a_mod, out var c) && c == '+';
 
+	// the mod states in a snapshot's modlist.txt (empty when it holds none)
+	public static Dictionary<string, char> StatesOf(IReadOnlyDictionary<string, byte[]> a_snap)
+	{
+		var st = new Dictionary<string, char>(StringComparer.OrdinalIgnoreCase);
+		if (a_snap.TryGetValue("modlist.txt", out var b)) {
+			foreach (var ln in Files.DecodeText(b).Replace("\r\n", "\n").Split('\n')) {
+				if (ln.Length > 1 && ln[0] is '+' or '-' or '*') {
+					st[ln[1..]] = ln[0];
+				}
+			}
+		}
+		return st;
+	}
+
+	// the mod states as this tool last left them: every write of its own keeps it current, so what differs at the put-back
+	// was changed by the player (a mod ticked, unticked or installed in Mod Organizer while the run went on) - kept, never undone
+	Dictionary<string, char>? _ours;
+
+	public void WatchForOthers() => _ours = States();
+
+	// a step's own switch-and-put-back (Toggle) leaves the expectation as it was before it, so neither its switches nor its
+	// put-back read as the player's
+	public Dictionary<string, char>? OursNow() => _ours == null ? null : new(_ours, StringComparer.OrdinalIgnoreCase);
+
+	public void OursBack(Dictionary<string, char>? a_was)
+	{
+		if (a_was != null) {
+			_ours = a_was;
+		}
+	}
+
+	void Ours(string a_mod, char a_state)
+	{
+		if (_ours != null) {
+			_ours[a_mod] = a_state;
+		}
+	}
+
+	// name -> its state now, for every mod someone other than this tool ticked, unticked or added since WatchForOthers
+	public Dictionary<string, char> ChangedByOthers()
+	{
+		var outList = new Dictionary<string, char>(StringComparer.OrdinalIgnoreCase);
+		if (_ours == null || !Exists) {
+			return outList;
+		}
+		foreach (var (m, c) in States()) {
+			// Mod Organizer lists every mod folder it finds as off, so a line new to the list counts only once it is ticked
+			if (c is '+' or '-' && (_ours.TryGetValue(m, out var was) ? was != c : c == '+')) {
+				outList[m] = c;
+			}
+		}
+		return outList;
+	}
+
 	// tick / untick; returns the mods whose state really changed (name -> old flag)
 	public Dictionary<string, char> SetMods(IEnumerable<string> a_enable, IEnumerable<string> a_disable, RunLog? a_log = null)
 	{
@@ -89,6 +143,7 @@ public sealed class Profile(Mo2Instance a_mo2, string a_name, Func<bool> a_mo2Ru
 			Files.WriteAtomic(ModList, string.Join(nl, lines));
 			foreach (var n in changed.Keys.Order(StringComparer.OrdinalIgnoreCase)) {
 				a_log?.Detail($"{(en.Contains(n) ? "ON " : "OFF")} {n}");
+				Ours(n, en.Contains(n) ? '+' : '-');
 			}
 		}
 		return changed;
@@ -111,8 +166,38 @@ public sealed class Profile(Mo2Instance a_mo2, string a_name, Func<bool> a_mo2Ru
 			lines.Insert(at < 0 ? lines.Count : at, "-" + a_mod);
 			Files.WriteAtomic(ModList, string.Join(nl, lines));
 			a_log?.Detail($"{a_mod} added to the mod list (unticked)");
+			Ours(a_mod, '-');
 		}
 		Added.Add(a_mod);
+	}
+
+	// an output mod this tool made that holds nothing but its meta.ini (a step that failed, was stopped or wrote nothing): its
+	// mod-list line goes and the folder moves into a_parkIn (never erased) - so no empty outputs sit in Mod Organizer
+	public static bool IsEmptyOutput(string a_dir) =>
+		Directory.Exists(a_dir) &&
+		Directory.EnumerateFileSystemEntries(a_dir).All(e => Path.GetFileName(e).Equals("meta.ini", StringComparison.OrdinalIgnoreCase)) &&
+		File.Exists(Path.Combine(a_dir, "meta.ini")) &&
+		File.ReadAllText(Path.Combine(a_dir, "meta.ini")).Contains("made by Skyrim Utility Patcher", StringComparison.OrdinalIgnoreCase);
+
+	public bool TakeOutEmptyOutput(string a_mod, string a_parkIn, RunLog? a_log = null)
+	{
+		var d = Mo2.ModDir(a_mod);
+		if (!IsEmptyOutput(d)) {
+			return false;
+		}
+		MustBeClosed("the mod list");
+		var (lines, nl) = ReadLines(ModList);
+		var n = lines.RemoveAll(l => l.Length > 1 && l[0] is '+' or '-' or '*' && l[1..].Equals(a_mod, StringComparison.OrdinalIgnoreCase));
+		if (n > 0) {
+			Files.WriteAtomic(ModList, string.Join(nl, lines));
+		}
+		var to = Path.Combine(a_parkIn, "empty outputs", a_mod);
+		Directory.CreateDirectory(Path.GetDirectoryName(to)!);
+		Files.MoveDirectory(d, to);
+		Added.Remove(a_mod);
+		_ours?.Remove(a_mod);
+		a_log?.Detail($"{a_mod}: nothing was built into it - taken out of the mod list (its empty folder is in the run's backup)");
+		return true;
 	}
 
 	// ---- the order files, byte for byte ----
@@ -238,7 +323,8 @@ public sealed class Profile(Mo2Instance a_mo2, string a_name, Func<bool> a_mo2Ru
 				}
 				var entry = lines[idx];
 				lines.RemoveAt(idx);
-				if (fn == "plugins.txt" && rule.Active && !entry.StartsWith('*')) {
+				// only a plugin something ticked provides: a line with no file behind it stops Synthesis (and a game start asks about it)
+				if (fn == "plugins.txt" && rule.Active && !entry.StartsWith('*') && paths.ContainsKey(rule.Plugin)) {
 					entry = "*" + entry;
 				}
 				int pos;
@@ -325,10 +411,64 @@ public sealed class Profile(Mo2Instance a_mo2, string a_name, Func<bool> a_mo2Ru
 		return changed.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
 	}
 
-	// untick (never remove) the plugins of these mods in plugins.txt
-	public List<string> DeactivatePlugins(IEnumerable<string> a_mods)
+	// plugins.txt's ticks as the file is now (name -> ticked)
+	public Dictionary<string, bool> PluginMarks()
 	{
-		var names = a_mods.SelectMany(m => Plugins.InMod(Mo2.ModDir(m))).Select(n => n.ToLowerInvariant()).ToHashSet();
+		var marks = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+		if (!File.Exists(PluginsTxt)) {
+			return marks;
+		}
+		foreach (var l in ReadPluginFile(PluginsTxt).Lines.Where(l => l.Length > 0 && !l.StartsWith('#'))) {
+			marks[l.TrimStart('*')] = l.StartsWith('*');
+		}
+		return marks;
+	}
+
+	// these plugins ticked or unticked as given (only lines the file has; a plugin it does not list is left to ActivatePlugins)
+	public void SetPluginMarks(IReadOnlyDictionary<string, bool> a_marks)
+	{
+		if (a_marks.Count == 0 || !File.Exists(PluginsTxt)) {
+			return;
+		}
+		MustBeClosed("the plugin list");
+		var (lines, nl, bom) = ReadPluginFile(PluginsTxt);
+		var changed = false;
+		for (int i = 0; i < lines.Count; ++i) {
+			if (lines[i].Length == 0 || lines[i].StartsWith('#') || !a_marks.TryGetValue(lines[i].TrimStart('*'), out var on) || lines[i].StartsWith('*') == on) {
+				continue;
+			}
+			lines[i] = on ? "*" + lines[i] : lines[i][1..];
+			changed = true;
+		}
+		if (changed) {
+			WritePluginFile(PluginsTxt, lines, nl, bom);
+		}
+	}
+
+	// the plugin files ticked mods other than a_except provide, and the game's own Data folder (lower case)
+	HashSet<string> ProvidedElsewhere(IEnumerable<string> a_except)
+	{
+		var except = new HashSet<string>(a_except, StringComparer.OrdinalIgnoreCase);
+		var provided = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		foreach (var mod in States().Where(s => s.Value == '+' && !except.Contains(s.Key)).Select(s => s.Key)) {
+			provided.UnionWith(Plugins.InMod(Mo2.ModDir(mod)));
+		}
+		var data = Path.Combine(Mo2.GameDir, "Data");
+		if (Directory.Exists(data)) {
+			provided.UnionWith(Plugins.InMod(data));
+		}
+		return provided;
+	}
+
+	// untick (never remove) the plugins of these mods in plugins.txt. a_keepProvided: a plugin another ticked mod (or the game's
+	// Data folder) still provides stays ticked - only that mod went off, not the plugin
+	public List<string> DeactivatePlugins(IEnumerable<string> a_mods, bool a_keepProvided = false)
+	{
+		var mods = a_mods.ToList();
+		var names = mods.SelectMany(m => Plugins.InMod(Mo2.ModDir(m))).Select(n => n.ToLowerInvariant()).ToHashSet();
+		if (a_keepProvided && names.Count > 0) {
+			names.ExceptWith(ProvidedElsewhere(mods).Select(n => n.ToLowerInvariant()));
+		}
 		var off = new List<string>();
 		if (names.Count == 0 || !File.Exists(PluginsTxt)) {
 			return off;

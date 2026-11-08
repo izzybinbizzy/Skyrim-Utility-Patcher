@@ -11,10 +11,11 @@ namespace ToolRunner.App;
 //   "Skyrim Utility Patcher.exe" stop | stop-after                                                     ask the running run to stop
 //   "Skyrim Utility Patcher.exe" updates --setup <file>                                                its tools' newest versions (asks their pages)
 //   "Skyrim Utility Patcher.exe" changes --setup <file> [--look]                                       what Mod Organizer changed, newest first
+//   "Skyrim Utility Patcher.exe" bugreport [--setup <file>]                                            one zip for a bug report (the setup's last run), names masked
 // exit 0 = finished / clean, 1 = failed / refused, 2 = stopped, 3 = bad arguments, 4 = (updates) a tool has a newer version
 public static class Cli
 {
-	public static bool Handles(string[] a_args) => a_args.Length > 0 && a_args[0] is "run" or "retry" or "queue" or "check" or "preview" or "lod" or "restore" or "stop" or "stop-after" or "import" or "updates" or "changes" or "--help" or "-h" or "/?";
+	public static bool Handles(string[] a_args) => a_args.Length > 0 && a_args[0] is "run" or "retry" or "queue" or "check" or "preview" or "lod" or "restore" or "stop" or "stop-after" or "import" or "updates" or "changes" or "bugreport" or "--help" or "-h" or "/?";
 
 	static string? Opt(string[] a_args, string a_name)
 	{
@@ -44,6 +45,7 @@ public static class Cli
 				"import" => Import(a_args),
 				"updates" => Updates(a_args),
 				"changes" => Changes(a_args),
+				"bugreport" => BugReportCmd(a_args),
 				_ => Help(),
 			};
 		} catch (Exception e) when (e is ArgumentException or IOException or InvalidDataException) {
@@ -59,7 +61,18 @@ public static class Cli
 
 	static int Help()
 	{
-		Console.WriteLine("Skyrim Utility Patcher - run | retry | queue | check | preview | lod | restore | stop | stop-after | updates | changes | import   (see the readme)");
+		Console.WriteLine("Skyrim Utility Patcher - run | retry | queue | check | preview | lod | restore | stop | stop-after | updates | changes | import | bugreport   (see the readme)");
+		return 0;
+	}
+
+	// the newest run of the setup (or of any setup), zipped with its logs for a bug report; prints where the zip is
+	static int BugReportCmd(string[] a_args)
+	{
+		var setup = Opt(a_args, "--setup") is { } s ? Path.GetFullPath(s) : null;
+		var run = Journal.All(AppPaths.Runs).FirstOrDefault(j => setup == null || string.Equals(j.SetupFile, setup, StringComparison.OrdinalIgnoreCase));
+		var zip = BugReport.Make(AppPaths.Data, run, Path.Combine(AppPaths.Data, "Bug reports"), MainWindow.AppVersion);
+		Console.WriteLine($"bug report: {zip}");
+		Console.WriteLine($"attach it to an issue: {BugReport.Issues}");
 		return 0;
 	}
 
@@ -115,14 +128,24 @@ public static class Cli
 		foreach (var l in QueueRun.Summary(items)) {
 			Console.WriteLine(l);
 		}
-		// the first that did not finish names the queue's outcome
-		return items.Select(i => i.Outcome).FirstOrDefault(o => o != null && o.State != RunState.Finished) is { } bad ? (bad.State == RunState.Stopped ? 2 : 1) : 0;
+		// the first that did not finish names the queue's outcome, and judges the power setting of the last setup that ran
+		var notFinished = items.Select(i => i.Outcome).FirstOrDefault(o => o != null && o.State != RunState.Finished);
+		// a Stop anywhere in the queue keeps the PC on, whatever came before it (the player is there)
+		var forPower = items.Any(i => i.Outcome?.State == RunState.Stopped) ? RunState.Stopped : notFinished?.State ?? RunState.Finished;
+		if (items.LastOrDefault(i => i.Outcome is { Folder: not null }) is { } lastRan) {
+			PowerAfterRun(lastRan.SetupFile, forPower);
+		}
+		return notFinished == null ? 0 : notFinished.State == RunState.Stopped ? 2 : 1;
 	}
 
 	static int RunOne(RunRequest a_req)
 	{
 		var outcome = Runner.Run(a_req);
 		Console.WriteLine(outcome.Verdict);
+		// a run that was refused (nothing changed) never shuts the PC down
+		if (outcome.Folder != null) {
+			PowerAfterRun(a_req.SetupFile, outcome.State);
+		}
 		if (outcome.Folder == null) {
 			WriteRefusal(outcome.Verdict);
 		}
@@ -140,6 +163,31 @@ public static class Cli
 			Directory.CreateDirectory(AppPaths.Runs);
 			Files.WriteAtomic(Engine.RefusalFile, a_why);
 		} catch (IOException) {
+		}
+	}
+
+	// the setup's "after the run" power setting, with its minute of notice; a setup that does not read is left alone
+	static void PowerAfterRun(string a_setupFile, RunState a_state)
+	{
+		try {
+			var s = Setup.Load(a_setupFile);
+			var what = PowerAfter.Decide(PowerAfter.Read(s), PowerAfter.OnlyFinished(s), a_state);
+			if (what != PowerAfter.Kind.None) {
+				// the run lock through the notice: no run can start and then be cut off by the sleep or shut-down
+				using var hold = Runner.HoldIfFree();
+				if (hold == null) {
+					Console.WriteLine("not sleeping or shutting down: another run started");
+					return;
+				}
+				var logDir = Path.Combine(AppPaths.Runs, "after run power");
+				Directory.CreateDirectory(logDir);
+				using var log = new RunLog(logDir);
+				Console.WriteLine($"the PC will {(what == PowerAfter.Kind.Sleep ? "go to sleep" : "shut down")} in {PowerAfter.Notice.TotalSeconds:0} s - cancel in the window, or with: stop");
+				PowerAfter.Carry(what, AppPaths.Data, log);
+			}
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException or System.Text.Json.JsonException or
+		                            System.ComponentModel.Win32Exception or InvalidOperationException) {
+			Console.WriteLine("the after-run power setting was not read: " + e.Message);
 		}
 	}
 
@@ -261,6 +309,11 @@ public static class Cli
 
 	static int Stop(string a_what)
 	{
+		// a sleep or shut-down on its notice is cancelled too
+		if (PowerAfter.Look(AppPaths.Data) != null) {
+			PowerAfter.Cancel(AppPaths.Data);
+			Console.WriteLine("the sleep / shut-down after the run is cancelled");
+		}
 		var j = Engine.Active();
 		if (j == null) {
 			Console.WriteLine("no run is going");

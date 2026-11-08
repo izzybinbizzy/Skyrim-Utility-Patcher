@@ -16,6 +16,118 @@ public static class Theme
 
 	public static string Folder => Path.Combine(AppPaths.Data, "Themes");
 	static string ChoiceFile => Path.Combine(AppPaths.Data, "theme.txt");
+	static string TextSizeFile => Path.Combine(AppPaths.Data, "text size.txt");
+
+	// the looks built into the program beside the default (his checklist 473): Windows' own high-contrast colors, taken from
+	// Windows each time it is applied, and a palette whose good / warning / bad states stay apart for color-blind eyes
+	// (blue / yellow / orange, the Okabe-Ito set); every state keeps its own glyph as well
+	public const string HighContrast = "High contrast", ColorBlind = "Color-blind safe";
+
+	static readonly string[] BuiltIns = [HighContrast, ColorBlind];
+
+	public static IReadOnlyList<string> BuiltInNames => BuiltIns;
+
+	static string Hex(Color a_c) => $"#{a_c.R:X2}{a_c.G:X2}{a_c.B:X2}";
+
+	static JsonObject Colors(params (string Key, string Value)[] a_values)
+	{
+		var o = new JsonObject();
+		foreach (var (k, v) in a_values) {
+			o[k] = new JsonObject { ["value"] = v };
+		}
+		return o;
+	}
+
+	static JsonObject BuiltIn(string a_name)
+	{
+		if (a_name == ColorBlind) {
+			return new JsonObject { ["colors"] = Colors(("Good", "#56B4E9"), ("Warn", "#F0E442"), ("Bad", "#D55E00"), ("BannerBad", "#3A2410")) };
+		}
+		var win = Hex(SystemColors.WindowColor);
+		var text = Hex(SystemColors.WindowTextColor);
+		var high = Hex(SystemColors.HighlightColor);
+		var onHigh = Hex(SystemColors.HighlightTextColor);
+		var w = SystemColors.WindowColor;
+		var dark = 0.2126 * w.R + 0.7152 * w.G + 0.0722 * w.B < 128;
+		return new JsonObject {
+			["windowsMode"] = dark ? "Dark" : "Light",
+			["colors"] = Colors(("Bg", win), ("Panel", win), ("Panel2", win), ("Line", text), ("Accent", high), ("AccentLight", text), ("AccentDim", text),
+				("Text", text), ("Muted", text), ("Good", text), ("Warn", text), ("Bad", text), ("OnAccent", onHigh), ("HoverFill", win), ("BannerBad", win),
+				("GuidedFill", win), ("Shade", "#99000000")),
+			["highContrastPairs"] = true,
+			["gradients"] = new JsonObject { ["PrimaryAndProgress"] = new JsonObject { ["stops"] = new JsonArray(
+				new JsonObject { ["color"] = high, ["at"] = 0.0 }, new JsonObject { ["color"] = high, ["at"] = 1.0 }) } },
+			["windowsAccent"] = new JsonObject { ["Light3"] = high, ["Light2"] = high, ["Light1"] = high, ["Base"] = high, ["Dark1"] = high, ["Dark2"] = high, ["Dark3"] = high },
+		};
+	}
+
+	// the text size, a share of the theme's own sizes (1 = as the theme has them)
+	public static double TextScale { get; private set; } = 1;
+
+	public static readonly double[] TextScales = [1, 1.15, 1.3, 1.5];
+
+	public static void SetTextScale(double a_scale)
+	{
+		TextScale = TextScales.Contains(a_scale) ? a_scale : 1;
+		try {
+			Files.WriteAtomic(TextSizeFile, TextScale.ToString(InvariantCulture));
+		} catch (IOException) {
+		} catch (UnauthorizedAccessException) {
+		}
+		ApplyScale();
+	}
+
+	// the "Size..." values as the theme set them (before the text size), taken each time a theme is applied
+	static Dictionary<string, double> s_sizes = [];
+
+	static void TakeSizes()
+	{
+		var res = Application.Current.Resources;
+		s_sizes = res.Keys.OfType<string>().Where(k => k.StartsWith("Size", StringComparison.Ordinal) && res[k] is double).ToDictionary(k => k, k => (double)res[k]);
+	}
+
+	// every "Size..." value the theme set, times the text size
+	static void ApplyScale()
+	{
+		var res = Application.Current.Resources;
+		foreach (var (k, d) in s_sizes) {
+			res[k] = Math.Round(d * TextScale, 1);
+		}
+	}
+
+	// Windows' high contrast switched on or off while the window is open: a player who never picked a theme follows it
+	static bool s_followHighContrast;
+
+	// Windows' colors changed (high contrast on or off, or another high-contrast theme): once WPF has taken Windows' new colors
+	// (a low-priority turn after the change), a player who never picked a theme follows high contrast, and the High contrast
+	// look takes the new colors. Nothing here may escape: it runs on the window's thread.
+	static void FollowHighContrast()
+	{
+		Microsoft.Win32.SystemEvents.UserPreferenceChanged += (_, e) => {
+			if (e.Category is not (Microsoft.Win32.UserPreferenceCategory.Color or Microsoft.Win32.UserPreferenceCategory.Accessibility or
+			    Microsoft.Win32.UserPreferenceCategory.General)) {
+				return;
+			}
+			Application.Current?.Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background, () => {
+				try {
+					if (s_followHighContrast && (SystemParameters.HighContrast ? Current != HighContrast : Current == HighContrast)) {
+						Apply(SystemParameters.HighContrast ? HighContrast : Default, false);
+					} else if (Current == HighContrast) {
+						Apply(HighContrast, false);
+					}
+					Changed?.Invoke();
+				} catch (Exception ex) when (ex is not OutOfMemoryException) {
+					Reset();
+				}
+			});
+		};
+	}
+
+	// the look changed without the player picking it (Settings shows the new one)
+	public static event Action? Changed;
+
+	// any theme applied: what a converter colored from the old one is colored again (the state colors, the message's color)
+	public static event Action? Applied;
 
 	// the template's colour names -> the window's resource keys (a brush, and the same name + "Color")
 	static readonly Dictionary<string, string> ColorKeys = new(StringComparer.Ordinal) {
@@ -67,6 +179,7 @@ public static class Theme
 	public static List<(string Name, string? File)> List()
 	{
 		var outList = new List<(string, string?)> { (Default, null) };
+		outList.AddRange(BuiltIns.Select(b => (b, (string?)null)));
 		if (!Directory.Exists(Folder)) {
 			return outList;
 		}
@@ -77,7 +190,9 @@ public static class Theme
 			try {
 				var o = JsonNode.Parse(Files.ReadSharedText(f)) as JsonObject;
 				var name = (o?["name"] as JsonObject)?["value"]?.ToString() ?? o?["name"]?.ToString();
-				outList.Add((string.IsNullOrWhiteSpace(name) || name == Default ? Path.GetFileNameWithoutExtension(f) : name, f));
+				// a theme named like a built-in look (by its name or its file name) gets "(file)" added, so both can be picked
+				var shown = string.IsNullOrWhiteSpace(name) || name == Default || BuiltIns.Contains(name) ? Path.GetFileNameWithoutExtension(f) : name;
+				outList.Add((shown == Default || BuiltIns.Contains(shown) ? shown + " (file)" : shown, f));
 			} catch (Exception e) when (e is JsonException or IOException or UnauthorizedAccessException) {
 				outList.Add((Path.GetFileNameWithoutExtension(f) + " (does not read)", f));
 			}
@@ -90,12 +205,20 @@ public static class Theme
 	public static void ApplySaved()
 	{
 		try {
-			var name = File.Exists(ChoiceFile) ? File.ReadAllText(ChoiceFile).Trim() : Default;
-			if (name != Default) {
-				Apply(name, false);
+			if (File.Exists(TextSizeFile) && double.TryParse(File.ReadAllText(TextSizeFile).Trim(), System.Globalization.NumberStyles.Float, InvariantCulture, out var scale) &&
+			    TextScales.Contains(scale)) {
+				TextScale = scale;
 			}
+			// no theme picked yet: Windows' high contrast, when it is on, is followed (and keeps being followed while unpicked)
+			s_followHighContrast = !File.Exists(ChoiceFile);
+			FollowHighContrast();
+			var name = File.Exists(ChoiceFile) ? File.ReadAllText(ChoiceFile).Trim() : SystemParameters.HighContrast ? HighContrast : Default;
+			Apply(name, false);
 		} catch (Exception e) when (e is not OutOfMemoryException) {
 			Reset();
+			// the built-in look, at the text size that was read (Settings shows it, and a later pick works from these sizes)
+			TakeSizes();
+			ApplyScale();
 		}
 	}
 
@@ -124,6 +247,9 @@ public static class Theme
 
 	static Read ReadTheme(string a_name)
 	{
+		if (BuiltIns.Contains(a_name)) {
+			return new(BuiltIn(a_name), Folder, null);
+		}
 		var file = List().FirstOrDefault(t => t.Name == a_name).File;
 		if (file == null) {
 			return new(null, null, $"no theme called \"{a_name}\" in the Themes folder - the built-in one is used");
@@ -164,7 +290,13 @@ public static class Theme
 			}
 		}
 		Current = a_name;
+		WindowFrame.PaintAll();
+		TakeSizes();
+		ApplyScale();
+		Applied?.Invoke();
 		if (a_keep) {
+			// a theme the player picked: Windows' high contrast is no longer followed
+			s_followHighContrast = false;
 			try {
 				Files.WriteAtomic(ChoiceFile, a_name);
 			} catch (IOException) {
@@ -265,6 +397,18 @@ public static class Theme
 				}
 			}
 		}
+		if (a_t["highContrastPairs"] is JsonValue hc && hc.TryGetValue<bool>(out var pairs) && pairs) {
+			// a selected or hovered row and the attention banner: Windows' highlight behind its highlight text, as Windows draws them
+			var hb = new SolidColorBrush(SystemColors.HighlightColor);
+			var ht = new SolidColorBrush(SystemColors.HighlightTextColor);
+			hb.Freeze();
+			ht.Freeze();
+			foreach (var k in new[] { "ListBoxItemSelectedBackgroundThemeBrush", "ListBoxItemSelectedBackgroundPointerOverThemeBrush", "ListBoxItemSelectedBackgroundPressedThemeBrush",
+				         "ListBoxItemBackgroundSelectedPressedThemeBrush" }) {
+				res[k] = hb;
+			}
+			res["ListBoxItemSelectedForegroundThemeBrush"] = ht;
+		}
 		if (a_t["glyphs"] is JsonObject glyphs) {
 			foreach (var key in DefaultGlyphs.Keys) {
 				if (glyphs[key]?.ToString() is { Length: > 0 and <= 4 } g) {
@@ -302,5 +446,75 @@ public static class Theme
 		if (Application.Current.ThemeMode.Value != a_mode) {
 			Application.Current.ThemeMode = new ThemeMode(a_mode);
 		}
+		// the Fluent brushes built from the accent (Accent.xaml / AccentLight.xaml), the set made for this mode's background, LAST
+		// among the merged dictionaries: WPF reads them from the last one back, so ours win over the Fluent theme's own (which
+		// takes Windows' accent - blue on most PCs)
+		var merged = Application.Current.Resources.MergedDictionaries;
+		var want = a_mode == "Light" ? "AccentLight.xaml" : "Accent.xaml";
+		var ours = merged.Where(IsAccent).ToList();
+		if (ours.Count == 1 && merged[^1] == ours[0] && AccentFile(ours[0]) == want) {
+			return;
+		}
+		foreach (var d in ours) {
+			merged.Remove(d);
+		}
+		merged.Add(new ResourceDictionary { Source = new Uri($"pack://application:,,,/{Brand.Name};component/{want}", UriKind.Absolute) });
 	}
+
+	static string AccentFile(ResourceDictionary a_d) => a_d.Source is { } s ? s.OriginalString[(s.OriginalString.LastIndexOf('/') + 1)..] : "";
+
+	static bool IsAccent(ResourceDictionary a_d) => AccentFile(a_d) is "Accent.xaml" or "AccentLight.xaml";
+
+	// the accent set in use (the offline test reads it): the file name of the last merged dictionary that is one of ours
+	public static string AccentInUse => Application.Current.Resources.MergedDictionaries.LastOrDefault(IsAccent) is { } d ? AccentFile(d) : "";
+}
+
+// Windows draws every window's title bar and border itself: each one is painted in the theme's colors (Windows 11 takes them;
+// an older Windows keeps its own frame), when a window opens and again whenever the theme changes
+public static partial class WindowFrame
+{
+	[System.Runtime.InteropServices.LibraryImport("dwmapi.dll")]
+	private static partial int DwmSetWindowAttribute(nint a_hwnd, int a_attr, ref int a_value, int a_size);
+
+	const int DarkTitle = 20;
+	const int BorderColor = 34;
+	const int CaptionColor = 35;
+	const int TitleTextColor = 36;
+
+	public static void PaintEveryWindowOnOpen() =>
+		EventManager.RegisterClassHandler(typeof(Window), FrameworkElement.LoadedEvent, new RoutedEventHandler((a_s, _) => Paint((Window)a_s)));
+
+	public static void PaintAll()
+	{
+		if (Application.Current == null) {
+			return;
+		}
+		foreach (Window w in Application.Current.Windows) {
+			Paint(w);
+		}
+	}
+
+	public static void Paint(Window a_w)
+	{
+		var hwnd = new System.Windows.Interop.WindowInteropHelper(a_w).Handle;
+		if (hwnd == 0) {
+			return;
+		}
+		var back = a_w.Background as SolidColorBrush ?? Brushes2.Get("Bg") as SolidColorBrush;
+		Set(hwnd, DarkTitle, Application.Current.ThemeMode.Value == "Light" ? 0 : 1);
+		if (back != null) {
+			Set(hwnd, CaptionColor, Ref(back.Color));
+		}
+		if (Brushes2.Get("Line") is SolidColorBrush line) {
+			Set(hwnd, BorderColor, Ref(line.Color));
+		}
+		if (Brushes2.Get("Text") is SolidColorBrush text) {
+			Set(hwnd, TitleTextColor, Ref(text.Color));
+		}
+	}
+
+	// a Windows color is 0x00BBGGRR
+	public static int Ref(Color a_c) => a_c.R | (a_c.G << 8) | (a_c.B << 16);
+
+	static void Set(nint a_hwnd, int a_attr, int a_value) => _ = DwmSetWindowAttribute(a_hwnd, a_attr, ref a_value, sizeof(int));
 }

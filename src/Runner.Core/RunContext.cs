@@ -20,6 +20,10 @@ public sealed class RunContext
 	// outputs to tick once the step's mods are put back (applied by the runner after each step)
 	public List<string> PendingEnable { get; } = [];
 	public string? CleanSaveName { get; set; }
+
+	// when this run last started its game: a crash log is that start's only if written after it (an earlier start's crash, retried
+	// since, is never named as the cause of a later close)
+	public DateTime? GameLaunched { get; set; }
 	public Dictionary<string, string> CleanSaveExtraOff { get; set; } = [];
 	public string Mo2Dir => Path.GetDirectoryName(Mo2.Exe)!;
 
@@ -120,6 +124,7 @@ public sealed class Toggle : IDisposable
 		}
 		a_ctx.Control.Close(null, a_ct);
 		_snap = a_ctx.Profile.Snapshot();
+		_oursBefore = a_ctx.Profile.OursNow();
 		if (en.Count > 0 || dis.Count > 0) {
 			a_ctx.Log.Detail($"mods for {a_label}:");
 			try {
@@ -128,10 +133,13 @@ public sealed class Toggle : IDisposable
 			} catch {
 				// half switched: the order files back byte for byte at once, as the put-back promises
 				a_ctx.Profile.Restore(_snap);
+				a_ctx.Profile.OursBack(_oursBefore);
 				throw;
 			}
 		}
 	}
+
+	readonly Dictionary<string, char>? _oursBefore;
 
 	public void Dispose()
 	{
@@ -141,7 +149,19 @@ public sealed class Toggle : IDisposable
 			_ctx.Log.Error($"could not close Mod Organizer to put the mods back after {_label}: {e.Message}");
 			throw;
 		}
+		// what the player changed in Mod Organizer while the step's switches were on (CodeRabbit on PR #24): read before the order
+		// files go back, laid back over them after, and still counted as the player's (the expectation goes back to before the
+		// step), so the run's final put-back sees and keeps it too
+		var theirs = _ctx.Profile.ChangedByOthers();
+		var marks = theirs.Count > 0 ? _ctx.Profile.PluginMarks() : [];
 		_ctx.Profile.Restore(_snap);
+		_ctx.Profile.OursBack(_oursBefore);
+		if (theirs.Count > 0) {
+			var expected = _ctx.Profile.OursNow();
+			_ctx.Log.Detail($"kept what you changed in Mod Organizer during {_label}: " + string.Join(", ", theirs.Select(p => (p.Value == '+' ? "on " : "off ") + p.Key)));
+			Runner.ReapplyTheirs(_ctx, theirs, marks);
+			_ctx.Profile.OursBack(expected);
+		}
 	}
 }
 
@@ -158,6 +178,9 @@ public static class Waits
 	// the offline tests only: a short idle limit
 	public static TimeSpan? IdleForTests { get; set; }
 
+	// how often a tool's whole window text is read for the idle rule (the tests shorten it with their idle limit)
+	public static TimeSpan ProgressEvery { get; set; } = TimeSpan.FromSeconds(30);
+
 	// a_progress: for a tool driven through its window - what its window says; a change counts as work, and so does CPU its CHILD
 	// processes use (a long patcher shows nothing new for minutes - the fourth review, M2), never the window process's own (a
 	// window drawing itself uses CPU while the tool does nothing - Synthesis sat 4 min on its main screen, 2026-10-27)
@@ -172,6 +195,10 @@ public static class Waits
 		IReadOnlyDictionary<int, TimeSpan> lastChildren = new Dictionary<int, TimeSpan>();
 		var lastBusy = sw.Elapsed;
 		var lastSample = TimeSpan.FromSeconds(-10);
+		// a window's whole text is read at most every ProgressEvery: each read makes the tool walk its own window for UI Automation
+		// (work in the tool's process), and .NET's client keeps a little of every element it made; the idle rule needs minutes,
+		// not seconds
+		var lastProgress = TimeSpan.FromSeconds(-1000);
 		while (true) {
 			a_ctx.Cancel.ThrowIfCancellationRequested();
 			if (a_poll() == Poll.Done) {
@@ -190,7 +217,14 @@ public static class Waits
 				}
 				if (alive) {
 					// a window whose text cannot be read (empty) is judged by the tool's CPU, so a working tool is never called idle
-					var seen = a_progress?.Invoke();
+					string? seen = null;
+					// at least three reads inside the idle limit, so a window that changes is never taken for an idle one
+					if (a_progress != null && sw.Elapsed - lastProgress >= TimeSpan.FromTicks(Math.Min(ProgressEvery.Ticks, idleLimit.Ticks / 3))) {
+						lastProgress = sw.Elapsed;
+						seen = a_progress();
+					} else if (a_progress != null) {
+						seen = lastSeen;
+					}
 					if (!string.IsNullOrEmpty(seen)) {
 						if (seen != lastSeen) {
 							lastSeen = seen;

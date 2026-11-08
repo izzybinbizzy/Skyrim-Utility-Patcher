@@ -9,16 +9,22 @@ public sealed partial class StepRow : Observable
 	public required string Key { get; init; }
 	public required string Name { get; init; }
 	public required string About { get; init; }
-	public bool On { get; set => Set(ref field, value); }
-	public StepState? State { get; set { if (Set(ref field, value)) OnPropertyChanged(nameof(Glyph)); } }
-	public string Usual { get; set => Set(ref field, value); } = "";
-	public string Elapsed { get; set => Set(ref field, value); } = "";
+	public bool On { get; set { if (Set(ref field, value)) OnPropertyChanged(nameof(Status)); } }
+	public StepState? State { get; set { if (Set(ref field, value)) { OnPropertyChanged(nameof(Glyph)); OnPropertyChanged(nameof(Status)); } } }
+	public string Usual { get; set { if (Set(ref field, value)) OnPropertyChanged(nameof(Status)); } } = "";
+	public string Elapsed { get; set { if (Set(ref field, value)) OnPropertyChanged(nameof(Status)); } } = "";
 	public bool IsCurrent { get; set => Set(ref field, value); }
-	public string Note { get; set => Set(ref field, value); } = "";
+	public string Note { get; set { if (Set(ref field, value)) OnPropertyChanged(nameof(Status)); } } = "";
 	public int Number { get; set => Set(ref field, value); }
 	// ticked, but left out of every run: the setup is set to a new game and this is a save step
-	public bool LeftOut { get; set => Set(ref field, value); }
+	public bool LeftOut { get; set { if (Set(ref field, value)) OnPropertyChanged(nameof(Status)); } }
+	// its last run in one line: when, how it ended, and whether its output is still current ("" = it never ran)
+	public string LastRun { get; set => Set(ref field, value); } = "";
+	public string LastKind { get; set => Set(ref field, value); } = "";
 	public bool Runs => On && !LeftOut;
+
+	// the row in words for a screen reader (the glyph and its color say it to the eye)
+	public string Status => A11y.StepStatus(On, LeftOut, State, Elapsed, Usual, Note);
 
 	public string Glyph => State switch {
 		StepState.Running => Theme.Glyph("Running"),
@@ -29,11 +35,25 @@ public sealed partial class StepRow : Observable
 		_ => "",
 	};
 
+	// a new theme: the glyph and the state's color are read again
+	public void Repaint()
+	{
+		OnPropertyChanged(nameof(State));
+		OnPropertyChanged(nameof(Glyph));
+		OnPropertyChanged(nameof(LastKind));
+	}
 }
 
-public sealed record SetupItem(string Name, string File);
+// a list row is read out by its words, never by its type's name or a file path (screen readers use the item's text)
+public sealed record SetupItem(string Name, string File)
+{
+	public override string ToString() => Name;
+}
 
-public sealed record HistoryRow(string When, string Setup, string Took, string Verdict, bool Ok, string Folder);
+public sealed record HistoryRow(string When, string Setup, string Took, string Verdict, bool Ok, string Folder)
+{
+	public override string ToString() => $"{When}, {Setup}, {(Took == "-" ? "" : Took + ", ")}{Verdict}";
+}
 
 // The dashboard's state. The window reads the run's record off disk once a second; nothing here runs a tool.
 public sealed partial class MainViewModel : Observable
@@ -44,35 +64,66 @@ public sealed partial class MainViewModel : Observable
 	public ObservableCollection<string> Issues { get; } = [];
 
 	public SetupItem? SelectedSetup { get; set { if (Set(ref field, value)) LoadSteps(); } }
-	public StepRow? SelectedStep { get; set => Set(ref field, value); }
+	public StepRow? SelectedStep { get; set { if (Set(ref field, value)) ShowLastCard(); } }
 	public bool Mo2Open { get; set { if (Set(ref field, value)) OnPropertyChanged(nameof(Mo2Text)); } }
 	public bool GameRunning { get; set { if (Set(ref field, value)) OnPropertyChanged(nameof(GameText)); } }
 	public string Mo2Text => Mo2Open ? "Mod Organizer open" : "Mod Organizer closed";
 	public string GameText => GameRunning ? "Skyrim running" : "Skyrim not running";
-	public bool IsRunning { get; set { if (Set(ref field, value)) { OnPropertyChanged(nameof(ShowProgress)); OnPropertyChanged(nameof(CanStart)); } } }
+	public bool IsRunning { get; set { if (Set(ref field, value)) { OnPropertyChanged(nameof(ShowProgress)); OnPropertyChanged(nameof(CanStart)); OnPropertyChanged(nameof(LastCardText)); OnPropertyChanged(nameof(WindowTitle)); } } }
 	// START needs a setup that reads and no run going
 	public bool CanStart => !IsRunning && Setup != null;
 	// no moving bar while the run waits for the player: nothing is working then
 	public bool ShowProgress => IsRunning && Waiting == "";
-	public string NowTitle { get; set => Set(ref field, value); } = "Ready";
+	public string NowTitle { get; set { if (Set(ref field, value)) OnPropertyChanged(nameof(WindowTitle)); } } = "Ready";
 	public string NowActivity { get; set => Set(ref field, value); } = "";
-	public double Progress { get; set => Set(ref field, value); }
-	public bool ProgressKnown { get; set => Set(ref field, value); }
+	public double Progress { get; set { if (Set(ref field, value)) OnPropertyChanged(nameof(WindowTitle)); } }
+	public bool ProgressKnown { get; set { if (Set(ref field, value)) OnPropertyChanged(nameof(WindowTitle)); } }
+	// the title bar and the taskbar button say what runs (read out on Alt+Tab, seen with the window behind the game)
+	public string WindowTitle => !IsRunning ? Brand.Name :
+		Waiting != "" ? $"Your turn in the game - {Brand.Name}" :
+		$"{NowTitle}{(ProgressKnown ? $" {Progress * 100:0}%" : "")} - {Brand.Name}";
+
+	// a new theme: every color a converter picked is picked again from the new one
+	public void Repaint()
+	{
+		OnPropertyChanged(nameof(MessageKind));
+		OnPropertyChanged(nameof(VerdictKind));
+		OnPropertyChanged(nameof(Mo2Open));
+		OnPropertyChanged(nameof(GameRunning));
+		foreach (var s in Steps) {
+			s.Repaint();
+		}
+	}
+	// the whole run's share done (steps finished + the running step's part), for the taskbar button
+	public double RunProgress { get; set => Set(ref field, value); }
+	// what the taskbar draws: the share done, at least a visible piece while it waits, all of it when it is red
+	public double TaskbarValue { get; set => Set(ref field, value); }
+	public System.Windows.Shell.TaskbarItemProgressState TaskbarState { get; set => Set(ref field, value); }
 	public string Clock { get; set => Set(ref field, value); } = "";
 	public string Left { get; set => Set(ref field, value); } = "";
 	public string Verdict { get; set => Set(ref field, value); } = "";
 	public string VerdictKind { get; set => Set(ref field, value); } = "";
-	public string Waiting { get; set { if (Set(ref field, value)) OnPropertyChanged(nameof(ShowProgress)); } } = "";
+	public string Waiting { get; set { if (Set(ref field, value)) { OnPropertyChanged(nameof(ShowProgress)); OnPropertyChanged(nameof(WindowTitle)); } } } = "";
 	public string Interrupted { get; set => Set(ref field, value); } = "";
 	public string Message { get; set => Set(ref field, value); } = "";
 	public string MessageKind { get; set => Set(ref field, value); } = "";
 	public string EstimateText { get; set => Set(ref field, value); } = "";
 	public bool StopAfterAsked { get; set => Set(ref field, value); }
+	// the LOG box shows the detailed log (every line) when ticked, else the simple step-by-step one
+	public bool DetailedLog { get; set { if (Set(ref field, value)) { _logPath = null; TailLog(); } } }
 	// the step the setup's last run stopped at ("" = nothing to run again): the "Run again from ..." button
 	public string RetryFrom { get; set { if (Set(ref field, value)) OnPropertyChanged(nameof(RetryText)); } } = "";
 	public string RetryText => RetryFrom == "" ? "" : "Run _again from " + StepCatalog.Name(RetryFrom);
 	// a queue of setups going: which one runs ("" = none)
 	public string QueueText { get; set => Set(ref field, value); } = "";
+	// his checklist 450: the picked step's last run and what it did, and the steps out of date (hidden while a run goes - the log
+	// is what matters then)
+	public string LastCardTitle { get; set => Set(ref field, value); } = "";
+	public string LastCardText => IsRunning ? "" : _lastCard;
+	string _lastCard = "";
+	string _outOfDate = "";
+	Dictionary<string, string> _lastDetail = [];
+	int _lastLoad;
 
 	public Cmd StartCommand => field ??= new(Start);
 	public Cmd StopAfterCommand => field ??= new(StopAfter);
@@ -81,6 +132,9 @@ public sealed partial class MainViewModel : Observable
 	public Cmd RestoreCommand => field ??= new(() => _ = RunRestore());
 	public Cmd CheckCommand => field ??= new(() => _ = RunCheck());
 	public Cmd RetryCommand => field ??= new(() => _ = RunRetry());
+	public Cmd CancelPowerCommand => field ??= new(CancelPower);
+	// the PC about to sleep or shut down after a run ("" = nothing pending): the banner with its Cancel button
+	public string PowerText { get; set => Set(ref field, value); } = "";
 	Task RunRestore() => Restore();
 	Task RunCheck() => Check();
 
@@ -118,6 +172,9 @@ public sealed partial class MainViewModel : Observable
 	{
 		Steps.Clear();
 		Setup = null;
+		_lastDetail = [];
+		_outOfDate = "";
+		ShowLastCard();
 		if (SelectedSetup == null) {
 			return;
 		}
@@ -137,6 +194,62 @@ public sealed partial class MainViewModel : Observable
 		MarkLeftOut();
 		Estimate();
 		LoadHistory();
+		_ = LoadLastRuns();
+	}
+
+	// each step's last run, worked out off the window's thread (old run logs and the profile's mod list are read); a newer load
+	// or another setup picked meanwhile wins
+	public async Task LoadLastRuns()
+	{
+		if (Setup is not { } setup) {
+			return;
+		}
+		var load = ++_lastLoad;
+		_lastLoaded = DateTime.UtcNow;
+		List<(LastRuns.Section Section, string Line, string Text)> got;
+		try {
+			got = await Task.Run(() => {
+				var logs = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+				return LastRuns.Build(setup, Mo2Instance.Load(setup.Mo2Exe, setup.Mo2Instance), Engine.Runs(), AppPaths.Data)
+					.Select(s => (s, LastRuns.Line(s), string.Join("\n", LastRuns.Detail(s, setup.Profile, LastRuns.LogOf(s, logs))))).ToList();
+			});
+		} catch (Exception e) {
+			// a setup whose Mod Organizer does not read (Check says more): the card says so, never an empty "never run"
+			if (load == _lastLoad && ReferenceEquals(setup, Setup)) {
+				_outOfDate = "The last runs could not be worked out: " + e.Message;
+				ShowLastCard();
+			}
+			return;
+		}
+		if (load != _lastLoad || !ReferenceEquals(setup, Setup)) {
+			return;
+		}
+		// a setup that lists a step twice shares one section between both rows (never a duplicate-key throw)
+		_lastDetail = got.GroupBy(g => g.Section.Key).ToDictionary(g => g.Key, g => g.First().Text);
+		foreach (var row in Steps) {
+			var (s, line, _) = got.FirstOrDefault(g => g.Section.Key == row.Key);
+			row.LastRun = s?.Latest == null ? "" : line;
+			row.LastKind = s == null ? "" : s.OutOfDate ? "warn" : s.Latest?.State is StepState.Failed or StepState.Stopped ? "bad" : s.Current ? "good" : "muted";
+		}
+		var stale = got.Where(g => g.Section.OutOfDate && Steps.Any(r => r.Key == g.Section.Key && r.Runs)).Select(g => StepCatalog.Name(g.Section.Key)).ToList();
+		_outOfDate = stale.Count == 0 ? "" :
+			$"Changed in Mod Organizer since they last finished: {string.Join(", ", stale)}. Run them again to bring their output up to date (right-click a step to run only it, or START for every step).";
+		ShowLastCard();
+	}
+
+	DateTime _lastLoaded = DateTime.MinValue;
+
+	// the window came back into focus (a mod may have been ticked in Mod Organizer meanwhile): at most every 10 s
+	public Task LoadLastRunsIfStale() => DateTime.UtcNow - _lastLoaded < TimeSpan.FromSeconds(10) ? Task.CompletedTask : LoadLastRuns();
+
+	void ShowLastCard()
+	{
+		var text = SelectedStep is { } r && _lastDetail.TryGetValue(r.Key, out var d) ? d : "";
+		// a card that holds only why the last runs could not be read says LAST RUNS, never OUT OF DATE over an error
+		LastCardTitle = text != "" ? "LAST RUN - " + SelectedStep!.Name.ToUpperInvariant() :
+			_outOfDate.StartsWith("The last runs could not", StringComparison.Ordinal) ? "LAST RUNS" : _outOfDate != "" ? "OUT OF DATE" : "";
+		_lastCard = _outOfDate == "" ? text : text == "" ? _outOfDate : text + "\n\n" + _outOfDate;
+		OnPropertyChanged(nameof(LastCardText));
 	}
 
 	// a new game (the dashboard's tick beside START, kept in the setup): no save of the player's to keep clean, so the clean
@@ -196,6 +309,7 @@ public sealed partial class MainViewModel : Observable
 	void ShowReady()
 	{
 		IsRunning = false;
+		TaskbarState = System.Windows.Shell.TaskbarItemProgressState.None;
 		NowTitle = "Ready";
 		var on = Steps.Count(s => s.Runs);
 		NowActivity = SelectedSetup == null ? "Make a setup first (New setup)." :
@@ -204,8 +318,9 @@ public sealed partial class MainViewModel : Observable
 
 	public void Say(string a_text, string a_kind = "")
 	{
-		Message = a_text;
+		// the kind first: a screen reader hears the message as soon as it changes, and its urgency comes from the kind
 		MessageKind = a_kind;
+		Message = a_text;
 	}
 
 	// ---------------------------------------------------------------- the live view, once a second
@@ -219,11 +334,11 @@ public sealed partial class MainViewModel : Observable
 		}
 		_polling = true;
 		try {
-			var (mo2, game, runs, queue) = await Task.Run(() => {
+			var (mo2, game, runs, queue, power) = await Task.Run(() => {
 				var runs = Engine.Runs();
-				return (Procs.Running("ModOrganizer.exe"), Mo2Control.GameImages.Any(Procs.Running), runs, QueueLook(runs));
+				return (Procs.Running("ModOrganizer.exe"), Mo2Control.GameImages.Any(Procs.Running), runs, QueueLook(runs), PowerAfter.Look(AppPaths.Data));
 			});
-			Poll(mo2, game, runs, queue);
+			Poll(mo2, game, runs, queue, power);
 		} catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception or InvalidOperationException) {
 			// a file or process that changed mid-read: the next tick reads it again
 		} finally {
@@ -234,7 +349,7 @@ public sealed partial class MainViewModel : Observable
 	public void Poll()
 	{
 		var runs = Engine.Runs();
-		Poll(Procs.Running("ModOrganizer.exe"), Mo2Control.GameImages.Any(Procs.Running), runs, QueueLook(runs));
+		Poll(Procs.Running("ModOrganizer.exe"), Mo2Control.GameImages.Any(Procs.Running), runs, QueueLook(runs), PowerAfter.Look(AppPaths.Data));
 	}
 
 	// the queue going (its line for the window), else the last queue's summary while nothing has started since it ended
@@ -260,10 +375,17 @@ public sealed partial class MainViewModel : Observable
 		return new QueueSeen(null, "");
 	}
 
-	void Poll(bool a_mo2, bool a_game, List<Journal> a_runs, QueueSeen a_queue)
+	void Poll(bool a_mo2, bool a_game, List<Journal> a_runs, QueueSeen a_queue, PowerAfter.Pending? a_power)
 	{
 		Mo2Open = a_mo2;
 		GameRunning = a_game;
+		var power = a_power;
+		var newPower = power == null ? "" :
+			$"The PC will {(power.Action == nameof(PowerAfter.Kind.Sleep) ? "go to sleep" : "shut down")} in {Math.Max(0, (int)(power.At - DateTime.Now).TotalSeconds)} s, as this setup asks after a run.";
+		if (newPower != "" && PowerText == "") {
+			Alert?.Invoke("The PC is about to " + (power!.Action == nameof(PowerAfter.Kind.Sleep) ? "sleep" : "shut down"), newPower);
+		}
+		PowerText = newPower;
 		var runs = a_runs;
 		FollowStart(runs);
 		var active = Engine.Active(runs);
@@ -278,7 +400,7 @@ public sealed partial class MainViewModel : Observable
 			ShowReady();
 			return;
 		}
-		IsRunning = _run.Unfinished && _run.OwnerAlive;
+		IsRunning = (_run.Unfinished || _run.InGameAfter) && _run.OwnerAlive;
 		RetryFrom = !IsRunning && queue == null && SelectedSetup != null && string.Equals(_run.SetupFile, SelectedSetup.File, StringComparison.OrdinalIgnoreCase) &&
 		            Retry.FromStep(_run) is { } from ? from : "";
 		StopAfterAsked = _run.StopAfterStep;
@@ -294,6 +416,17 @@ public sealed partial class MainViewModel : Observable
 		NowActivity = Waiting != "" ? "" : act;
 		ProgressKnown = cur?.Progress != null;
 		Progress = cur?.Progress ?? 0;
+		var steps = _run.Steps.Count;
+		RunProgress = steps == 0 ? 0 : Math.Clamp((_run.Steps.Count(s => s.State is StepState.Done or StepState.Skipped) + (cur?.Progress ?? 0)) / steps, 0, 1);
+		if (_lastState == RunState.Running && IsRunning == false && _run.State != RunState.Finished) {
+			_redSinceWatched = true;
+		}
+		TaskbarState = TaskbarFor(IsRunning, Waiting != "", _redSinceWatched || (_run.Unfinished && !_run.OwnerAlive));
+		TaskbarValue = TaskbarState switch {
+			System.Windows.Shell.TaskbarItemProgressState.Error => 1,
+			System.Windows.Shell.TaskbarItemProgressState.Paused => Math.Max(RunProgress, 0.1),
+			_ => RunProgress,
+		};
 		var elapsed = (_run.Ended ?? DateTime.Now) - _run.Started;
 		Clock = Long(elapsed);
 		var leftT = _run.Steps.Where(s => s.State is StepState.Pending or StepState.Running)
@@ -321,9 +454,15 @@ public sealed partial class MainViewModel : Observable
 		if (_lastState == RunState.Running && _run.State != RunState.Running) {
 			Alert?.Invoke(NowTitle, _run.Verdict);
 			LoadHistory();
+			_ = LoadLastRuns();
 		}
 		if (Waiting != "" && Waiting != _lastWaiting) {
 			Alert?.Invoke("Your turn in the game", Waiting);
+			_remindedAt = DateTime.Now;
+		} else if (Waiting != "" && ReminderDue(ReminderMinutes(_run), _remindedAt, DateTime.Now)) {
+			// his checklist 463: the same step still waits - said again, every so many minutes as the setup asks
+			Alert?.Invoke("Still your turn in the game", Waiting);
+			_remindedAt = DateTime.Now;
 		}
 		_lastWaiting = Waiting;
 		_lastState = _run.State;
@@ -331,13 +470,62 @@ public sealed partial class MainViewModel : Observable
 
 	static TimeSpan Max(TimeSpan a, TimeSpan b) => a > b ? a : b;
 
+	// set when a run this window watched ended other than finished; cleared by the next start
+	bool _redSinceWatched;
+
+	// a run going: its share done; waiting for the player: paused (yellow); a run that needs the player's look: red; else none
+	public static System.Windows.Shell.TaskbarItemProgressState TaskbarFor(bool a_running, bool a_waiting, bool a_needsLook) =>
+		a_running ? (a_waiting ? System.Windows.Shell.TaskbarItemProgressState.Paused : System.Windows.Shell.TaskbarItemProgressState.Normal) :
+		a_needsLook ? System.Windows.Shell.TaskbarItemProgressState.Error : System.Windows.Shell.TaskbarItemProgressState.None;
+	DateTime _remindedAt;
+	(string File, double Minutes)? _reminder;
+
+	// the waiting run's own setup says how often (read once per setup file, not the setup picked in the window)
+	double ReminderMinutes(Journal a_run)
+	{
+		if (_reminder is not { } r || !string.Equals(r.File, a_run.SetupFile, StringComparison.OrdinalIgnoreCase)) {
+			double min = 0;
+			try {
+				min = Setup.Num(Setup.Load(a_run.SetupFile).Root, "guidedReminderMin") ?? 0;
+			} catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException or System.Text.Json.JsonException) {
+			}
+			_reminder = r = (a_run.SetupFile, min);
+		}
+		return r.Minutes;
+	}
+
+	// a reminder is due once every a_everyMin minutes (0 or less = never)
+	public static bool ReminderDue(double a_everyMin, DateTime a_last, DateTime a_now) => a_everyMin > 0 && a_now - a_last >= TimeSpan.FromMinutes(a_everyMin);
+
+	void CancelPower()
+	{
+		try {
+			if (PowerAfter.Look(AppPaths.Data) == null) {
+				Say("Too late to cancel - Windows was already asked.", "warn");
+				return;
+			}
+			PowerAfter.Cancel(AppPaths.Data);
+			Say("Cancelled - the PC stays on.", "good");
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+			Say("Could not cancel: " + e.Message, "bad");
+		}
+	}
+
 	// the watched run's newest record (the cache re-reads it only when its file changed)
 	static Journal Fresh(List<Journal> a_runs, Journal a_j) =>
 		a_runs.FirstOrDefault(j => string.Equals(j.Folder, a_j.Folder, StringComparison.OrdinalIgnoreCase)) ?? a_j;
 
+	// a run folder's log to show: the simple one unless the detailed one is asked for, or the run is older than the simple log
+	public static string LogFile(string a_folder, bool a_detailed)
+	{
+		var simple = Path.Combine(a_folder, RunLog.SimpleName);
+		// a run from before the simple log (its steps.txt empty, or made only by a later restore) shows its detailed log
+		return !a_detailed && File.Exists(simple) && new FileInfo(simple).Length > 0 ? simple : Path.Combine(a_folder, "log.txt");
+	}
+
 	void TailLog()
 	{
-		var path = _run == null ? null : Path.Combine(_run.Folder, "log.txt");
+		var path = _run == null ? null : LogFile(_run.Folder, DetailedLog);
 		if (path != _logPath) {
 			_logPath = path;
 			_logPos = 0;
@@ -489,6 +677,7 @@ public sealed partial class MainViewModel : Observable
 			Say("Could not start: " + text, "bad");
 			return;
 		}
+		_redSinceWatched = false;
 		// the engine checks everything first and may refuse: the next looks read its run record or its refusal
 		Say("Starting - checking every tool and setting ...", "");
 		_startAsked = DateTime.Now;
@@ -609,6 +798,8 @@ public sealed partial class MainViewModel : Observable
 		if (Engine.Active() is { } j) {
 			Commands.Send(j.Folder, "stop after");
 			Say("It will stop when this step is done, and put your profile back.", "warn");
+		} else {
+			Say("No run is going.", "");
 		}
 	}
 
@@ -617,6 +808,8 @@ public sealed partial class MainViewModel : Observable
 		if (Engine.Active() is { } j) {
 			Commands.Send(j.Folder, "stop");
 			Say("Stopping now: the tool is closed and your profile put back.", "warn");
+		} else {
+			Say("No run is going.", "");
 		}
 	}
 
@@ -625,6 +818,8 @@ public sealed partial class MainViewModel : Observable
 		if (Engine.Active() is { } j) {
 			Commands.Send(j.Folder, "continue");
 			Waiting = "";
+		} else {
+			Say("No run is waiting for you.", "");
 		}
 	}
 
@@ -779,7 +974,7 @@ public sealed partial class MainViewModel : Observable
 
 	// each step's usual minutes (the old updater's own logs, 30 Sep - 26 Oct 2026) - the made-up run of the pictures only
 	internal static readonly Dictionary<string, double> DemoMinutes = new() {
-		["shaders"] = 28, ["cleansave"] = 7.5, ["wryebash"] = 3, ["synthesis"] = 1.3, ["snowfixer"] = 1, ["autoblend"] = 8, ["pgpatcher"] = 4,
+		["shaders"] = 28, ["cleansave"] = 7.5, ["wryebash"] = 3, ["synthesis"] = 1.3, ["landscapefixer"] = 9, ["pgpatcher"] = 4,
 		["xlodgen"] = 17.5, ["acmos"] = 1.5, ["grass"] = 0.8, ["treelodgen"] = 2.3, ["texgen"] = 5.5, ["dyndolod"] = 24, ["anvillod"] = 24,
 		["pandora"] = 0.5, ["playsave"] = 7,
 	};
@@ -790,6 +985,7 @@ public sealed partial class MainViewModel : Observable
 	{
 		IsRunning = true;
 		Message = "";
+		ClearLastRuns();
 		var current = a_waiting ? "cleansave" : a_frame >= 6 ? "acmos" : "xlodgen";
 		// a setup without that step shows nothing running (never another step under its text)
 		var cur = Steps.ToList().FindIndex(s => s.Key == current);
@@ -850,6 +1046,7 @@ public sealed partial class MainViewModel : Observable
 	public void DemoReady()
 	{
 		_usual = Steps.ToDictionary(s => s.Key, s => TimeSpan.FromMinutes(DemoMinutes.GetValueOrDefault(s.Key, 5)));
+		ClearLastRuns();
 		foreach (var s in Steps) {
 			s.Usual = Short(_usual[s.Key]);
 			s.State = null;
@@ -865,6 +1062,19 @@ public sealed partial class MainViewModel : Observable
 		GameRunning = false;
 		Message = "";
 		LogChanged?.Invoke("", true);
+	}
+
+	// the made-up runs of the pictures carry no last runs (a load still going is dropped)
+	void ClearLastRuns()
+	{
+		++_lastLoad;
+		_lastDetail = [];
+		_outOfDate = "";
+		foreach (var s in Steps) {
+			s.LastRun = "";
+			s.LastKind = "";
+		}
+		ShowLastCard();
 	}
 
 	// the page's pictures (--page): past runs of a made-up setup; their logs are written by the caller into each Folder

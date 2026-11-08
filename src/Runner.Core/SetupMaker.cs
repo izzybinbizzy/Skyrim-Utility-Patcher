@@ -70,11 +70,8 @@ public static class SetupMaker
 		if (ByBinary(mo2, "Synthesis.exe") is { } syn) {
 			Add("synthesis", true, new JsonObject { ["executable"] = syn.Title, ["output_mod"] = Out("Synthesis"), ["deadline_min"] = 90 });
 		}
-		if (ByBinary(mo2, "SnowFixer.exe") is { } snow) {
-			Add("snowfixer", true, new JsonObject { ["executable"] = snow.Title, ["output_mod"] = Out("Snow Fixer Output"), ["deadline_min"] = 60 });
-		}
-		if (ByBinary(mo2, "AutoBlend.exe") is { } ab) {
-			Add("autoblend", true, new JsonObject { ["executable"] = ab.Title, ["output_mod"] = Out("AutoBlend Output"), ["deadline_min"] = 60 });
+		if (ByBinary(mo2, "LandscapeFixer.exe") is { } lf) {
+			Add("landscapefixer", true, new JsonObject { ["executable"] = lf.Title, ["image"] = Path.GetFileName(lf.Binary), ["output_mod"] = Out("LandscapeFixer Output"), ["tool_writes"] = "LandscapeFixer Output", ["deadline_min"] = 60 });
 		}
 		var dyn = ByBinary(mo2, "DynDOLODx64.exe", "DynDOLOD.exe");
 		var tex = ByBinary(mo2, "TexGenx64.exe", "TexGen.exe");

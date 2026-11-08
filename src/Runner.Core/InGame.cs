@@ -48,7 +48,7 @@ public static partial class InGame
 	// the PID of a Skyrim that did not run when this was asked (the one a launch is about to start)
 	public static Func<int> FreshGamePid()
 	{
-		var old = Procs.ByImage(GameImage).Select(p => p.Id).ToHashSet();
+		var old = Procs.Pids(GameImage).ToHashSet();
 		return () => {
 			var ps = Procs.ByImage(GameImage);
 			var id = ps.Select(p => p.Id).FirstOrDefault(i => !old.Contains(i));
@@ -68,6 +68,33 @@ public static partial class InGame
 		var gog = Path.Combine(docs, "My Games", "Skyrim Special Edition GOG", "SKSE");
 		return a_mo2.GameDir.Contains("GOG", StringComparison.OrdinalIgnoreCase) && Directory.Exists(gog) ? gog :
 			Path.Combine(docs, "My Games", "Skyrim Special Edition", "SKSE");
+	}
+
+	// his checklist 470: the game closed under a step - the crash log a crash logger wrote since the run began is named (Crash Logger
+	// writes SKSE\crash-<time>.log, Trainwreck SKSE\Crashlogs\crash-<time>.log, .NET Script Framework NetScriptFramework\Crash\Crash_<time>.txt
+	// into Mod Organizer's overwrite), so the failure points at the cause instead of only saying the game went
+	public static StepFailedException GameClosed(RunContext a_ctx, string a_while) =>
+		new($"the game closed {a_while}" + CrashNote(SkseLogs(a_ctx.Setup, a_ctx.Mo2), a_ctx.Mo2.OverwriteDir, a_ctx.GameLaunched ?? a_ctx.Journal.Started));
+
+	public static string CrashNote(string a_skseLogs, string a_overwrite, DateTime a_since) =>
+		CrashLog(a_skseLogs, a_overwrite, a_since) is { } log ? $" - it crashed; its crash log: {log}" :
+			" - no crash log was written (a crash logger such as Crash Logger SSE names the cause of the next one)";
+
+	public static string? CrashLog(string a_skseLogs, string a_overwrite, DateTime a_since)
+	{
+		var found = new List<FileInfo>();
+		void Look(string a_dir, string a_pattern, SearchOption a_how)
+		{
+			try {
+				if (Directory.Exists(a_dir)) {
+					found.AddRange(new DirectoryInfo(a_dir).EnumerateFiles(a_pattern, a_how).Where(f => f.LastWriteTime >= a_since));
+				}
+			} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+			}
+		}
+		Look(a_skseLogs, "crash*.log", SearchOption.AllDirectories);
+		Look(Path.Combine(a_overwrite, "NetScriptFramework", "Crash"), "Crash*.txt", SearchOption.TopDirectoryOnly);
+		return found.OrderByDescending(f => f.LastWriteTime).FirstOrDefault()?.FullName;
 	}
 
 	// the log a shader mod writes now: the newest of the known names (Bottled Shaders renamed its log 2026-10-26)
@@ -300,7 +327,7 @@ public static partial class InGame
 		while (DateTime.UtcNow < until) {
 			a_ctx.Cancel.ThrowIfCancellationRequested();
 			if (!GameUp(a_ctx)) {
-				throw new StepFailedException("the game closed while the save settled");
+				throw GameClosed(a_ctx, "while the save settled");
 			}
 			if (DateTime.UtcNow >= nextLook) {
 				nextLook = DateTime.UtcNow.AddSeconds(5);
@@ -375,6 +402,35 @@ public static partial class InGame
 		}
 	}
 
+	// What the game shows right now, in plain words, for a step that is about to give up: this run's Windows boxes and, with
+	// DevBench, the open game menus and message box. A step never blames its own signal (a log, a cache) while something else is
+	// on screen - an unknown menu of another mod is named instead (his 2026-11-06 find: a mod's menu read as "no shader log").
+	public static string WhatTheGameShows(RunContext a_ctx, DateTime a_launched)
+	{
+		var parts = new List<string>();
+		try {
+			foreach (var b in RunBoxes(a_ctx, a_launched)) {
+				parts.Add($"a Windows box \"{b.Title}\": {(b.Text.Length > 200 ? b.Text[..200] + " ..." : b.Text)}");
+			}
+		} catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception or System.Runtime.InteropServices.COMException) {
+		}
+		try {
+			var list = a_ctx.DevBench.Call("menu", new { action = "list" }, 10);
+			var menus = (list["menus"] ?? list["open"] ?? list["openMenus"]) as JsonArray ?? [];
+			var names = menus.Select(m => m is JsonObject mo ? (mo["name"] ?? mo["menu"])?.ToString() : m?.ToString()).OfType<string>()
+				.Where(n => n is not ("" or "HUD Menu" or "Cursor Menu" or "Main Menu" or "Loading Menu" or "Fader Menu")).ToList();
+			if (names.Count > 0) {
+				parts.Add("the game's open menus: " + string.Join(", ", names));
+			}
+			if (IsTrue(list["messageBoxOpen"])) {
+				var d = a_ctx.DevBench.Call("menu", new { action = "describe" }, 10);
+				parts.Add("a game message: " + string.Join(" ", new[] { "bodyText", "text", "message" }.Select(k => d[k]?.ToString() ?? "")).Trim());
+			}
+		} catch (Exception e) when (e is HttpRequestException or TaskCanceledException or InvalidOperationException or FormatException or System.Text.Json.JsonException) {
+		}
+		return parts.Count == 0 ? "" : string.Join("; ", parts);
+	}
+
 	// the boxes of THIS run's game and of an SKSE loader started since its launch - a game the player starts is never touched
 	static List<NativeBox> RunBoxes(RunContext a_ctx, DateTime a_launched)
 	{
@@ -419,7 +475,7 @@ public static partial class InGame
 		while (sw.Elapsed < TimeSpan.FromMinutes(5)) {
 			a_ctx.Cancel.ThrowIfCancellationRequested();
 			if (!GameUp(a_ctx)) {
-				throw new StepFailedException("the game closed while the new place loaded");
+				throw GameClosed(a_ctx, "while the new place loaded");
 			}
 			try {
 				if (a_ctx.DevBench.Call("inspect", new { kind = "state" }, 10)["playerLoaded"]?.GetValue<bool>() == true &&
@@ -534,6 +590,7 @@ public static partial class InGame
 	public static bool StartAndLoad(RunContext a_ctx, string a_step, StepSettings a_s, string a_save)
 	{
 		var launched = DateTime.Now;
+		a_ctx.GameLaunched = launched;
 		LaunchGame(a_ctx, a_s);
 		var limit = TimeSpan.FromMinutes(a_s.Int("start_min", 8));
 		var sw = Stopwatch.StartNew();
@@ -544,7 +601,7 @@ public static partial class InGame
 				throw new StepFailedException($"the game (or DevBench) did not answer within {limit.TotalMinutes:0} minutes");
 			}
 			if (sw.Elapsed > TimeSpan.FromSeconds(30) && !GameUp(a_ctx)) {
-				throw new StepFailedException("the game closed while it was starting");
+				throw GameClosed(a_ctx, "while it was starting");
 			}
 			AnswerNativeBoxes(RunBoxes(a_ctx, launched), a_ctx.Log);
 			Thread.Sleep(2000);
@@ -569,7 +626,7 @@ public static partial class InGame
 		while (t.Elapsed < limit) {
 			a_ctx.Cancel.ThrowIfCancellationRequested();
 			if (!GameUp(a_ctx)) {
-				throw new StepFailedException($"the game closed while loading \"{a_save}\"");
+				throw GameClosed(a_ctx, $"while loading \"{a_save}\"");
 			}
 			try {
 				if (AnswerGameBox(a_ctx) != null) {
@@ -614,7 +671,7 @@ public static partial class InGame
 		while (sw.Elapsed < max) {
 			a_ctx.Cancel.ThrowIfCancellationRequested();
 			if (!GameUp(a_ctx)) {
-				throw new StepFailedException("the game closed while its shaders compiled");
+				throw GameClosed(a_ctx, "while its shaders compiled");
 			}
 			if (!seen && BootPassOver(logs, a_since) && !Compiling(logs, a_ctx.Mo2.OverwriteDir, a_since)) {
 				passOverSince ??= sw.Elapsed;

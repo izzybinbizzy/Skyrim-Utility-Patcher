@@ -27,9 +27,10 @@ public sealed class XLodGenStep : IStep
 			try {
 				// xLODGen writes where its -o: says - and that is in Mod Organizer's entry for it, not here: the step puts its own
 				// output folder into the arguments it starts xLODGen with (the trial of 2026-10-27 21:36 wrote into another folder)
-				var args = a_s.Str("args") ?? WithOutput(a_ctx.Mo2.Executable(a_s.Req("executable"))?.Arguments ?? "", outDir);
+				// the game MO2 runs is named whatever the arguments came from (a setup's own too), unless they name one themselves
+				var args = WithData(a_s.Str("args") ?? WithOutput(a_ctx.Mo2.Executable(a_s.Req("executable"))?.Arguments ?? "", outDir), a_ctx.Mo2.GameDir);
 				a_ctx.Log.Detail("xLODGen's arguments: " + args);
-				var proc = a_ctx.Control.RunExecutable(a_s.Req("executable"), image, args, a_ctx.Cancel);
+				using var proc = a_ctx.Control.RunExecutable(a_s.Req("executable"), image, args, a_ctx.Cancel);
 				var main = StepKit.WaitWindow(a_ctx, image, t => t.Contains("LODGen", StringComparison.Ordinal), TimeSpan.FromMinutes(10), "xLODGen's window");
 				a_ctx.Activity(Key, "xLODGen is reading the load order");
 				var opts = Find(a_ctx, main, e => Uia.Name(e) == "LODGen Options" && Uia.Type(e) == ControlType.Window, TimeSpan.FromMinutes(15), "xLODGen's options");
@@ -89,6 +90,16 @@ public sealed class XLodGenStep : IStep
 		var o = $"-o:\"{a_outDir.TrimEnd('\\')}\"";
 		var m = Regex.Match(a_args, "-o:(\"[^\"]*\"|\\S+)", RegexOptions.IgnoreCase);
 		return m.Success ? a_args[..m.Index] + o + a_args[(m.Index + m.Length)..] : (o + " " + a_args).Trim();
+	}
+
+	// xLODGen, TexGen and DynDOLOD find the game through the registry; with a game copy of Mod Organizer's own that is a folder MO2
+	// does not map ("DynDOLOD Resources SE version information not found"), so the game MO2 runs is named with -d:
+	public static string WithData(string a_args, string a_gameDir)
+	{
+		if (Regex.IsMatch(a_args, @"(^|\s)-d:", RegexOptions.IgnoreCase)) {
+			return a_args;
+		}
+		return (a_args + $" -d:\"{Path.Combine(a_gameDir, "Data")}\"").Trim();
 	}
 
 	static string LastLine(string a_text)
@@ -194,8 +205,9 @@ public sealed class AcmosStep : IStep
 		a_ctx.Activity(Key, "painting roads into the terrain LOD");
 		string body;
 		using (var desk = new HiddenDesktop()) {
-			var proc = desk.Start(cmd, toolDir);
-			a_ctx.Control.Started.Add(proc.Id);
+			using var proc = desk.Start(cmd, toolDir);
+			// the run's own, at the setup's priority like every other tool
+			a_ctx.Control.Ours(proc.Id);
 			try {
 				Waits.Exit(a_ctx, Key, proc, a_s.Deadline(60));
 			} finally {
@@ -429,7 +441,8 @@ public abstract class DynDolodFamily : IStep
 		StepKit.ParkDir(a_ctx, outDir, Tool + " output");
 		using (new Toggle(a_ctx, a_s.List("enable_during"), [.. ExtraOff(a_s), .. a_s.List("disable_during")], Tool, a_ctx.Cancel)) {
 			try {
-				var proc = a_ctx.Control.RunExecutable(a_s.Req("executable"), image, a_s.Str("args"), a_ctx.Cancel);
+				var args = XLodGenStep.WithData(a_s.Str("args") ?? a_ctx.Mo2.Executable(a_s.Req("executable"))?.Arguments ?? "", a_ctx.Mo2.GameDir);
+				using var proc = a_ctx.Control.RunExecutable(a_s.Req("executable"), image, args, a_ctx.Cancel);
 				var main = StepKit.WaitWindow(a_ctx, image, t => Regex.IsMatch(t, "^" + Tool + @" \d"), TimeSpan.FromMinutes(5), Tool + "'s window");
 				a_ctx.Activity(Key, Tool + " is reading the load order");
 				var startedRun = false;
@@ -513,6 +526,14 @@ public abstract class DynDolodFamily : IStep
 					Uia.Press(hit);
 					if (Tool == "DynDOLOD") {
 						Thread.Sleep(20000);           // it writes DynDOLOD.esm / .esp and Occlusion.esp before closing
+						return;
+					}
+					// a press can land while the box is still busy (TexGen opens its summary page then): the same question still up 10 s
+					// later is answered again
+					Thread.Sleep(10000);
+					if (Uia.Boxes(StepKit.PidsOf(a_image)()).Any(b => b.Text == box.Text)) {
+						a_ctx.Log.Detail($"{Tool}'s last question is still up - pressing again");
+						break;
 					}
 					return;
 				}

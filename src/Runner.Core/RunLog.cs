@@ -11,11 +11,13 @@ public enum Level
 	Error,
 }
 
-// One run's plain-words log (for people) and its events file (for the window). Each line is flushed at once: a run that
-// dies leaves everything up to its death on disk.
+// One run's logs and its events file (for the window). Each line is flushed at once: a run that dies leaves everything up to its
+// death on disk. Two logs (his checklist 469): log.txt, the detailed one, every line; steps.txt, the simple one, step by step in
+// plain words - each step started and done, a failure with what it means and what to do, the run's verdict.
 public sealed class RunLog : IDisposable
 {
 	readonly StreamWriter? _text;
+	readonly StreamWriter? _simple;
 	readonly StreamWriter? _events;
 	StreamWriter? _mirror;
 	readonly Lock _gate = new();
@@ -31,9 +33,20 @@ public sealed class RunLog : IDisposable
 	{
 		Directory.CreateDirectory(a_folder);
 		TextPath = Path.Combine(a_folder, "log.txt");
-		_text = Open(TextPath);
-		_events = Open(Path.Combine(a_folder, "events.jsonl"));
+		// a writer that opened is released at once when a later one cannot open (no handle left for the finalizer)
+		try {
+			_text = Open(TextPath);
+			_simple = Open(Path.Combine(a_folder, SimpleName));
+			_events = Open(Path.Combine(a_folder, "events.jsonl"));
+		} catch {
+			_simple?.Dispose();
+			_text?.Dispose();
+			throw;
+		}
 	}
+
+	// the simple log's file name in a run folder
+	public const string SimpleName = "steps.txt";
 
 	static StreamWriter Open(string a_path) =>
 		new(new FileStream(a_path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete), new UTF8Encoding(false)) { AutoFlush = true };
@@ -58,6 +71,14 @@ public sealed class RunLog : IDisposable
 		Line?.Invoke(a_text, a_level);
 	}
 
+	// a line of the simple log (the detailed log has its own wording of the same moment)
+	public void Simple(string a_text)
+	{
+		lock (_gate) {
+			_simple?.WriteLine($"{DateTime.Now:HH:mm}  {a_text}");
+		}
+	}
+
 	public void Detail(string a_text) => Say(a_text, Level.Detail);
 	public void Warn(string a_text) => Say(a_text, Level.Warn);
 	public void Error(string a_text) => Say(a_text, Level.Error);
@@ -80,6 +101,7 @@ public sealed class RunLog : IDisposable
 	public void Dispose()
 	{
 		_text?.Dispose();
+		_simple?.Dispose();
 		_events?.Dispose();
 		_mirror?.Dispose();
 	}

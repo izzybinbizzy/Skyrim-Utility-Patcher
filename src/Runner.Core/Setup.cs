@@ -128,7 +128,11 @@ public sealed class Setup
 		if (EnabledSteps.Count == 0) p.Add(Steps.Any(s => s.On) ? "only the save steps are switched on, and they are left out for a new game" : "every step is switched off");
 		var dup = Steps.GroupBy(s => s.Key).Where(g => g.Count() > 1).Select(g => g.Key).ToList();
 		if (dup.Count > 0) p.Add("a step is listed twice: " + string.Join(", ", dup));
-		var unknown = Steps.Where(s => !StepCatalog.Known(s.Key)).Select(s => s.Key).ToList();
+		// SnowFixer and AutoBlend are no longer supported: Landscape Fixer, by the same author, replaced both
+		foreach (var gone in Steps.Select(s => s.Key).Where(k => k is "snowfixer" or "autoblend").Distinct()) {
+			p.Add($"{(gone == "snowfixer" ? "SnowFixer" : "AutoBlend")} is no longer supported - Landscape Fixer replaced it: add Landscape Fixer and take this step out");
+		}
+		var unknown = Steps.Where(s => !StepCatalog.Known(s.Key) && s.Key is not "snowfixer" and not "autoblend").Select(s => s.Key).ToList();
 		if (unknown.Count > 0) p.Add("unknown step(s): " + string.Join(", ", unknown));
 		return p;
 	}

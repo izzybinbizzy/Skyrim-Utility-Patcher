@@ -21,7 +21,9 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 	public static int StartDetached(string a_commandLine, string a_cwd)
 	{
 		using var cls = new ManagementClass(@"root\cimv2", "Win32_Process", null);
-		using var startup = new ManagementClass(@"root\cimv2", "Win32_ProcessStartup", null).CreateInstance();
+		// both WMI objects released at once (each holds a COM reference into the WMI service until it is disposed)
+		using var startupClass = new ManagementClass(@"root\cimv2", "Win32_ProcessStartup", null);
+		using var startup = startupClass.CreateInstance();
 		// SW_SHOWNOACTIVATE: the window shows, but never takes the front from what the player is doing
 		startup["ShowWindow"] = (ushort)4;
 		using var inParams = cls.GetMethodParameters("Create");
@@ -62,7 +64,7 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 	}
 
 	// every tool process this run started (a tool is only ever ended by these PIDs and their children - never by its name)
-	public HashSet<int> Started { get; } = [];
+	public StartedSet Started { get; } = new();
 
 	// this setup's Mod Organizer (its exe); one whose path cannot be read (started as administrator) is counted apart
 	public List<int> Pids() => Mo2Processes(false);
@@ -131,8 +133,10 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 		return (active, stale);
 	}
 
-	// a pair compared once per (size, write time) of both files - Close() polls the downloads while it waits
+	// a pair compared once per (size, write time) of both files - Close() polls the downloads while it waits. Held to a few hundred
+	// answers (every new size or time of a download is a new key: a program open for weeks must not keep them all)
 	static readonly System.Collections.Concurrent.ConcurrentDictionary<(string, long, DateTime, DateTime), bool> s_same = new();
+	const int SameKept = 256;
 
 	static bool SameBytes(string a_a, string a_b)
 	{
@@ -140,6 +144,9 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 			FileInfo fa = new(a_a), fb = new(a_b);
 			if (fa.Length != fb.Length) {
 				return false;
+			}
+			if (s_same.Count > SameKept) {
+				s_same.Clear();
 			}
 			return s_same.GetOrAdd((a_a.ToLowerInvariant(), fa.Length, fa.LastWriteTimeUtc, fb.LastWriteTimeUtc), _ => {
 				using var x = File.OpenRead(a_a);
@@ -228,9 +235,85 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 			WaitForLeftovers(a_ct);
 			_log.Detail($"starting Mod Organizer (profile {ProfileName})");
 			_mo2LaunchedAt = DateTime.UtcNow;
-			Launch($"{Quote(Mo2.Exe)}{Instance} -p {Quote(ProfileName)}", Path.GetDirectoryName(Mo2.Exe)!);
+			_ownMo2.Add(Launch($"{Quote(Mo2.Exe)}{Instance} -p {Quote(ProfileName)}", Path.GetDirectoryName(Mo2.Exe)!));
 		}
 		WaitReady(a_ct);
+	}
+
+	// the Mod Organizer processes this run started itself - any other one is the player's (his 2026-11-06 find: "the tool keeps
+	// trying to fight you when you're doing something in mo2 even though it's running"). The player's is never closed mid-run:
+	// the run says so and waits for the player to close it (UserWait), then goes on; only the run's very first close, which the
+	// player asked for by pressing Start, may close it (AllowCloseTheirs)
+	// with their start times: a PID Windows gives the player's Mod Organizer later is never taken for the run's
+	readonly StartedSet _ownMo2 = new();
+
+	public bool AllowCloseTheirs { get; set; }
+
+	public static TimeSpan UserWait { get; set; } = TimeSpan.FromMinutes(30);
+
+	public Func<List<int>>? TheirsProbe { get; set; }
+
+	public List<int> TheirMo2()
+	{
+		if (TheirsProbe != null) {
+			return TheirsProbe();
+		}
+		var others = Pids().Where(p => !_ownMo2.SameProcess(p)).ToList();
+		if (others.Count == 0) {
+			return others;
+		}
+		// a Mod Organizer started by one of this run's own (it restarts itself, or a request it was handed starts another) is the
+		// run's too - only one with no such parent is the player's
+		var parent = new Dictionary<int, int>();
+		foreach (var (pid, par) in Procs.Snapshot()) {
+			parent[pid] = par;
+		}
+		var theirs = new List<int>();
+		foreach (var p in others) {
+			var ours = false;
+			for (int at = p, hops = 0; hops < 8 && parent.TryGetValue(at, out var up) && up != 0 && up != at; at = up, ++hops) {
+				// a real parent of ours: the very process we started, and started before this one
+				if (_ownMo2.SameProcess(up) && Procs.StartTime(up) is { } ut && Procs.StartTime(p) is { } pt && ut <= pt) {
+					ours = true;
+					break;
+				}
+			}
+			if (ours) {
+				_ownMo2.Add(p);
+			} else {
+				theirs.Add(p);
+			}
+		}
+		return theirs;
+	}
+
+	// true while the run waits for the player's own Mod Organizer to close (the window shows it)
+	public bool WaitingForPlayer { get; private set; }
+
+	void WaitForTheirs(CancellationToken a_ct)
+	{
+		var theirs = TheirMo2();
+		if (theirs.Count == 0) {
+			return;
+		}
+		_log.Warn($"Mod Organizer was opened outside this run (process {string.Join(", ", theirs)}) - it is never closed under you. " +
+			$"Close it when you are done and the run goes on by itself (it waits up to {UserWait.TotalMinutes:0} minutes; Stop ends the run safely)");
+		// the simple log (the window's default view) says it too - the wait can be long
+		_log.Simple($"Waiting for you: close the Mod Organizer you opened and the run goes on (up to {UserWait.TotalMinutes:0} minutes).");
+		WaitingForPlayer = true;
+		try {
+			var w = Stopwatch.StartNew();
+			while (TheirMo2().Count > 0) {
+				a_ct.ThrowIfCancellationRequested();
+				if (w.Elapsed > UserWait) {
+					throw new Mo2BusyException($"the Mod Organizer you opened stayed open for {UserWait.TotalMinutes:0} minutes - the run stopped here without touching it; close it, then run again from this step");
+				}
+				a_ct.WaitHandle.WaitOne(Poll);
+			}
+		} finally {
+			WaitingForPlayer = false;
+		}
+		_log.Detail("the Mod Organizer you opened is closed - the run goes on");
 	}
 
 	// A second ModOrganizer.exe ("run -e <tool>", an nxm link) hands its request to the open one, which can take it only once it
@@ -347,6 +430,13 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 		if (RunningProbe == null && Unreadable().Count > 0) {
 			throw new Mo2BusyException("a Mod Organizer runs that this program cannot read (started as administrator?) - close it yourself, then start again");
 		}
+		// (a test that fakes MO2 with RunningProbe fakes the player's copy with TheirsProbe too, or it has none)
+		if (!AllowCloseTheirs && (RunningProbe == null || TheirsProbe != null)) {
+			WaitForTheirs(a_ct);
+			if (!IsRunning()) {
+				return;
+			}
+		}
 		var waited = Stopwatch.StartNew();
 		var told = false;
 		while (true) {
@@ -370,6 +460,11 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 			a_ct.ThrowIfCancellationRequested();
 			Thread.Sleep(5000);
 		}
+		// the player may be working in the run's own Mod Organizer (one per instance - a second start lands in this one): while it
+		// is in front and touched in the last PlayerQuiet, the close waits for the player to stop (never shuts a window under them)
+		if (RunningProbe == null) {
+			WaitWhilePlayerUses(a_ct);
+		}
 		_log.Detail("closing Mod Organizer");
 		var sw = Stopwatch.StartNew();
 		var limit = a_timeout ?? TimeSpan.FromMinutes(5);
@@ -392,6 +487,36 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 		Thread.Sleep(800);
 	}
 
+	readonly HashSet<string> _leftAlone = [];
+
+	public static TimeSpan PlayerQuiet { get; set; } = TimeSpan.FromSeconds(45);
+
+	public static bool PlayerUsing(IReadOnlyCollection<int> a_mo2Pids, int a_foregroundPid, TimeSpan a_sinceInput) =>
+		a_mo2Pids.Contains(a_foregroundPid) && a_sinceInput < PlayerQuiet;
+
+	void WaitWhilePlayerUses(CancellationToken a_ct)
+	{
+		var told = false;
+		var w = Stopwatch.StartNew();
+		while (PlayerUsing(Pids(), Native.ForegroundPid(), Native.SinceLastInput())) {
+			if (!told) {
+				_log.Warn($"you are using Mod Organizer - the run closes it once you have left it alone for {PlayerQuiet.TotalSeconds:0} seconds (or switched to another window)");
+				told = true;
+			}
+			if (w.Elapsed > UserWait) {
+				throw new Mo2BusyException($"Mod Organizer was in use for {UserWait.TotalMinutes:0} minutes - the run stopped here without closing it; run again from this step when you are done");
+			}
+			a_ct.ThrowIfCancellationRequested();
+			a_ct.WaitHandle.WaitOne(TimeSpan.FromSeconds(2));
+		}
+	}
+
+	// the questions and notices Mod Organizer itself shows when it closes - every Windows language says them in its own words, so
+	// the known shapes are read by their key words in English and by MO2's own one-button notice (an OK alone)
+	public static bool CloseBox(string a_text, int a_buttons = 0) =>
+		a_buttons == 1 ||
+		System.Text.RegularExpressions.Regex.IsMatch(a_text, @"\b(quit\w*|exit\w*|clos\w*|error\w*|fail\w*|warning\w*|notification\w*)\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
 	// a box MO2 shows while closing: the downloads question is never answered Yes (Cancel, and closing stops); "programs are
 	// still running" gets Yes only when every one of them is this run's (else No - MO2 would end the player's own program); its
 	// Notifications window and its own Qt error boxes block the close - answered OK / Close
@@ -411,7 +536,16 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 				}
 				throw new Mo2BusyException($"Mod Organizer asked to end programs that are still running, among them yours ({string.Join(", ", theirs.Select(t => t.Image).Distinct())}) - answered No, left open: {Trim(box.Text)}");
 			}
-			var ok = Uia.Button(box.Element, "Yes", "OK", "Close", "Exit");
+			// only the boxes MO2 itself shows on closing are answered (a quit question, its own error / notice); any other box
+			// may be the player's own work in MO2 and is left alone - the close then waits, and names it at its limit
+			if (!CloseBox(box.Text, box.Buttons.Count)) {
+				if (_leftAlone.Add(box.Text)) {
+					_log.Warn($"Mod Organizer shows a box this run does not answer - left for you: {Trim(box.Text)}");
+				}
+				continue;
+			}
+			// a one-button notice is pressed by its only button whatever its words (a Mod Organizer in another language)
+			var ok = box.Buttons.Count == 1 ? box.Buttons[0] : Uia.Button(box.Element, "Yes", "OK", "Close", "Exit");
 			if (ok != null) {
 				_log.Detail($"Mod Organizer asked on close: {Trim(box.Text)} - {Uia.Name(ok)}");
 				Uia.Press(ok);
@@ -434,17 +568,97 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 	public Process RunExecutable(string a_title, string a_image, string? a_args, CancellationToken a_ct, TimeSpan? a_startTimeout = null)
 	{
 		Start(a_ct);
-		var old = Procs.ByImage(a_image).Select(p => p.Id).ToHashSet();
+		var old = Procs.Pids(a_image).ToHashSet();
 		if (old.Count > 0) {
 			throw new StepFailedException($"{a_image} is already running (process {string.Join(", ", old)}) - close it first");
 		}
 		_log.Detail($"running {a_title} through Mod Organizer{(string.IsNullOrEmpty(a_args) ? "" : " with " + a_args)}");
 		var cmd = $"{Quote(Mo2.Exe)}{Instance} -p {Quote(ProfileName)} run -e {Quote(a_title)}" + (string.IsNullOrEmpty(a_args) ? "" : $" -a {Quote(a_args)}");
+		var logAt = LogLength();
 		var pid = LaunchTool(cmd, () => FreshPid(a_image, old), a_startTimeout ?? TimeSpan.FromMinutes(3), a_ct) ?? throw new StepFailedException(
-			$"{a_image} did not start within {(a_startTimeout ?? TimeSpan.FromMinutes(3)).TotalMinutes:0} minutes - is MO2's executable \"{a_title}\" right?");
+			$"{a_image} did not start within {(a_startTimeout ?? TimeSpan.FromMinutes(3)).TotalMinutes:0} minutes - is MO2's executable \"{a_title}\" right?" +
+			WhatMo2Said(a_title, a_image, logAt));
 		_log.Detail($"{a_image} started (process {pid})");
-		Started.Add(pid);
+		Ours(pid);
 		return Process.GetProcessById(pid);
+	}
+
+	// his checklist 479: the tools at a lower priority (the setup's "lowerPriority") - the PC stays smooth while they work; the
+	// processes a tool starts after this take its priority with them (Windows passes below-normal on to its children)
+	public bool LowerPriority { get; set; }
+
+	public void Ours(int a_pid)
+	{
+		Started.Add(a_pid);
+		if (!LowerPriority) {
+			return;
+		}
+		try {
+			using var p = Process.GetProcessById(a_pid);
+			p.PriorityClass = ProcessPriorityClass.BelowNormal;
+		} catch (Exception e) when (e is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception) {
+			// it ended already, or Windows refused: it runs at its own priority
+		}
+	}
+
+	// Mod Organizer's own log of this session (beside its ModOrganizer.ini, in "logs")
+	string Mo2Log => Path.Combine(Path.GetDirectoryName(Mo2.IniPath)!, "logs", "mo_interface.log");
+
+	long LogLength()
+	{
+		try {
+			return File.Exists(Mo2Log) ? new FileInfo(Mo2Log).Length : 0;
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+			return 0;
+		}
+	}
+
+	// a tool Mod Organizer was asked to start never appeared: what Mod Organizer shows (any window beside its main one) and what it
+	// wrote in its log since the request, so the failure says why instead of only that (2026-11-07: Landscape Fixer's start went
+	// unanswered, and by the time anyone looked Mod Organizer had rotated its logs away)
+	string WhatMo2Said(string a_title, string a_image, long a_logFrom)
+	{
+		var parts = new List<string>();
+		try {
+			var main = MainWindow();
+			foreach (var h in Native.TopWindowsOf(Pids()).Where(h => h != main)) {
+				var text = Uia.FromHandle(h) is { } e ? Uia.TextOf(e, 300) : "";
+				var title = Native.WindowText(h);
+				if (title != "" || text != "") {
+					parts.Add($"a window \"{title}\"{(text == "" || text == title ? "" : ": " + text)}");
+				}
+			}
+		} catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) {
+		}
+		var lines = LogLinesSince(Mo2Log, a_logFrom, a_title, a_image);
+		return (parts.Count > 0 ? " Mod Organizer shows " + string.Join("; ", parts) + "." : " Mod Organizer shows no box.") +
+			(lines.Count > 0 ? " Its log since the request: " + string.Join(" | ", lines) : "");
+	}
+
+	// the lines a log gained after a_from (the whole log when it was started again meanwhile) that name the tool or are a warning /
+	// error of Mod Organizer's - at most a_max, newest last
+	public static List<string> LogLinesSince(string a_file, long a_from, string a_title, string a_image, int a_max = 6)
+	{
+		try {
+			if (!File.Exists(a_file)) {
+				return [];
+			}
+			// only the part written since the request is read (a long session's log can be large), and at most its last 1 MB
+			using var fs = new FileStream(a_file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+			var from = a_from <= fs.Length ? a_from : 0;
+			from = Math.Max(from, fs.Length - 1024 * 1024);
+			fs.Seek(from, SeekOrigin.Begin);
+			var bytes = new byte[fs.Length - from];
+			fs.ReadExactly(bytes);
+			var text = System.Text.Encoding.UTF8.GetString(bytes);
+			var stem = Path.GetFileNameWithoutExtension(a_image);
+			return text.Split('\n').Select(l => l.TrimEnd('\r').Trim()).Where(l => l != "" &&
+				(l.Contains(a_title, StringComparison.OrdinalIgnoreCase) || l.Contains(stem, StringComparison.OrdinalIgnoreCase) ||
+				 System.Text.RegularExpressions.Regex.IsMatch(l, @"\[(E|W)\]|\b(error|warning|failed)\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase)))
+				.TakeLast(a_max).Select(l => l.Length > 240 ? l[..240] + " ..." : l).ToList();
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+			return [];
+		}
 	}
 
 	// hand MO2 one request and wait for the tool's process; a request MO2 lost (its "secondary process" box) is asked again
@@ -462,7 +676,8 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 		for (var attempt = 0; attempt < 3; ++attempt) {
 			WaitReady(a_ct);
 			_mo2LaunchedAt = DateTime.UtcNow;
-			Launch(a_cmd, Path.GetDirectoryName(Mo2.Exe)!);
+			// the second Mod Organizer that hands the request on is the run's own, never taken for the player's while it lives
+			_ownMo2.Add(Launch(a_cmd, Path.GetDirectoryName(Mo2.Exe)!));
 			var until = DateTime.UtcNow + a_limit;
 			var lost = false;
 			while (DateTime.UtcNow < until && !lost) {
@@ -564,11 +779,11 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 	public int? RunInside(string a_program, string a_args, string a_image, CancellationToken a_ct)
 	{
 		Start(a_ct);
-		var old = Procs.ByImage(a_image).Select(p => p.Id).ToHashSet();
+		var old = Procs.Pids(a_image).ToHashSet();
 		var cmd = $"{Quote(Mo2.Exe)}{Instance} -p {Quote(ProfileName)} run {Quote(a_program)} -a {Quote(a_args)}";
 		var pid = LaunchTool(cmd, () => FreshPid(a_image, old), TimeSpan.FromMinutes(1), a_ct);
 		if (pid is { } p) {
-			Started.Add(p);
+			Ours(p);
 		}
 		return pid;
 	}

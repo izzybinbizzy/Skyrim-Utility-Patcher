@@ -140,18 +140,32 @@ public static class Runner
 		using var log = new RunLog(journal.Folder);
 		log.Mirror(Path.Combine(runs, "current log.txt"));
 		using var cts = new CancellationTokenSource();
-		var commands = new Commands(journal, cts);
+		var commands = new Commands(journal, cts.Cancel);
 		var profile = new Profile(mo2, setup.Profile, () => new Mo2Control(mo2, setup.Profile, RunLog.Null).Running);
-		var control = new Mo2Control(mo2, setup.Profile, log);
+		var control = new Mo2Control(mo2, setup.Profile, log) { LowerPriority = Setup.Bool(setup.Root, "lowerPriority") == true };
 		var ctx = new RunContext {
 			Setup = setup, Mo2 = mo2, Profile = profile, Control = control, Log = log, Journal = journal, Cancel = cts.Token,
 			BackupFolder = journal.BackupDir, Guide = a_guide?.Invoke(journal) ?? new FileGuide(journal, commands.TakeContinue, commands.ClearContinue),
 		};
 		log.Say($"Skyrim Utility Patcher - {setup.Name} (profile {setup.Profile}), steps: {string.Join(", ", todo.Select(s => StepCatalog.Name(s.Key)))}");
+		log.Simple($"{setup.Name} started: {todo.Count} step(s) - {string.Join(", ", todo.Select(s => StepCatalog.Name(s.Key)))}");
 		foreach (var w in check) {
 			log.Warn($"{StepCatalog.Name(w.Step)}: {w.Text}");
+			log.Simple($"Note: {StepCatalog.Name(w.Step)}: {w.Text}");
 		}
 		Native.KeepAwake(true);
+		// Stop ends this run's own game and tools at once - only a process it started, still the same process (started after
+		// this run began - a PID can be reused), and never Mod Organizer itself (the put-back closes that the normal way)
+		commands.OnStop = () => {
+			foreach (var pid in control.Started) {
+				// the very process that was started (its start time as recorded then), never one that got its PID since
+				if (control.Started.SameProcess(pid) && Procs.StartTime(pid) is { } t && t >= journal.Started.ToUniversalTime().AddSeconds(-2) &&
+				    !Procs.Image(pid).Equals("ModOrganizer.exe", StringComparison.OrdinalIgnoreCase)) {
+					log.Warn($"Stop: ending {Procs.Image(pid)} (process {pid}), started by this run");
+					Procs.KillTree(pid);
+				}
+			}
+		};
 		commands.Start();
 		Dictionary<string, byte[]>? snap0 = null;
 		var total = Stopwatch.StartNew();
@@ -163,7 +177,15 @@ public static class Runner
 			foreach (var cmd in setup.BeforeRun) {
 				Hook(log, cmd, "before the run");
 			}
-			control.Close();
+			// the one close of an MO2 the player opened that the player asked for: pressing Start (the preview says MO2 closes);
+			// from here on an MO2 the player opens is waited for, never closed (Mo2Control.WaitForTheirs)
+			control.AllowCloseTheirs = true;
+			try {
+				// a Stop pressed while Mod Organizer is still closing ends the wait (nothing is changed yet)
+				control.Close(null, cts.Token);
+			} finally {
+				control.AllowCloseTheirs = false;
+			}
 			NoteChanges(mo2, a_req.DataDir, RunWho(journal), log);
 			BackupProfile(ctx);
 			foreach (var s in todo) {
@@ -173,6 +195,7 @@ public static class Runner
 			}
 			journal.Added = [.. profile.Added];
 			snap0 = profile.Snapshot();
+			profile.WatchForOthers();
 			journal.SaveSnapshot(snap0);
 			journal.Save();
 
@@ -209,10 +232,21 @@ public static class Runner
 			}
 			if (playsave) {
 				var ps = todo.First(t => t.Key == "playsave");
-				if (!RunStep(ctx, ps)) {
+				// still the running run to the window while its game is up (the profile is already back - nothing to restore)
+				journal.InGameAfter = true;
+				journal.Save();
+				var made = false;
+				try {
+					made = RunStep(ctx, ps);
+				} finally {
+					journal.InGameAfter = false;
+					journal.Save();
+				}
+				if (!made) {
 					control.Close();
 					journal.State = RunState.Failed;
 					journal.Verdict = $"every tool finished; the save to play was not made: {journal.Step("playsave")?.Note}";
+					log.Simple("Done, except the save to play: " + journal.Verdict);
 					SaySaves(ctx);
 					journal.Ended = DateTime.Now;
 					journal.Save();
@@ -243,15 +277,18 @@ public static class Runner
 			journal.Ended = DateTime.Now;
 			journal.Save();
 			log.Say("ALL DONE: " + journal.Verdict);
+			log.Simple("ALL DONE: " + journal.Verdict);
 			return new RunOutcome(RunState.Finished, journal.Verdict, journal.Folder);
 		} catch (Exception e) when (snap0 == null) {
-			// nothing was switched yet: the run stops with the profile untouched
-			journal.State = RunState.Failed;
-			journal.Verdict = "stopped before anything was changed: " + Plain(e);
+			// nothing was switched yet: the run stops with the profile untouched (a Stop pressed this early reads as stopped)
+			var state = commands.Stopped ? RunState.Stopped : RunState.Failed;
+			journal.State = state;
+			journal.Verdict = "stopped before anything was changed: " + (commands.Stopped ? "Stop was pressed" : Plain(e));
 			journal.Ended = DateTime.Now;
 			journal.Save();
 			log.Error(journal.Verdict);
-			return new RunOutcome(RunState.Failed, journal.Verdict, journal.Folder);
+			log.Simple("The run " + journal.Verdict + ". Nothing in Mod Organizer was changed.");
+			return new RunOutcome(state, journal.Verdict, journal.Folder);
 		} catch (Exception e) {
 			log.Error("the run stopped: " + Plain(e));
 			return Finish(ctx, snap0, commands.Stopped ? RunState.Stopped : RunState.Failed, Plain(e));
@@ -384,28 +421,77 @@ public static class Runner
 
 	static void PruneBackupsUnguarded(RunContext a_ctx)
 	{
-		var keep = Setup.Int(a_ctx.Setup.Root, "keepBackups") ?? 5;
-		var root = a_ctx.Setup.BackupDir;
-		if (keep <= 0 || root == "" || !Directory.Exists(root)) {
-			return;
+		PruneBackupsOf(a_ctx.Setup, Path.GetDirectoryName(a_ctx.Journal.Folder)!, a_ctx.BackupFolder, Setup.Int(a_ctx.Setup.Root, "keepBackups") ?? 5, a_ctx.Log);
+		PruneRunRecords(Path.GetDirectoryName(a_ctx.Journal.Folder)!, a_ctx.Journal.SetupFile, a_ctx.Journal.Folder, RunsKept, a_ctx.Log);
+	}
+
+	// the run records a setup keeps (History shows as many): the window looks at every record once a second, and a program used
+	// daily for a year would otherwise keep hundreds of folders and logs it never shows
+	public const int RunsKept = 100;
+
+	// all but the newest a_keep run records of this setup removed - never the running one, never one that did not finish (its
+	// put-back still needs it); returns the folders removed
+	public static List<string> PruneRunRecords(string a_runsDir, string a_setupFile, string? a_current, int a_keep, RunLog a_log)
+	{
+		var removed = new List<string>();
+		var mine = Journal.All(a_runsDir).Where(j => string.Equals(j.SetupFile, a_setupFile, StringComparison.OrdinalIgnoreCase)).ToList();
+		foreach (var j in mine.Skip(a_keep).Where(j => !j.Unfinished && (a_current == null || !Files.SamePath(j.Folder, a_current)))) {
+			try {
+				var d = new DirectoryInfo(j.Folder);
+				foreach (var f in d.EnumerateFiles("*", SearchOption.AllDirectories).Where(f => f.IsReadOnly)) {
+					f.IsReadOnly = false;
+				}
+				d.Delete(true);
+				removed.Add(j.Folder);
+			} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+				a_log.Warn($"an old run record could not be removed ({e.Message}): {j.Folder}");
+			}
 		}
-		var runs = Path.GetDirectoryName(a_ctx.Journal.Folder)!;
-		var needed = Journal.All(runs).Where(j => j.Unfinished && !string.IsNullOrWhiteSpace(j.BackupDir)).Select(j => Path.GetFullPath(j.BackupDir)).ToHashSet(StringComparer.OrdinalIgnoreCase);
-		needed.Add(Path.GetFullPath(a_ctx.BackupFolder));
-		var own = new System.Text.RegularExpressions.Regex(@"^\d{4}-\d\d-\d\d \d\d-\d\d-\d\d " + System.Text.RegularExpressions.Regex.Escape(a_ctx.Setup.Name) + "$");
-		var old = new DirectoryInfo(root).GetDirectories().Where(d => own.IsMatch(d.Name)).OrderByDescending(d => d.Name, StringComparer.Ordinal).Skip(keep)
-			.Where(d => !needed.Contains(d.FullName)).ToList();
-		foreach (var d in old) {
+		if (removed.Count > 0) {
+			a_log.Detail($"{removed.Count} old run record(s) removed (the newest {a_keep} of this setup are kept)");
+		}
+		return removed;
+	}
+
+	// this setup's own run backups (by the run-folder name the runner gives them), newest first, with their size in bytes
+	public static List<(DirectoryInfo Dir, long Bytes)> BackupsOf(Setup a_setup) => BackupDirsOf(a_setup).Select(d => (d, Files.SizeOf(d.FullName))).ToList();
+
+	// the same folders, newest first, without measuring them (pruning needs no sizes - a big LOD backup is never walked for it)
+	public static List<DirectoryInfo> BackupDirsOf(Setup a_setup)
+	{
+		var root = a_setup.BackupDir;
+		if (root == "" || !Directory.Exists(root)) {
+			return [];
+		}
+		var own = new System.Text.RegularExpressions.Regex(@"^\d{4}-\d\d-\d\d \d\d-\d\d-\d\d " + System.Text.RegularExpressions.Regex.Escape(a_setup.Name) + "$");
+		return new DirectoryInfo(root).GetDirectories().Where(d => own.IsMatch(d.Name)).OrderByDescending(d => d.Name, StringComparer.Ordinal).ToList();
+	}
+
+	// all but the newest a_keep of this setup's run backups removed - never the running one (a_current) or one an unfinished run
+	// still needs; returns the folders removed. Settings' "remove old backups now" calls it with the run lock held
+	public static List<string> PruneBackupsOf(Setup a_setup, string a_runsDir, string? a_current, int a_keep, RunLog a_log)
+	{
+		var removed = new List<string>();
+		if (a_keep <= 0) {
+			return removed;
+		}
+		var needed = Journal.All(a_runsDir).Where(j => j.Unfinished && !string.IsNullOrWhiteSpace(j.BackupDir)).Select(j => Path.GetFullPath(j.BackupDir)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+		if (a_current != null) {
+			needed.Add(Path.GetFullPath(a_current));
+		}
+		foreach (var d in BackupDirsOf(a_setup).Skip(a_keep).Where(b => !needed.Contains(b.FullName))) {
 			try {
 				foreach (var f in d.EnumerateFiles("*", SearchOption.AllDirectories).Where(f => f.IsReadOnly)) {
 					f.IsReadOnly = false;
 				}
 				d.Delete(true);
-				a_ctx.Log.Detail("an old run's backup removed (only the last " + keep + " are kept): " + d.Name);
+				removed.Add(d.FullName);
+				a_log.Detail("an old run's backup removed (only the last " + a_keep + " are kept): " + d.Name);
 			} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
-				a_ctx.Log.Warn($"an old run's backup could not be removed ({e.Message}): {d.FullName}");
+				a_log.Warn($"an old run's backup could not be removed ({e.Message}): {d.FullName}");
 			}
 		}
+		return removed;
 	}
 
 	// one step: run, put its parked output back if it did not finish, its built output switched on, the plugins placed
@@ -415,6 +501,7 @@ public static class Runner
 		var step = StepRegistry.For(a_s.Key);
 		a_ctx.Log.Say("");
 		a_ctx.Log.Say($"=== {StepCatalog.Name(a_s.Key)} ===");
+		a_ctx.Log.Simple($"{a_ctx.Journal.Steps.IndexOf(r) + 1}/{a_ctx.Journal.Steps.Count} {StepCatalog.Name(a_s.Key)} started");
 		r.State = StepState.Running;
 		r.Started ??= DateTime.Now;
 		r.Activity = "starting";
@@ -443,6 +530,13 @@ public static class Runner
 			r.Activity = "";
 			a_ctx.Journal.Save();
 			a_ctx.Log.Error($"{StepCatalog.Name(a_s.Key)} {(stopped ? "STOPPED" : "FAILED")}: {r.Note}");
+			var why = stopped ? null : ToolErrors.Explain(a_s.Key, r.Note);
+			if (why != null) {
+				a_ctx.Log.Warn($"what it means: {why.What} What to do: {why.Todo}{(why.Help != null ? " Help: " + why.Help : "")}");
+			}
+			foreach (var line in ToolErrors.Simple(StepCatalog.Name(a_s.Key), r.State, r.Note, why)) {
+				a_ctx.Log.Simple(line);
+			}
 			try {
 				StepKit.CloseTool(a_ctx, new StepSettings(a_s.Settings).Str("image"));
 				InGame.CloseGame(a_ctx);
@@ -470,6 +564,7 @@ public static class Runner
 		r.Progress = null;
 		a_ctx.Journal.Save();
 		a_ctx.Log.Say($"=== {StepCatalog.Name(a_s.Key)} done in {sw.Elapsed.TotalMinutes:0.0} min ===");
+		a_ctx.Log.Simple($"{StepCatalog.Name(a_s.Key)} finished in {sw.Elapsed.TotalMinutes:0.0} min");
 		return true;
 	}
 
@@ -546,6 +641,7 @@ public static class Runner
 			j.Verdict = $"the profile could NOT be put back ({Plain(e)}) - press \"Put my profile back\" once Mod Organizer can close";
 			j.Save();
 			a_ctx.Log.Error(j.Verdict);
+			a_ctx.Log.Simple("Stopped: " + j.Verdict);
 			return new RunOutcome(j.State, j.Verdict, j.Folder);
 		}
 		if (notBack.Count > 0 || filesNotBack.Count > 0) {
@@ -556,6 +652,7 @@ public static class Runner
 				" (kept off / in the backup) - press \"Put my profile back\" once the files are free";
 			j.Save();
 			a_ctx.Log.Error(j.Verdict);
+			a_ctx.Log.Simple("Stopped: " + j.Verdict);
 			return new RunOutcome(j.State, j.Verdict, j.Folder);
 		}
 		var failed = j.Steps.FirstOrDefault(r => r.State is StepState.Failed or StepState.Stopped);
@@ -569,6 +666,7 @@ public static class Runner
 			SaySaves(a_ctx);
 			j.Ended = DateTime.Now;
 			a_ctx.Log.Say(j.Verdict);
+			a_ctx.Log.Simple((a_state == RunState.Stopped ? "Stopped: " : "Failed: ") + j.Verdict);
 			// a failed or stopped run's backups are pruned too (they piled up until the next finished run - the fourth review, L7);
 			// a folder an unfinished run still names is never touched
 			j.Save();
@@ -580,16 +678,63 @@ public static class Runner
 		return new RunOutcome(j.State, j.Verdict, j.Folder);
 	}
 
+	// the player's own changes laid back over a put-back's order files: their mods ticked / unticked (a mod they installed gets its
+	// line), the plugins of a mod they ticked as they had them where they had chosen (else ticked, as Mod Organizer does), and the
+	// plugins of a mod they unticked off unless another ticked mod still provides them
+	public static void ReapplyTheirs(RunContext a_ctx, IReadOnlyDictionary<string, char> a_theirs, IReadOnlyDictionary<string, bool> a_marks)
+	{
+		var now = a_ctx.Profile.States();
+		foreach (var m in a_theirs.Keys.Where(m => !now.ContainsKey(m) && Directory.Exists(a_ctx.Mo2.ModDir(m)))) {
+			a_ctx.Profile.EnsureMod(m, a_ctx.Log);
+		}
+		var listed = a_ctx.Profile.States();
+		var on = a_theirs.Where(p => p.Value == '+' && listed.ContainsKey(p.Key)).Select(p => p.Key).ToList();
+		var off = a_theirs.Where(p => p.Value == '-' && listed.ContainsKey(p.Key)).Select(p => p.Key).ToList();
+		a_ctx.Profile.SetMods(on, off, a_ctx.Log);
+		a_ctx.Profile.ActivatePlugins(on);
+		var theirPlugins = on.SelectMany(m => Plugins.InMod(a_ctx.Mo2.ModDir(m))).ToHashSet(StringComparer.OrdinalIgnoreCase);
+		a_ctx.Profile.SetPluginMarks(a_marks.Where(p => theirPlugins.Contains(p.Key)).ToDictionary(p => p.Key, p => p.Value, StringComparer.OrdinalIgnoreCase));
+		a_ctx.Profile.DeactivatePlugins(off, true);
+	}
+
 	public static void PutBack(RunContext a_ctx, Dictionary<string, byte[]>? a_snap)
 	{
 		a_ctx.Control.Close();
+		// what the player changed in Mod Organizer while the run went on (a mod ticked, unticked or installed) is kept, never
+		// undone by the put-back - except on the mods this run owns (its outputs and the mods it replaces), which it decides
+		var own = a_ctx.Journal.Added.Concat(a_ctx.Journal.Built).Concat(a_ctx.Journal.Retire).Concat(a_ctx.Journal.Parked.Select(p => p.Mod))
+			.ToHashSet(StringComparer.OrdinalIgnoreCase);
+		var theirs = a_ctx.Profile.ChangedByOthers().Where(p => !own.Contains(p.Key)).ToDictionary(p => p.Key, p => p.Value, StringComparer.OrdinalIgnoreCase);
 		if (a_snap != null && a_snap.Count > 0) {
 			a_ctx.Log.Say("the profile as it was before the run, with this run's finished outputs on:");
 			foreach (var a in a_ctx.Journal.Added) {
 				a_ctx.Profile.Added.Add(a);
 			}
+			var before = Profile.StatesOf(a_snap);
+			// a mod the player installed during the run keeps its line (its state is set again below)
+			foreach (var m in theirs.Keys.Where(m => !before.ContainsKey(m))) {
+				a_ctx.Profile.Added.Add(m);
+			}
+			// the player's plugin ticks as they left them, read before the order files go back
+			var marks = theirs.Count > 0 ? a_ctx.Profile.PluginMarks() : [];
 			a_ctx.Profile.Restore(a_snap);
+			if (theirs.Count > 0) {
+				a_ctx.Log.Warn($"you changed {theirs.Count} mod(s) in Mod Organizer during the run - kept as you left them: " +
+					string.Join(", ", theirs.Select(p => (p.Value == '+' ? "on " : "off ") + p.Key)));
+				ReapplyTheirs(a_ctx, theirs, marks);
+			}
 		}
+		// an output left empty (its step failed, was stopped, or never ran) never stays in the mod list
+		foreach (var a in a_ctx.Journal.Added.ToList()) {
+			try {
+				if (a_ctx.Profile.TakeOutEmptyOutput(a, a_ctx.BackupFolder, a_ctx.Log)) {
+					a_ctx.Journal.Added.Remove(a);
+				}
+			} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+				a_ctx.Log.Warn($"{a}: is empty but could not be taken out ({e.Message})");
+			}
+		}
+		a_ctx.Journal.Save();
 		var st = a_ctx.Profile.States();
 		// replaced by this run for good, or its old output still in the backup (off only while it is out)
 		var retire = a_ctx.Journal.Retire.Concat(a_ctx.Journal.Parked.Where(p => !p.Replaced && !p.PutBack).Select(p => p.Mod))
@@ -625,7 +770,8 @@ public static class Runner
 		}
 		var mo2 = Mo2Instance.Load(setup.Mo2Exe, setup.Mo2Instance);
 		using var log = new RunLog(a_j.Folder);
-		var control = new Mo2Control(mo2, a_j.Profile, log);
+		// the player pressed Restore: the Mod Organizer the cut-off run left open (or their own) is closed, as Start closes it
+		var control = new Mo2Control(mo2, a_j.Profile, log) { AllowCloseTheirs = true };
 		var ctx = new RunContext {
 			Setup = setup, Mo2 = mo2, Profile = new Profile(mo2, a_j.Profile, () => control.Running), Control = control, Log = log, Journal = a_j,
 			Cancel = CancellationToken.None, BackupFolder = a_j.BackupDir,
@@ -776,14 +922,23 @@ public static class Runner
 
 // The window talks to a running run through files in its folder: "stop" (stop now, safely), "stop after" (after the running
 // step) and "continue" (the player did a guided in-game part).
-public sealed class Commands(Journal a_journal, CancellationTokenSource a_cts) : IDisposable
+// a_cancel cancels the run (the run owns its cancellation source; this only asks it). One look at a time: the next is set only
+// once the last has finished, and Dispose waits for a look still going - so a Stop can never reach a cancellation source the run
+// already let go (a throw there, on a timer thread, would end the whole program)
+public sealed class Commands(Journal a_journal, Action a_cancel) : IDisposable
 {
 	readonly Journal _j = a_journal;
-	readonly CancellationTokenSource _cts = a_cts;
+	readonly Action _cancel = a_cancel;
+	readonly Lock _gate = new();
 	Timer? _timer;
+	bool _disposed;
 	volatile bool _continue;
 
 	public bool Stopped { get; private set; }
+
+	// what a Stop does at once, beside cancelling the run: ends the game and tools this run started (his 2026-11-06 find:
+	// "the stop now button does not work" - a cancel alone waited for the step's next look, and a game kept compiling)
+	public Action? OnStop { get; set; }
 
 	public static string Dir(string a_runFolder) => Path.Combine(a_runFolder, "commands");
 
@@ -793,13 +948,24 @@ public sealed class Commands(Journal a_journal, CancellationTokenSource a_cts) :
 		Files.WriteAtomic(Path.Combine(Dir(a_runFolder), a_command + ".txt"), DateTime.Now.ToString("O"));
 	}
 
-	public void Start() => _timer = new Timer(_ => Poll(), null, 500, 500);
+	public void Start()
+	{
+		lock (_gate) {
+			_timer ??= new Timer(_ => Poll(), null, 500, Timeout.Infinite);
+		}
+	}
 
 	void Poll()
 	{
 		try {
 			PollOnce();
-		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException or ObjectDisposedException) {
+		} finally {
+			lock (_gate) {
+				if (!_disposed) {
+					_timer?.Change(500, Timeout.Infinite);
+				}
+			}
 		}
 	}
 
@@ -811,7 +977,11 @@ public sealed class Commands(Journal a_journal, CancellationTokenSource a_cts) :
 		}
 		if (File.Exists(Path.Combine(d, "stop.txt")) && !Stopped) {
 			Stopped = true;
-			_cts.Cancel();
+			_cancel();
+			try {
+				OnStop?.Invoke();
+			} catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception or IOException) {
+			}
 		}
 		if (File.Exists(Path.Combine(d, "stop after.txt")) && !_j.StopAfterStep) {
 			// no save here: this is a timer thread, and the run's own thread saves the record often
@@ -827,5 +997,27 @@ public sealed class Commands(Journal a_journal, CancellationTokenSource a_cts) :
 
 	public void ClearContinue() => _continue = false;
 
-	public void Dispose() => _timer?.Dispose();
+	public void Dispose()
+	{
+		Timer? t;
+		lock (_gate) {
+			if (_disposed) {
+				return;
+			}
+			_disposed = true;
+			t = _timer;
+			_timer = null;
+		}
+		if (t == null) {
+			return;
+		}
+		// a look still going finishes before the run lets go of what it uses. The event is released only once the timer has set it:
+		// a look still going after 10 s sets it later, and a released event there would throw on a timer thread and end the program
+#pragma warning disable CA2000
+		var done = new ManualResetEvent(false);
+#pragma warning restore CA2000
+		if (!t.Dispose(done) || done.WaitOne(TimeSpan.FromSeconds(10))) {
+			done.Dispose();
+		}
+	}
 }

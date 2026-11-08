@@ -91,7 +91,7 @@ public static class Engine
 	// every run record, newest first (read again only where a record changed)
 	public static List<Journal> Runs() => Cache.Read();
 
-	public static Journal? Active(List<Journal>? a_runs = null) => (a_runs ?? Runs()).FirstOrDefault(j => j.Unfinished && j.OwnerAlive);
+	public static Journal? Active(List<Journal>? a_runs = null) => (a_runs ?? Runs()).FirstOrDefault(j => (j.Unfinished || j.InGameAfter) && j.OwnerAlive);
 
 	public static Journal? Interrupted(List<Journal>? a_runs = null) => (a_runs ?? Runs()).FirstOrDefault(j => j.Unfinished && !j.OwnerAlive);
 
@@ -121,7 +121,10 @@ public static partial class ConsoleAttach
 	public static void ToParent()
 	{
 		if (AttachConsole(-1)) {
+			// the console owns this writer for the rest of the program's life (a command ends the process right after)
+#pragma warning disable CA2000
 			var o = new StreamWriter(Console.OpenStandardOutput()) { AutoFlush = true };
+#pragma warning restore CA2000
 			Console.SetOut(o);
 			Console.SetError(o);
 		}

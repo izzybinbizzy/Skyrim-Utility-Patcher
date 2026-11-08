@@ -61,8 +61,7 @@ public static class SettingsPanel
 		["grass"] = [("stall_min", JsonValueKind.Number, "10"), ("min_files", JsonValueKind.Number, "100")],
 		["pgpatcher"] = [("pglite_check", JsonValueKind.False, "off")],
 		["dyndolod"] = [("no_terrain_underside", JsonValueKind.False, "off"), ("preset", JsonValueKind.String, "none")],
-		["snowfixer"] = [("min_files", JsonValueKind.Number, "3")],
-		["autoblend"] = [("min_files", JsonValueKind.Number, "3")],
+		["landscapefixer"] = [("min_files", JsonValueKind.Number, "3")],
 		["synthesis"] = [("build_min", JsonValueKind.Number, "15")],
 	};
 
@@ -134,6 +133,68 @@ public static class SettingsPanel
 		a_host.Children.Add(rows);
 	}
 
+	// his checklist 478: how much room this setup's run backups take, and a clean-up to the newest few without waiting for a run
+	static void BackupsBlock(MainWindow a_w, MainViewModel a_vm, Panel a_host)
+	{
+		var setup = a_vm.Setup!;
+		var say = new TextBlock { Style = (Style)a_w.FindResource("MutedText"), TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0),
+			Text = "Measuring this setup's run backups ..." };
+		var tidy = new Button { Content = "Keep only the newest now", Style = (Style)a_w.FindResource("Ghost"), IsEnabled = false };
+		var open = new Button { Content = "Open the backups folder", Style = (Style)a_w.FindResource("Ghost"), Margin = new Thickness(8, 0, 0, 0) };
+		open.Click += (_, _) => MainViewModel.OpenFolder(setup.BackupDir);
+		static string Gb(long a_b) => a_b >= 1L << 30 ? $"{a_b / (double)(1L << 30):0.0} GB" : $"{a_b / (double)(1L << 20):0} MB";
+		async void Measure()
+		{
+			var all = await Task.Run(() => {
+				try {
+					return Runner.BackupsOf(setup);
+				} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+					return [];
+				}
+			});
+			var keep = Setup.Int(setup.Root, "keepBackups") ?? 5;
+			say.Text = all.Count == 0 ? "This setup has no run backups yet." :
+				$"This setup's run backups: {all.Count} run(s), {Gb(all.Sum(b => b.Bytes))} in all - " +
+				(keep > 0 ? $"the newest {keep} are kept after each run." : "every one is kept (Backups kept is 0).");
+			tidy.IsEnabled = keep > 0 && all.Count > keep;
+			tidy.ToolTip = $"Removes all but the newest {keep} now (the number saved above); a run's own backup and one an unfinished run needs are never touched";
+		}
+		tidy.Click += async (_, _) => {
+			var keep = Setup.Int(setup.Root, "keepBackups") ?? 5;
+			if (!Ask.Show(a_w, "Remove old backups", $"All but the newest {keep} of this setup's run backups are deleted for good (they are copies of outputs and settings " +
+			        "from runs that finished long ago). A backup an unfinished run still needs is kept.", "Remove them", "Keep them")) {
+				return;
+			}
+			tidy.IsEnabled = false;
+			try {
+				var removed = await Task.Run(() => {
+					// one at a time with runs and put-backs (the run lock, taken and given back on this thread)
+					using var hold = Runner.HoldIfFree();
+					return hold == null ? null : Runner.PruneBackupsOf(setup, AppPaths.Runs, null, keep, RunLog.Null);
+				});
+				a_vm.Say(removed == null ? "Not removed: a run or a put-back is going - try again when it is done." : $"{removed.Count} old backup(s) removed.", removed == null ? "bad" : "good");
+			} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+				// a backup folder that went away or locked part way: said, and the button can be pressed again
+				a_vm.Say("The old backups could not all be looked at: " + e.Message, "bad");
+			} finally {
+				tidy.IsEnabled = true;
+			}
+			Measure();
+		};
+		var row = new WrapPanel { Margin = new Thickness(230, -4, 0, 12) };
+		row.Children.Add(say);
+		row.Children.Add(tidy);
+		row.Children.Add(open);
+		a_host.Children.Add(row);
+		Measure();
+	}
+
+	// the page that explains a step's tool: its download page (the author's description and instructions), or for the save steps
+	// DynDOLOD's own help on the clean save
+	public static (string Url, string What)? HelpPage(string a_step) =>
+		a_step is "cleansave" or "playsave" ? ("https://dyndolod.info/Help/Clean-Save", "DynDOLOD's help on the clean save") :
+		ToolUpdates.Known.TryGetValue(a_step, out var src) ? (src.Page.Replace("?tab=files", "", StringComparison.Ordinal), "the tool's own page") : null;
+
 	static string Label(string a_key) => Labels.TryGetValue(a_key, out var l) ? l : char.ToUpperInvariant(a_key[0]) + a_key[1..].Replace('_', ' ');
 
 	public static FrameworkElement Build(MainWindow a_w, MainViewModel a_vm)
@@ -147,7 +208,21 @@ public static class SettingsPanel
 		var errors = new TextBlock { Foreground = Brushes2.Get("Bad"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 0) };
 		var apply = new List<Func<string?>>();
 
-		void Head(string a_t) => stack.Children.Add(new TextBlock { Text = a_t, Style = (Style)a_w.FindResource("H2"), Margin = new Thickness(0, 18, 0, 8) });
+		void Head(string a_t) => stack.Children.Add(new TextBlock { Text = a_t, Style = (Style)a_w.FindResource("H2"), Margin = new Thickness(0, 18, 0, 8), Tag = HeadTag });
+
+		// his checklist 475: a search over every setting (Ctrl+F while Settings is open)
+		var find = new TextBox { Margin = new Thickness(0, 0, 0, 4), ToolTip = "Ctrl+F" };
+		System.Windows.Automation.AutomationProperties.SetName(find, "Find a setting");
+		System.Windows.Automation.AutomationProperties.SetAcceleratorKey(find, "Ctrl+F");
+		var findHint = new TextBlock { Text = "Find a setting - type a word (Ctrl+F)", Style = (Style)a_w.FindResource("MutedText"), Margin = new Thickness(0, 0, 0, 6) };
+		find.TextChanged += (_, _) => {
+			var hits = Filter(stack, find.Text.Trim());
+			findHint.Text = find.Text.Trim() == "" ? "Find a setting - type a word (Ctrl+F)" : hits == 0 ? "No setting has that word." : $"{hits} setting(s) found.";
+		};
+		s_find = find;
+		var top = new StackPanel();
+		top.Children.Add(find);
+		top.Children.Add(findHint);
 
 		Head("THIS SETUP");
 		var mo2 = work["mo2"] as JsonObject ?? (JsonObject)(work["mo2"] = new JsonObject());
@@ -165,11 +240,22 @@ public static class SettingsPanel
 		Field(stack, apply, "Alert: Windows notification", alerts, "notification", JsonValueKind.True);
 		Field(stack, apply, "Alert: sound", alerts, "sound", JsonValueKind.True);
 		Field(stack, apply, "Alert: flash the taskbar button", alerts, "flash", JsonValueKind.True);
+		// his checklist 461 / 463: both optional, off unless set
+		Choice(stack, apply, "After the run, the PC", work, "afterRunPower", [("none", "stays on"), ("sleep", "goes to sleep - or hibernates, as Windows is set (a minute's notice, cancel in this window)"),
+			("shutdown", "shuts down (a minute's notice, cancel in this window)")]);
+		work["afterRunPowerOnlyFinished"] ??= true;
+		Field(stack, apply, "Only after a run that finished (a failed run keeps the PC on, so you see why)", work, "afterRunPowerOnlyFinished", JsonValueKind.True);
+		work["guidedReminderMin"] ??= 0;
+		Field(stack, apply, "Remind me while a step waits for me in the game, every (minutes; 0 = no reminders)", work, "guidedReminderMin", JsonValueKind.Number);
 		// his checklist 270 ("all 3."): the preview before a run, and only the last few runs' backups kept
 		work["previewBeforeRun"] ??= true;
 		work["keepBackups"] ??= 5;
 		Field(stack, apply, "Show what a run will do before it starts", work, "previewBeforeRun", JsonValueKind.True);
 		Field(stack, apply, "Backups kept: the last runs' (0 = all; older are deleted)", work, "keepBackups", JsonValueKind.Number);
+		BackupsBlock(a_w, a_vm, stack);
+		// his checklist 479: the tools at a lower priority, so the PC stays smooth while they work (a run may take a little longer)
+		work["lowerPriority"] ??= false;
+		Field(stack, apply, "Run the tools at a lower priority (the PC stays smoother; a run may take a little longer)", work, "lowerPriority", JsonValueKind.True);
 		Field(stack, apply, "Commands before a run (one per line, each must succeed)", work, "beforeRun", JsonValueKind.Array);
 		Field(stack, apply, "Commands after a run (one per line)", work, "afterRun", JsonValueKind.Array);
 		// History > What MO2 changed: a profile only tests use, or test mods, can be left out of the view (nothing is lost)
@@ -202,7 +288,8 @@ public static class SettingsPanel
 					// the theme in use stays listed beside the built-in one, so the picker shows what is on screen and the built-in
 					// look can still be picked (CodeRabbit on PR #4)
 					var keep = new List<(string Name, string? File)> { (Theme.Default, null) };
-					if (Theme.Current != Theme.Default) {
+					keep.AddRange(Theme.BuiltInNames.Select(b => (b, (string?)null)));
+					if (Theme.Current != Theme.Default && !Theme.BuiltInNames.Contains(Theme.Current)) {
 						keep.Add((Theme.Current, null));
 					}
 					return (keep, "The Themes folder could not be read: " + e.Message);
@@ -217,6 +304,14 @@ public static class SettingsPanel
 			filling = false;
 		}
 		FillThemes();
+		// a look changed by Windows (high contrast followed) shows in the picker while Settings is open
+		void OnChanged() => themes.Dispatcher.BeginInvoke(() => {
+			filling = true;
+			themes.SelectedItem = Theme.Current;
+			filling = false;
+		});
+		Theme.Changed += OnChanged;
+		themes.Unloaded += (_, _) => Theme.Changed -= OnChanged;
 		themes.SelectionChanged += async (_, _) => {
 			if (filling || themes.SelectedItem is not string name || name == Theme.Current) {
 				return;
@@ -233,6 +328,20 @@ public static class SettingsPanel
 		themeRow.Children.Add(reload);
 		stack.Children.Add(themeNote);
 		stack.Children.Add(themeRow);
+		// his checklist 473: bigger text for every theme, kept for the next start
+		stack.Children.Add(new TextBlock { Text = "Text size", Foreground = Brushes2.Get("Gold"), Margin = new Thickness(0, 12, 0, 4) });
+		var size = new ComboBox { MinWidth = 220, HorizontalAlignment = HorizontalAlignment.Left, ItemsSource = Theme.TextScales.Select(s => $"{s * 100:0} %").ToList(),
+			SelectedIndex = Math.Max(0, Array.IndexOf(Theme.TextScales, Theme.TextScale)) };
+		System.Windows.Automation.AutomationProperties.SetName(size, "Text size");
+		size.SelectionChanged += (_, _) => {
+			if (size.SelectedIndex >= 0) {
+				Theme.SetTextScale(Theme.TextScales[size.SelectedIndex]);
+			}
+		};
+		stack.Children.Add(size);
+		stack.Children.Add(new TextBlock { Text = "The \"High contrast\" theme takes Windows' own high-contrast colors and is used by itself while Windows has high contrast on " +
+			"and no theme was picked here. \"Color-blind safe\" keeps finished, warning and failed apart by more than red and green. Every state also has its own mark.",
+			Style = (Style)a_w.FindResource("MutedText"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 0) });
 
 		// his ask 2026-10-27: aware of a tool's updates, the download from the runner (its page, in the player's browser)
 		Head("TOOL UPDATES");
@@ -291,13 +400,32 @@ public static class SettingsPanel
 				return;
 			}
 			shown = pick.SelectedIndex;
+			// a search in force is applied again once the new step's fields are built (else they stay hidden under the old filter)
+			pick.Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background, () => {
+				if (find.Text.Trim() is { Length: > 0 } q) {
+					var hits = Filter(stack, q);
+					findHint.Text = hits == 0 ? "No setting has that word." : $"{hits} setting(s) found.";
+				}
+			});
 			stepHost.Children.Clear();
 			stepApply.Clear();
 			if (pick.SelectedIndex < 0) {
 				return;
 			}
 			var o = steps[pick.SelectedIndex]["settings"] as JsonObject ?? (JsonObject)(steps[pick.SelectedIndex]["settings"] = new JsonObject());
-			stepHost.Children.Add(new TextBlock { Text = StepCatalog.Info(Setup.Str(steps[pick.SelectedIndex], "step") ?? "").About, Style = (Style)a_w.FindResource("MutedText"), Margin = new Thickness(0, 0, 0, 10) });
+			var aboutKey = Setup.Str(steps[pick.SelectedIndex], "step") ?? "";
+			var aboutRow = new DockPanel { Margin = new Thickness(0, 0, 0, 10) };
+			// his checklist 475: help on every step - the tool's own page (its author's instructions), opened in the browser
+			if (HelpPage(aboutKey) is { } help) {
+				var page = new Button { Content = "Its own page", Style = (Style)a_w.FindResource("Ghost"), Margin = new Thickness(10, 0, 0, 0), ToolTip = help.Url,
+					VerticalAlignment = VerticalAlignment.Top };
+				System.Windows.Automation.AutomationProperties.SetHelpText(page, help.What);
+				page.Click += (_, _) => System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(help.Url) { UseShellExecute = true });
+				DockPanel.SetDock(page, Dock.Right);
+				aboutRow.Children.Add(page);
+			}
+			aboutRow.Children.Add(new TextBlock { Text = StepCatalog.Info(aboutKey).About, Style = (Style)a_w.FindResource("MutedText") });
+			stepHost.Children.Add(aboutRow);
 			foreach (var (key, val) in o.ToList()) {
 				if (key.StartsWith('_')) {
 					stepHost.Children.Add(new TextBlock { Text = val?.ToString() ?? "", Style = (Style)a_w.FindResource("MutedText"), Margin = new Thickness(0, 0, 0, 8) });
@@ -386,10 +514,22 @@ public static class SettingsPanel
 		};
 		undo.Click += (_, _) => a_w.ShowPanel("settings", true);
 		folders.Click += (_, _) => MainViewModel.OpenFolder(AppPaths.Data);
-		var bar = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 12, 0, 0) };
+		// his checklist 484: a clean removal of everything the program keeps (to the Recycle Bin, never erased)
+		var remove = new Button { Content = "Remove its data ...", Style = (Style)a_w.FindResource("Danger"), Margin = new Thickness(10, 0, 0, 0),
+			ToolTip = "Sends the program's own data and its run backups to the Recycle Bin - the mods the tools made stay in Mod Organizer" };
+		remove.Click += async (_, _) => {
+			remove.IsEnabled = false;
+			try {
+				await RemoveData(a_w, errors);
+			} finally {
+				remove.IsEnabled = true;
+			}
+		};
+		var bar = new WrapPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 12, 0, 0) };
 		bar.Children.Add(save);
 		bar.Children.Add(undo);
 		bar.Children.Add(folders);
+		bar.Children.Add(remove);
 		var where = new TextBlock { Text = "Data folder (setups, runs, backups): " + AppPaths.Data, Style = (Style)a_w.FindResource("MutedText"),
 			TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 0) };
 		var dock = new DockPanel();
@@ -399,8 +539,123 @@ public static class SettingsPanel
 		DockPanel.SetDock(errors, Dock.Bottom);
 		dock.Children.Add(bar);
 		dock.Children.Add(errors);
+		DockPanel.SetDock(top, Dock.Top);
+		dock.Children.Add(top);
 		dock.Children.Add(new ScrollViewer { Content = stack, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Padding = new Thickness(0, 0, 12, 0) });
 		return dock;
+	}
+
+	const string HeadTag = "head";
+	static TextBox? s_find;
+
+	// the window's Ctrl+F while Settings is open
+	public static void FocusFind()
+	{
+		if (s_find is { IsVisible: true } f) {
+			f.Focus();
+			f.SelectAll();
+		}
+	}
+
+	// every row whose words hold the query stays, the others fold away; a section's heading stays while it has a row left (or
+	// matches itself, then its whole section stays). Returns how many rows are shown
+	static int Filter(Panel a_stack, string a_q)
+	{
+		bool Match(string? a_t) => (a_t ?? "").Contains(a_q, StringComparison.OrdinalIgnoreCase);
+		var shown = 0;
+		TextBlock? head = null;
+		var headHit = false;
+		var rowsSince = 0;
+		void CloseSection()
+		{
+			if (head != null) {
+				head.Visibility = a_q == "" || headHit || rowsSince > 0 ? Visibility.Visible : Visibility.Collapsed;
+			}
+		}
+		foreach (var e in a_stack.Children.OfType<FrameworkElement>()) {
+			if (e is TextBlock { Tag: HeadTag } h) {
+				CloseSection();
+				head = h;
+				headHit = a_q != "" && Match(h.Text);
+				rowsSince = 0;
+				continue;
+			}
+			var hit = a_q == "" || headHit || Words(e).Any(Match);
+			e.Visibility = hit ? Visibility.Visible : Visibility.Collapsed;
+			if (hit) {
+				++rowsSince;
+				++shown;
+			}
+		}
+		CloseSection();
+		return shown;
+	}
+
+	// the words a row shows: its labels, notes, button texts, a list's items, its tip
+	static IEnumerable<string> Words(DependencyObject a_e)
+	{
+		if (a_e is FrameworkElement { ToolTip: string tip }) {
+			yield return tip;
+		}
+		switch (a_e) {
+		case TextBlock t:
+			yield return t.Text;
+			break;
+		case ContentControl { Content: string c }:
+			yield return c;
+			break;
+		case ItemsControl items:
+			foreach (var i in items.Items.OfType<object>()) {
+				yield return i.ToString() ?? "";
+			}
+			break;
+		}
+		if (a_e is Panel p) {
+			foreach (var c in p.Children.OfType<DependencyObject>()) {
+				foreach (var w in Words(c)) {
+					yield return w;
+				}
+			}
+		}
+	}
+
+	// everything the program keeps to the Recycle Bin, after a plain list of what goes and what stays; the window closes after,
+	// since the folder it writes into is gone. Refused while a run goes or one still needs its profile put back.
+	// the slow parts (listing every backup folder, recycling) run off the window's thread; the button stays off meanwhile
+	static async Task RemoveData(MainWindow a_w, TextBlock a_errors)
+	{
+		if (HasChanges && !Ask.Show(a_w, "Settings not saved", "You changed settings and did not press Save. Go on without saving them?", "Go on", "Keep editing")) {
+			return;
+		}
+		var keepSetups = Ask.Show(a_w, "Keep your setups?", "Your setups (which steps run, in which order, with which settings) can stay, so a new copy of the program " +
+			"picks them up again. Everything else the program keeps goes.", "Keep my setups", "Remove them too");
+		var plan = await Task.Run(() => DataRemoval.Make(AppPaths.Data, keepSetups));
+		if (plan.Refused != null) {
+			a_errors.Text = "Not removed: " + plan.Refused + ".";
+			return;
+		}
+		var lines = plan.Remove.Select(p => "• " + p).ToList();
+		var text = "These go to the Recycle Bin (you can bring them back from there):\n" + string.Join("\n", lines) +
+			(plan.Kept.Count > 0 ? "\n\nThese stay:\n" + string.Join("\n", plan.Kept.Select(p => "• " + p)) : "") +
+			"\n\nThe mods the tools made (the outputs) stay in Mod Organizer - they are part of your load order; remove them there if you want." +
+			"\n\nThe window closes afterwards. The program file itself stays where it is - delete it yourself when you are done.";
+		if (!Ask.Show(a_w, "Remove the program's data", text, "Send them to the Recycle Bin", "Keep everything")) {
+			return;
+		}
+		List<string> failed;
+		try {
+			failed = await Task.Run(() => DataRemoval.Carry(plan));
+		} catch (InvalidOperationException e) {
+			a_errors.Text = "Not removed: " + e.Message + ".";
+			return;
+		}
+		if (failed.Count > 0) {
+			a_errors.Text = "Some of it could not go to the Recycle Bin:\n" + string.Join("\n", failed);
+			return;
+		}
+		HasChanges = false;
+		Ask.Tell(a_w, "Removed", "The program's data is in the Recycle Bin. The window closes now.", "Close");
+		Application.Current.Shutdown();
 	}
 
 	static readonly JsonSerializerOptions Pretty = new() { WriteIndented = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
@@ -451,7 +706,7 @@ public static class SettingsPanel
 			t.TextChanged += (_, _) => Changed();
 			edit = t;
 		} else if (kind is JsonValueKind.Object or JsonValueKind.Array) {
-			var t = new TextBox { Text = cur?.ToJsonString(Pretty) ?? "", AcceptsReturn = true, MinHeight = 80, FontFamily = new System.Windows.Media.FontFamily("Cascadia Mono, Consolas"), FontSize = 12 };
+			var t = new TextBox { Text = cur?.ToJsonString(Pretty) ?? "", AcceptsReturn = true, MinHeight = 80, FontFamily = new System.Windows.Media.FontFamily("Cascadia Mono, Consolas"), FontSize = (double)Application.Current.FindResource("SizeLog") };
 			a_apply.Add(() => {
 				try {
 					a_obj[a_key] = JsonNode.Parse(t.Text);
