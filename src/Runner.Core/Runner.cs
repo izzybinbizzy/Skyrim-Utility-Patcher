@@ -281,6 +281,7 @@ public static class Runner
 			try {
 				foreach (var i in PluginPlaces.Check(profile.ActivePlugins())) {
 					log.Warn(i.Text);
+					log.Simple("Note: " + i.Text);
 				}
 			} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
 				log.Detail("the output plugins' places could not be looked at: " + e.Message);
@@ -491,6 +492,11 @@ public static class Runner
 		var needed = Journal.All(a_runsDir).Where(j => j.Unfinished && !string.IsNullOrWhiteSpace(j.BackupDir)).Select(j => Path.GetFullPath(j.BackupDir)).ToHashSet(StringComparer.OrdinalIgnoreCase);
 		if (a_current != null) {
 			needed.Add(Path.GetFullPath(a_current));
+		}
+		// the run an undo would take back: later runs that left nothing never push its backup out
+		if (Journal.All(a_runsDir).Where(j => !j.Undone && RunUndo.LeftSomething(j) && !string.IsNullOrWhiteSpace(j.BackupDir) && string.Equals(j.SetupFile, a_setup.File, StringComparison.OrdinalIgnoreCase))
+			    .OrderByDescending(j => j.Started).FirstOrDefault() is { } last) {
+			needed.Add(Path.GetFullPath(last.BackupDir));
 		}
 		foreach (var d in BackupDirsOf(a_setup).Skip(a_keep).Where(b => !needed.Contains(b.FullName))) {
 			try {
@@ -909,8 +915,18 @@ public static class Runner
 				a_j.Save();
 				log.Detail($"{p.Mod}: back as it was before this run");
 			}
+			// a mod a step changed in place (ACMOS's roads painted into a terrain LOD no step of this run rebuilt) keeps everything else it holds:
+			// only those files go back. Where a step rebuilt the mod, its park record brought the whole mod back above
+			var parkedMods = a_j.Parked.Where(p => p.Replaced && !p.IsFolder).ToList();
+			var inPlace = a_j.Kept.Where(k => k.Settled && !parkedMods.Any(p => Files.IsUnder(k.Path, p.From))).ToList();
+			foreach (var k in inPlace) {
+				if (k.Backup != null && File.Exists(k.Backup)) {
+					Files.WriteAtomic(k.Path, File.ReadAllBytes(k.Backup));
+					log.Detail($"{Path.GetFileName(k.Path)}: back as it was before this run");
+				}
+			}
 			// only what had no old output: one that had came back above, and pressed again it holds that old output
-			foreach (var m in a_j.Built.Except(a_j.Parked.Where(p => p.Replaced && !p.IsFolder).Select(p => p.Mod), StringComparer.OrdinalIgnoreCase).Where(m => Directory.Exists(mo2.ModDir(m)))) {
+			foreach (var m in a_j.Built.Except(parkedMods.Select(p => p.Mod), StringComparer.OrdinalIgnoreCase).Where(m => Directory.Exists(mo2.ModDir(m)) && !inPlace.Any(k => Files.IsUnder(k.Path, mo2.ModDir(m))))) {
 				RunUndo.SetAside(mo2.ModDir(m), aside, m);
 				log.Detail($"{m}: this run's output set aside");
 			}
@@ -941,7 +957,7 @@ public static class Runner
 		a_j.UndoTheirs = null;
 		a_j.UndoMarks = null;
 		a_j.State = RunState.Restored;
-		a_j.Verdict = "undone - your outputs and your mod and plugin lists are as they were before this run (what you changed since is kept; this run's outputs are in its backup, under \"undone\")";
+		a_j.Verdict = "undone - your outputs and your mod and plugin lists are as they were before this run (the mods you ticked, unticked or installed since stay as you left them; this run's outputs are in its backup, under \"undone\")";
 		a_j.Save();
 		log.Say(a_j.Verdict);
 		if (data != null) {

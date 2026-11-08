@@ -96,8 +96,10 @@ public static class RunUndo
 		}
 		static bool Same(string? a_a, string? a_b) => string.Equals(a_a, a_b, StringComparison.OrdinalIgnoreCase);
 		static bool SamePlace(string? a_a, string? a_b) => string.IsNullOrEmpty(a_a) || string.IsNullOrEmpty(a_b) ? string.IsNullOrEmpty(a_a) && string.IsNullOrEmpty(a_b) : Files.SamePath(a_a, a_b);
+		// a portable instance may be left unset in one setup and named in another: it is the folder beside its Mod Organizer
+		static string? Instance(Journal a_r) => string.IsNullOrEmpty(a_r.Mo2Instance) ? Path.GetDirectoryName(a_r.Mo2Exe) : a_r.Mo2Instance;
 		return Same(a_later.SetupFile, a_j.SetupFile) || a_folders.Overlaps(FoldersMoved(a_later)) ||
-			(SamePlace(a_later.Mo2Exe, a_j.Mo2Exe) && SamePlace(a_later.Mo2Instance, a_j.Mo2Instance) &&
+			(SamePlace(Instance(a_later), Instance(a_j)) &&
 			 (Same(a_later.Profile, a_j.Profile) || a_later.Built.Intersect(a_j.Built, StringComparer.OrdinalIgnoreCase).Any()));
 	}
 

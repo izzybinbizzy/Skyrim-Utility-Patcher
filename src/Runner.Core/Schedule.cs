@@ -51,16 +51,28 @@ public static class Schedule
 
 	public const string ClearedMarker = "old timed runs cleared.txt";
 
+	public const string TriedMarker = "old timed runs tried.txt";
+	public static TimeSpan TryEvery { get; set; } = TimeSpan.FromDays(1);
+
 	// once per data folder: Windows' task list can take half a minute to read, and nothing makes such a task any more. Only a clean pass
-	// leaves the marker - a list that could not be read or a task that would not go is tried again at the next start
+	// leaves the marker - a list that could not be read or a task that would not go is tried again, at most once a day (a command waits for it)
 	public static void RemoveLeftoversOnce(string a_dataDir, Func<bool>? a_sweep = null)
 	{
 		var marker = Path.Combine(a_dataDir, ClearedMarker);
-		if (File.Exists(marker) || !(a_sweep?.Invoke() ?? Sweep().Clean)) {
+		var tried = Path.Combine(a_dataDir, TriedMarker);
+		if (File.Exists(marker) || (File.Exists(tried) && DateTime.UtcNow - File.GetLastWriteTimeUtc(tried) < TryEvery)) {
 			return;
 		}
 		try {
 			Directory.CreateDirectory(a_dataDir);
+			Files.WriteAtomic(tried, DateTime.Now.ToString("O", InvariantCulture));
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+			// not kept: the next start looks again
+		}
+		if (!(a_sweep?.Invoke() ?? Sweep().Clean)) {
+			return;
+		}
+		try {
 			Files.WriteAtomic(marker, DateTime.Now.ToString("O", InvariantCulture));
 		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
 			// not kept: the next start looks again

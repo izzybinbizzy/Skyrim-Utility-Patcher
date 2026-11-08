@@ -64,7 +64,7 @@ public static class Cli
 
 	static int Help()
 	{
-		Console.WriteLine("Skyrim Utility Patcher - run | retry | queue | check | preview | lod | restore | stop | stop-after | updates | changes | import | bugreport | share   (see the readme)");
+		Console.WriteLine("Skyrim Utility Patcher - run | retry | queue | check | preview | lod | restore | undo | stop | stop-after | updates | changes | import | bugreport | share   (see the readme)");
 		return 0;
 	}
 
