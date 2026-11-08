@@ -683,7 +683,8 @@ public static class Runner
 	// plugins of a mod they unticked off unless another ticked mod still provides them
 	public static void ReapplyTheirs(RunContext a_ctx, IReadOnlyDictionary<string, char> a_theirs, IReadOnlyDictionary<string, bool> a_marks)
 	{
-		foreach (var m in a_theirs.Keys.Where(m => !a_ctx.Profile.States().ContainsKey(m) && Directory.Exists(a_ctx.Mo2.ModDir(m)))) {
+		var now = a_ctx.Profile.States();
+		foreach (var m in a_theirs.Keys.Where(m => !now.ContainsKey(m) && Directory.Exists(a_ctx.Mo2.ModDir(m)))) {
 			a_ctx.Profile.EnsureMod(m, a_ctx.Log);
 		}
 		var listed = a_ctx.Profile.States();
