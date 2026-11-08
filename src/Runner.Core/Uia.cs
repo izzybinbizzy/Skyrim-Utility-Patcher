@@ -128,7 +128,7 @@ public static class Uia
 		[.. Enumerable.Range(0, a_at.Count).OrderBy(i => a_at[i].Top).ThenBy(i => a_at[i].Left)];
 
 	// a Qt box's buttons carry neither English words nor a control id in another language, but Qt lays them out by what they do: on
-	// Windows yes / OK first, no / cancel last (QDialogButtonBox's Windows layout)
+	// Windows no / cancel last (QDialogButtonBox's Windows layout)
 	static AutomationElement? AtEnd(IReadOnlyList<AutomationElement> a_buttons, bool a_first)
 	{
 		try {
@@ -139,7 +139,6 @@ public static class Uia
 		}
 	}
 
-	public static AutomationElement? YesByPlace(IReadOnlyList<AutomationElement> a_buttons) => AtEnd(a_buttons, true);
 	public static AutomationElement? NoByPlace(IReadOnlyList<AutomationElement> a_buttons) => AtEnd(a_buttons, false);
 
 	public static List<AutomationElement> RealButtons(AutomationElement a_root) =>

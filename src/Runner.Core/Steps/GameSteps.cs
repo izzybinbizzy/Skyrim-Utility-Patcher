@@ -171,6 +171,7 @@ public sealed class GrassStep : IStep
 					InGame.NoGameRunning(a_ctx);
 					var sw = Stopwatch.StartNew();
 					a_ctx.GameLaunched = DateTime.Now;
+					QuietGame.Apply(a_ctx);
 					using var g = Process.GetProcessById(a_ctx.Control.LaunchGame(a_s.Str("launch_executable") ?? "SKSE", InGame.FreshGamePid(), a_ctx.Cancel));
 					var lastN = -1;
 					var still = Stopwatch.StartNew();
@@ -422,6 +423,7 @@ public sealed class ShaderStep : IStep
 					a_ctx.GameLaunched = DateTime.Now;
 					// shaders already in the cache came from an earlier start of this step: only new ones show THIS start works
 					var atLaunch = Files.CountFiles(owCache);
+					QuietGame.Apply(a_ctx);
 					g = Process.GetProcessById(a_ctx.Control.LaunchGame(a_s.Str("launch_executable") ?? "SKSE", InGame.FreshGamePid(), a_ctx.Cancel));
 					a_ctx.Activity("shaders", $"{a_c.ShaderMod}: the game compiles the shader cache at its main menu");
 					var sane = false;

@@ -113,13 +113,13 @@ public static class ToolProof
 			return new Result(a_look.Step, missing == "", missing == "" ? $"{tool}: what a run presses is there" : $"{tool}: {missing}");
 		} finally {
 			StepKit.CloseTool(control, image, a_log);
-			if (toolMod != null) {
-				try {
-					control.Close(null, CancellationToken.None);
+			try {
+				control.Close(null, CancellationToken.None);
+				if (toolMod != null) {
 					profile.SetMods([], [toolMod], a_log);
-				} catch (Exception e) when (e is Mo2BusyException or IOException or UnauthorizedAccessException or InvalidOperationException or KeyNotFoundException) {
-					a_log.Warn($"the mod \"{toolMod}\" could not be switched off again ({e.Message}) - untick it in Mod Organizer");
 				}
+			} catch (Exception e) when (e is Mo2BusyException or IOException or UnauthorizedAccessException or InvalidOperationException or KeyNotFoundException) {
+				a_log.Warn($"Mod Organizer could not be closed{(toolMod == null ? "" : $", so the mod \"{toolMod}\" stays on")} ({e.Message})");
 			}
 		}
 	}

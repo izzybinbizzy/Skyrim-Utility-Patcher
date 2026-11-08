@@ -468,8 +468,8 @@ public static class SettingsPanel
 				addOnNote.Text = found.Count == 0 ? "No ticked mod of this profile holds an add-on." : $"{found.Count} add-on file(s) in this profile's ticked mods.";
 				foreach (var hit in found) {
 					var row = new DockPanel { Margin = new Thickness(0, 2, 0, 2) };
-					if (hit.AddOn is { } addOn && !AddOns.InSetup(current, addOn)) {
-						var allow = new Button { Content = "Add it", Style = (Style)a_w.FindResource("Ghost"), Margin = new Thickness(8, 0, 0, 0) };
+					if (hit.AddOn is { } addOn && !AddOns.Allowed(current, addOn)) {
+						var allow = new Button { Content = AddOns.InSetup(current, addOn) ? "It changed: allow it again" : "Add it", Style = (Style)a_w.FindResource("Ghost"), Margin = new Thickness(8, 0, 0, 0) };
 						allow.Click += (_, _) => {
 							if (HasChanges) {
 								a_vm.Say("Save or undo your changes first.", "warn");

@@ -154,6 +154,8 @@ public sealed class Journal
 	// an undo began and has not ended: outputs and lists may be half way, so nothing new starts until it is pressed again (or the
 	// window's put-back, which ends it). What the player had changed is kept here - once the old list is back, it no longer shows it
 	public bool Undoing { get; set; }
+	// the run kept Mod Organizer open: after a crash it writes its older lists as it closes, so they say nothing about the player
+	public bool Mo2KeptOpen { get; set; }
 	public Dictionary<string, char>? UndoTheirs { get; set; }
 	public Dictionary<string, bool>? UndoMarks { get; set; }
 

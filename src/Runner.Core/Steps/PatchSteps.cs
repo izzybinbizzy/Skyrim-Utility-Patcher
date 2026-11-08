@@ -651,7 +651,7 @@ public sealed class GuidedToolStep(string a_key, string a_tool, string a_ask, st
 			a_ctx.Control.RunExecutable(a_s.Req("executable"), image, null, a_ctx.Cancel).Dispose();
 			a_ctx.Guide.Ask(Key, a_ask, a_ctx.Cancel);
 			var sw = System.Diagnostics.Stopwatch.StartNew();
-			while (Procs.Running(image)) {
+			while (StepKit.StartedRunning(a_ctx.Control, image).Count > 0) {
 				a_ctx.Cancel.ThrowIfCancellationRequested();
 				if (sw.Elapsed > TimeSpan.FromMinutes(2)) {
 					throw new StepFailedException($"{a_tool} is still open - close it, then start the step again");

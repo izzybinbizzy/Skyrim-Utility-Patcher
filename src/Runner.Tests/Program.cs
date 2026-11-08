@@ -4444,8 +4444,8 @@ public static class Program
 		Equal("0|1", string.Join("|", Uia.ReadingOrder([(10.0, 50.0), (10.0, 90.0)])), "a column top to bottom");
 		Check(!Mo2Control.SpeaksOther("en", "de-DE") && !Mo2Control.SpeaksOther("", "en-US"), "English by its setting, or by Windows when it has none");
 		Check(Mo2Control.SpeaksOther("de", "en-US") && Mo2Control.SpeaksOther("", "fr-FR"), "another language by its setting first");
-		Check(Mo2Control.CloseBox("Wirklich beenden?", 2, true), "a question that came after the close request");
-		Check(!Mo2Control.CloseBox("Wirklich beenden?", 2), "and not one that was open before it");
+		Check(!Mo2Control.CloseBox("Wirklich beenden?", 2), "a question it cannot read is left for the player");
+		Check(Mo2Control.IsJava("javaw.exe") && !Mo2Control.IsJava("xEdit.exe"), "Java is any Java program's");
 	}
 
 	// his checklist 439: the game's own words for its load boxes, from a game archive laid out as the game's is
@@ -4708,6 +4708,14 @@ public static class Program
 		Equal(0, step.Check(check, settings).Count(i => i.Blocking), "allowed: nothing blocks");
 		File.AppendAllText(file, " ");
 		Check(step.Check(check, settings).Single(i => i.Blocking).Text.Contains("changed since", StringComparison.Ordinal), "a file changed since is asked about again");
+		Check(AddOns.InSetup(setup, addOn) && AddOns.Allowed(setup, addOn), "the old copy was allowed");
+		var changedNow = AddOns.Find(mo2, ProfileOf(f)).Single().AddOn!;
+		Check(AddOns.InSetup(setup, changedNow) && !AddOns.Allowed(setup, changedNow), "so Settings offers it again");
+		AddOns.AddToSetup(setup.Root, changedNow, "Test");
+		Check(AddOns.Allowed(setup, changedNow), "and allowing it again takes the new file");
+		settings = new StepSettings(setup.Steps.Single(s => s.Key == addOn.Key).Settings);
+		Equal(0, step.Check(check, settings).Count(i => i.Blocking), "nothing blocks then");
+		File.AppendAllText(file, " ");
 		setup.Root[AddOns.NoAskSetting] = true;
 		Equal(0, step.Check(check, settings).Count(i => i.Blocking), "unless the player switched the question off");
 	}
@@ -4724,6 +4732,8 @@ public static class Program
 				Directory.CreateDirectory(Path.Combine(f.Overwrite, "Docs"));
 				File.WriteAllText(Path.Combine(f.Overwrite, "Docs", "log.txt"), "log");
 				File.WriteAllText(Path.Combine(f.Overwrite, mode == "good" ? "MyPatch.esp" : "Other.esp"), "plugin");
+				Directory.CreateDirectory(Path.Combine(f.Overwrite, "Root"));
+				File.WriteAllText(Path.Combine(f.Overwrite, "Root", "from the game folder.txt"), "Root Builder's");
 			}
 			AddOnStep.Collect(ctx, "synthesis", "Output A", "MyPatch.esp", before);
 			ctx.SetAfter("Output A");
@@ -4734,6 +4744,7 @@ public static class Program
 		Check(!File.Exists(Path.Combine(f.Mods, "Output A", "OutA.esp")), "the old output left it");
 		Check(!File.Exists(Path.Combine(f.Overwrite, "MyPatch.esp")), "nothing of it stays in overwrite");
 		Check(File.Exists(Path.Combine(f.Overwrite, "there before.ini")), "what was there before stays");
+		Check(File.Exists(Path.Combine(f.Overwrite, "Root", "from the game folder.txt")), "and what Root Builder cleared there is not the tool's");
 		mode = "nothing";
 		Check(Runner.Run(new RunRequest(f.SetupFile, f.Data)).Verdict.Contains("wrote nothing", StringComparison.Ordinal), "a tool that wrote nothing failed");
 		Check(File.Exists(Path.Combine(f.Mods, "Output A", "MyPatch.esp")), "and the output stays");
@@ -4788,6 +4799,13 @@ public static class Program
 				Equal("Starten", System.Windows.Automation.AutomationProperties.GetName(button), "what a screen reader says");
 				Equal("Not in the file", left.Text, "an empty translation stays English");
 				Equal("Start", bound.Text, "what a binding fills is left alone");
+				Equal("Inside|Not in the file|Start|Starts it", string.Join("|", ToolRunner.App.WindowWords.Seen(panel)), "a file made with a language in use keeps its English keys");
+				var themed = new System.Windows.Controls.TextBlock();
+				themed.SetResourceReference(System.Windows.Controls.TextBlock.TextProperty, "SomeToken");
+				themed.Resources["SomeToken"] = "Token";
+				ToolRunner.App.WindowWords.Seen(themed);
+				themed.Resources["SomeToken"] = "Another";
+				Equal("Another", themed.Text, "a theme's text still follows its resource after the walk");
 			} catch (Exception e) {
 				failed = e;
 			} finally {

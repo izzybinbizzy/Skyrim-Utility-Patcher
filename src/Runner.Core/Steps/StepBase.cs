@@ -267,25 +267,27 @@ public static class StepKit
 	// a tool left open keeps MO2 locked: its windows asked to close, then the process tree ended (by PID)
 	public static void CloseTool(RunContext a_ctx, string? a_image) => CloseTool(a_ctx.Control, a_image, a_ctx.Log);
 
+	// the processes of this image that this run started, and the children of them (a packed program runs its window in a child)
+	public static List<int> StartedRunning(Mo2Control a_control, string a_image)
+	{
+		var mine = new HashSet<int>(a_control.Started);
+		foreach (var root in a_control.Started) {
+			foreach (var c in Procs.Tree(root)) {
+				mine.Add(c);
+			}
+		}
+		var procs = Procs.ByImage(a_image);
+		var ours = procs.Select(p => p.Id).Where(mine.Contains).ToList();
+		procs.ForEach(p => p.Dispose());
+		return ours;
+	}
+
 	public static void CloseTool(Mo2Control a_control, string? a_image, RunLog a_log)
 	{
 		if (string.IsNullOrEmpty(a_image)) {
 			return;
 		}
-		// only what this run started, and the children of it (a packed program runs its window in a child)
-		List<int> Ours()
-		{
-			var mine = new HashSet<int>(a_control.Started);
-			foreach (var root in a_control.Started) {
-				foreach (var c in Procs.Tree(root)) {
-					mine.Add(c);
-				}
-			}
-			var procs = Procs.ByImage(a_image);
-			var ours = procs.Select(p => p.Id).Where(mine.Contains).ToList();
-			procs.ForEach(p => p.Dispose());
-			return ours;
-		}
+		List<int> Ours() => StartedRunning(a_control, a_image);
 		var left = Ours();
 		if (left.Count == 0) {
 			return;

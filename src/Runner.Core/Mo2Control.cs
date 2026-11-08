@@ -108,6 +108,8 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 		return outList;
 	}
 
+	public static bool IsJava(string a_image) => a_image.Equals("javaw.exe", StringComparison.OrdinalIgnoreCase) || a_image.Equals("java.exe", StringComparison.OrdinalIgnoreCase);
+
 	// this program started from Mod Organizer's Tools menu (his checklist 468) is its child, and never a program the run waits for
 	public static bool IsThisProgram(string a_image) => Journal.IsRunnerName(Path.GetFileNameWithoutExtension(a_image));
 
@@ -503,7 +505,9 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 			ReadBackIn(a_ct);
 		}
 		// his checklist 443: Mod Organizer closed before Root Builder's clear would leave its files in the game folder
-		if (RunningProbe == null && Mo2.RootBuilderBuilds && !WaitForClear(Mo2.RootBuilderDeployed, a_ct)) {
+		if (RunningProbe == null && Mo2.RootBuilderBuilds && !_rootBuilderStuck && !WaitForClear(Mo2.RootBuilderDeployed, a_ct)) {
+			// once: left over from a build the player made, it would cost this wait at every close of the run
+			_rootBuilderStuck = true;
 			_log.Warn($"Root Builder still has its files in the game folder after {RootBuilderWait.TotalMinutes:0} minutes - closing Mod Organizer all the same; it takes them out at its next start");
 		}
 		_log.Detail("closing Mod Organizer");
@@ -550,6 +554,7 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 		return true;
 	}
 
+	bool _rootBuilderStuck;
 	readonly HashSet<string> _leftAlone = [];
 	HashSet<string> _boxesBeforeClose = [];
 
@@ -580,9 +585,9 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 
 	// the questions and notices Mod Organizer itself shows when it closes - every Windows language says them in its own words, so
 	// the known shapes are read by their key words in English and by MO2's own one-button notice (an OK alone). In another language
-	// the words cannot be read, so a box that came after the close request counts as MO2's answer to it
-	public static bool CloseBox(string a_text, int a_buttons = 0, bool a_cameAfterClose = false) =>
-		a_cameAfterClose || a_buttons == 1 ||
+	// nothing else is answered Yes: its only close question is the downloads one (read off its source), told by the state below
+	public static bool CloseBox(string a_text, int a_buttons = 0) =>
+		a_buttons == 1 ||
 		System.Text.RegularExpressions.Regex.IsMatch(a_text, @"\b(quit\w*|exit\w*|clos\w*|error\w*|fail\w*|warning\w*|notification\w*)\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
 	// a box MO2 shows while closing: the downloads question is never answered Yes (Cancel, and closing stops); "programs are
@@ -616,14 +621,14 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 			}
 			// only the boxes MO2 itself shows on closing are answered (a quit question, its own error / notice); any other box
 			// may be the player's own work in MO2 and is left alone - the close then waits, and names it at its limit
-			if (!CloseBox(box.Text, box.Buttons.Count, cameAfter)) {
+			if (!CloseBox(box.Text, box.Buttons.Count)) {
 				if (_leftAlone.Add(box.Text)) {
 					_log.Warn($"Mod Organizer shows a box this run does not answer - left for you: {Trim(box.Text)}");
 				}
 				continue;
 			}
 			// a one-button notice is pressed by its only button whatever its words (a Mod Organizer in another language)
-			var ok = box.Buttons.Count == 1 ? box.Buttons[0] : Uia.Button(box.Element, "Yes", "OK", "Close", "Exit") ?? (cameAfter ? Uia.YesByPlace(box.Buttons) : null);
+			var ok = box.Buttons.Count == 1 ? box.Buttons[0] : Uia.Button(box.Element, "Yes", "OK", "Close", "Exit");
 			if (ok != null) {
 				_log.Detail($"Mod Organizer asked on close: {Trim(box.Text)} - {Uia.Name(ok)}");
 				Uia.Press(ok);
@@ -649,7 +654,8 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 	{
 		Start(a_ct);
 		var old = Procs.Pids(a_image).ToHashSet();
-		if (old.Count > 0) {
+		// (Java is any Java program's: only a new process counts as the tool, below)
+		if (old.Count > 0 && !IsJava(a_image)) {
 			throw new StepFailedException($"{a_image} is already running (process {string.Join(", ", old)}) - close it first");
 		}
 		_log.Detail($"running {a_title} through Mod Organizer{(string.IsNullOrEmpty(a_args) ? "" : " with " + a_args)}");

@@ -148,6 +148,7 @@ public static class Runner
 			CompanionOn = Setup.Bool(setup.Root, "keepMo2Open") == true && Mo2MenuEntry.Present(mo2),
 		};
 		forThisRun = control;
+		journal.Mo2KeptOpen = control.CompanionOn;
 		var ctx = new RunContext {
 			Setup = setup, Mo2 = mo2, Profile = profile, Control = control, Log = log, Journal = journal, Cancel = cts.Token,
 			BackupFolder = journal.BackupDir, Guide = a_guide?.Invoke(journal) ?? new FileGuide(journal, commands.TakeContinue, commands.ClearContinue),
@@ -812,7 +813,7 @@ public static class Runner
 		// what the cut-off run last wrote: anything else in the mod list now - changed during the run or since - is the player's,
 		// kept by the put-back as at the end of a run (an older run left no such file: nothing is kept, as before)
 		ctx.Profile.OursFile = Path.Combine(a_j.Folder, Profile.WatchFileName);
-		if (ctx.Profile.LoadOurs()) {
+		if (!a_j.Mo2KeptOpen && ctx.Profile.LoadOurs()) {
 			log.Detail("the run's own switches read back - your own changes in Mod Organizer are kept");
 		}
 		// the run folder is <data>\Runs\<run>. What changed since the last look (the cut-off run's own changes, and anything

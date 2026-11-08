@@ -156,9 +156,9 @@ public static class ToolFinder
 			using (p) {
 				return Procs.ExePath(p);
 			}
-		}).OfType<string>().Any(p => Files.SamePath(p, a_mo2.Exe));
+		}).Any(p => p == null || Files.SamePath(p, a_mo2.Exe));
 		if (running) {
-			throw new Mo2BusyException("close Mod Organizer first - it writes this list when it closes");
+			throw new Mo2BusyException("close Mod Organizer first - it writes this list when it closes (one started as administrator counts too, its path cannot be read)");
 		}
 		var taken = a_mo2.Executables.Select(e => e.Title).ToHashSet(StringComparer.OrdinalIgnoreCase);
 		var text = Files.ReadSharedText(a_mo2.IniPath);

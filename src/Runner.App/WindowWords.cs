@@ -14,6 +14,8 @@ public static class WindowWords
 	public const string English = "English";
 
 	static Dictionary<string, string> s_words = new(StringComparer.Ordinal);
+	// back from a translation to its English, so a file made with a language in use still has English keys
+	static Dictionary<string, string> s_english = new(StringComparer.Ordinal);
 
 	public static string Folder => Path.Combine(AppPaths.Data, "Languages");
 	static string PickedFile => Path.Combine(AppPaths.Data, "language.txt");
@@ -42,8 +44,14 @@ public static class WindowWords
 		Files.WriteAtomic(PickedFile, a_name);
 	}
 
-	public static void Use(IReadOnlyDictionary<string, string> a_words) =>
+	public static void Use(IReadOnlyDictionary<string, string> a_words)
+	{
 		s_words = a_words.Where(p => p.Value.Trim() != "").ToDictionary(p => p.Key, p => p.Value, StringComparer.Ordinal);
+		s_english = new(StringComparer.Ordinal);
+		foreach (var (english, word) in s_words) {
+			s_english.TryAdd(word, english);
+		}
+	}
 
 	// the words of a language file; null, with why, when it does not read
 	public static Dictionary<string, string>? Read(string a_text, out string a_problem)
@@ -82,31 +90,32 @@ public static class WindowWords
 	public static void OnEveryWindow() =>
 		EventManager.RegisterClassHandler(typeof(Window), FrameworkElement.LoadedEvent, new RoutedEventHandler((a_s, _) => Tree((Window)a_s)));
 
-	static string Word(string a_text) => s_words.TryGetValue(a_text, out var w) ? w : a_text;
-
 	// every piece of text under a_root that no binding fills: each one seen is given to a_seen, and put in the language when one is in use
 	static void Walk(DependencyObject a_root, Action<string>? a_seen)
 	{
-		string Do(string a_text)
+		// written only where a translation differs: a value set here would end a theme's resource, a style's value or a text's inlines
+		void Do(string a_text, Action<string> a_set)
 		{
-			a_seen?.Invoke(a_text);
-			return Word(a_text);
+			a_seen?.Invoke(s_english.GetValueOrDefault(a_text, a_text));
+			if (s_words.TryGetValue(a_text, out var word) && word != a_text) {
+				a_set(word);
+			}
 		}
 		bool Free(DependencyProperty a_p) => !BindingOperations.IsDataBound(a_root, a_p);
 		switch (a_root) {
 			case TextBlock t when Free(TextBlock.TextProperty) && !string.IsNullOrWhiteSpace(t.Text):
-				t.Text = Do(t.Text);
+				Do(t.Text, w => t.Text = w);
 				break;
 			case ContentControl c when Free(ContentControl.ContentProperty) && c.Content is string s && !string.IsNullOrWhiteSpace(s):
-				c.Content = Do(s);
+				Do(s, w => c.Content = w);
 				break;
 		}
 		if (a_root is FrameworkElement fe) {
 			if (Free(FrameworkElement.ToolTipProperty) && fe.ToolTip is string tip && !string.IsNullOrWhiteSpace(tip)) {
-				fe.ToolTip = Do(tip);
+				Do(tip, w => fe.ToolTip = w);
 			}
 			if (Free(AutomationProperties.NameProperty) && AutomationProperties.GetName(fe) is { Length: > 0 } name) {
-				AutomationProperties.SetName(fe, Do(name));
+				Do(name, w => AutomationProperties.SetName(fe, w));
 			}
 		}
 		foreach (var child in LogicalTreeHelper.GetChildren(a_root).OfType<DependencyObject>().ToList()) {

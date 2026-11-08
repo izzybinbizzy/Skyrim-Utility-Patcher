@@ -129,6 +129,9 @@ public static class AddOns
 
 	public static bool InSetup(Setup a_setup, AddOn a_addOn) => a_setup.Steps.Any(s => s.Key == a_addOn.Key);
 
+	// in the setup, as its file stands now
+	public static bool Allowed(Setup a_setup, AddOn a_addOn) => a_setup.Steps.Any(s => s.Key == a_addOn.Key && Setup.Str(s.Settings, "sha") == a_addOn.Hash);
+
 	// the add-on as a step of the setup, where its file says it goes (before texgen, where the LOD tools start, when it says nothing);
 	// allowed: its file's fingerprint is kept, and a file changed since is asked about again
 	public static void AddToSetup(JsonObject a_root, AddOn a_addOn, string a_profile)
@@ -213,7 +216,9 @@ public sealed class AddOnStep(string a_key) : IStep
 	public static void Collect(RunContext a_ctx, string a_step, string a_mod, string? a_makes, IReadOnlyDictionary<string, DateTime> a_before, bool a_nothingIsFine = false)
 	{
 		var ow = a_ctx.Mo2.OverwriteDir;
-		var fresh = Runner.OverwriteFiles(a_ctx).Where(n => !a_before.TryGetValue(n.Key, out var t) || t != n.Value).Select(n => n.Key).ToList();
+		// overwrite\Root is Root Builder's, whatever ran
+		var root = Path.Combine(ow, "Root");
+		var fresh = Runner.OverwriteFiles(a_ctx).Where(n => (!a_before.TryGetValue(n.Key, out var t) || t != n.Value) && !Files.IsUnder(n.Key, root)).Select(n => n.Key).ToList();
 		if (fresh.Count == 0) {
 			if (a_nothingIsFine) {
 				a_ctx.Log.Detail($"{StepCatalog.Name(a_step)} wrote nothing into overwrite");
