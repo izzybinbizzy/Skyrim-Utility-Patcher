@@ -3919,6 +3919,71 @@ public static class Program
 			"a mod the setup itself names for the step is its own choice, plugin or not - and still switched on, for the steps that do not read that list");
 	}
 
+	// his checklist 464: before the first in-game step the player's saves are copied into the run's backup - saves and co-saves, nothing
+	// else, once a run, the original untouched; the setup can switch it off, and a copy that cannot be made never stops the run
+	static void T_TheSavesAreCopiedBeforeAnInGameStep()
+	{
+		using var f = new FakeMo2();
+		File.WriteAllText(Path.Combine(f.ProfileDir, "settings.ini"), "[General]\r\nLocalSaves=true\r\n");
+		var p = ProfileOf(f);
+		var saves = InGame.SavesDir(p);
+		Directory.CreateDirectory(saves);
+		File.WriteAllText(Path.Combine(saves, "Save1.ess"), "save");
+		File.WriteAllText(Path.Combine(saves, "Save1.skse"), "co-save");
+		File.WriteAllText(Path.Combine(saves, "notes.txt"), "not a save");
+		var setup = f.WriteSetup(("cleansave", new JsonObject()));
+		var mo2 = Mo2Instance.Load(f.Exe, f.Instance);
+		var j = new Journal { Id = "saves", Folder = Path.Combine(Runner.RunsDir(f.Data), "0000 saves"), SetupFile = setup.File, SetupName = setup.Name, Profile = "Test", Started = DateTime.Now };
+		Directory.CreateDirectory(j.Folder);
+		using var log = new RunLog(j.Folder);
+		var backup = Path.Combine(f.Backups, "saves run");
+		var ctx = new RunContext { Setup = setup, Mo2 = mo2, Profile = p, Control = new Mo2Control(mo2, "Test", log), Log = log, Journal = j,
+			Cancel = CancellationToken.None, BackupFolder = backup };
+		var copy = InGame.CopySaves(ctx);
+		Check(copy != null && File.Exists(Path.Combine(copy, "Save1.ess")) && File.Exists(Path.Combine(copy, "Save1.skse")), "the saves and their co-saves are copied");
+		Check(!File.Exists(Path.Combine(copy!, "notes.txt")), "nothing else");
+		Check(File.Exists(Path.Combine(saves, "Save1.ess")), "the original stays");
+		Check(!Directory.Exists(copy + ".part"), "no part left");
+		File.WriteAllText(Path.Combine(saves, "Save2.ess"), "made in the run's game");
+		Equal(copy, InGame.CopySaves(ctx), "once a run");
+		Check(!File.Exists(Path.Combine(copy!, "Save2.ess")), "a later save is no part of the copy");
+		setup.Root["copySaves"] = false;
+		Directory.Delete(copy!, true);
+		Equal<string?>(null, InGame.CopySaves(ctx), "switched off in the setup: nothing copied");
+		setup.Root["copySaves"] = true;
+		// the backup folder cannot be made (a file stands where it should be): said, and the run goes on
+		Directory.Delete(backup, true);
+		File.WriteAllText(backup, "a file in the way");
+		Equal<string?>(null, InGame.CopySaves(ctx), "a copy that cannot be made never stops the run");
+		File.Delete(backup);
+	}
+
+	// his checklist 438: Steam's own record of the game says whether it is updating it (refused), has an update waiting (a warning)
+	// or is done (nothing); a copy outside a steamapps folder, or with no record, has nothing to read
+	static void T_SteamUpdatingTheGameIsSeen()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "SUP steam " + Guid.NewGuid().ToString("N"));
+		var game = Path.Combine(root, "steamapps", "common", "Skyrim Special Edition");
+		Directory.CreateDirectory(game);
+		var manifest = Path.Combine(root, "steamapps", "appmanifest_489830.acf");
+		try {
+			Equal(0, SystemChecks.SteamUpdate(game).Count(), "no record: nothing to read");
+			void State(int a_flags) => File.WriteAllText(manifest, "\"AppState\"\n{\n\t\"appid\"\t\t\"489830\"\n\t\"StateFlags\"\t\t\"" + a_flags + "\"\n}\n");
+			State(4);
+			Equal(0, SystemChecks.SteamUpdate(game).Count(), "fully installed: nothing to say");
+			State(1026);
+			Check(SystemChecks.SteamUpdate(game).Single().Blocking, "updating: the run does not start");
+			State(1048580);
+			Check(SystemChecks.SteamUpdate(game).Single().Blocking, "downloading: the same");
+			State(6);
+			Check(!SystemChecks.SteamUpdate(game).Single().Blocking, "an update waiting: a warning");
+			Equal(0, SystemChecks.SteamUpdate(Path.Combine(root, "Game Root")).Count(), "a copy outside steamapps: nothing to read");
+			Equal(1, SystemChecks.SteamUpdate(game + Path.DirectorySeparatorChar).Count(), "a trailing slash reads the same (the update still waiting)");
+		} finally {
+			Directory.Delete(root, true);
+		}
+	}
+
 	static void T_EveryToolStepHasItsHelpPage()
 	{
 		foreach (var s in StepCatalog.All.Where(s => s.Key is not ("shaders" or "xlodgen"))) {

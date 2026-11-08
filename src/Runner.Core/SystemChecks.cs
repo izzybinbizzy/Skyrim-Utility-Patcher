@@ -29,6 +29,7 @@ public static partial class SystemChecks
 		Guard("the plugin limit", () => PluginLimit(CountPlugins(a_profile)));
 		Guard("whether Windows waits to restart", () => Power(RestartPending(), null));
 		Guard("the battery", () => Power(false, Battery()));
+		Guard("whether Steam is updating the game", () => SteamUpdate(a_mo2.GameDir));
 		Guard("the folders' path lengths", () => LongPaths(folders.Select(f => f.Dir)));
 		Guard("the PC's memory", () => Memory(MemoryProbe()));
 		var notes = new List<Issue>();
@@ -55,6 +56,34 @@ public static partial class SystemChecks
 		var m = new MemoryStatus { Length = (uint)Marshal.SizeOf<MemoryStatus>() };
 		return GlobalMemoryStatusEx(ref m) ? (m.TotalPhys / 1073741824.0, m.AvailPhys / 1073741824.0) : null;
 	};
+
+	// his checklist 438: Steam changing the game under a run. Steam's own record of the game (appmanifest_489830.acf in the steamapps
+	// folder above "common") says what it is doing; a copy with no such record (GOG, a modlist's own copy) has nothing to read
+	const long SteamUpdateWaiting = 0x2 | 0x200;
+	const long SteamWorking = 0x100 | 0x400 | 0x10000 | 0x20000 | 0x40000 | 0x80000 | 0x100000 | 0x200000 | 0x400000;
+
+	public static IEnumerable<Issue> SteamUpdate(string a_gameDir)
+	{
+		var common = Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(a_gameDir));
+		var steamapps = common == null ? null : Path.GetDirectoryName(common);
+		if (steamapps == null || !string.Equals(Path.GetFileName(common), "common", StringComparison.OrdinalIgnoreCase)) {
+			yield break;
+		}
+		var manifest = Path.Combine(steamapps, "appmanifest_489830.acf");
+		if (!File.Exists(manifest)) {
+			yield break;
+		}
+		var m = System.Text.RegularExpressions.Regex.Match(Files.ReadSharedText(manifest), "\"StateFlags\"\\s+\"(\\d+)\"");
+		if (!m.Success || !long.TryParse(m.Groups[1].Value, out var flags)) {
+			yield break;
+		}
+		if ((flags & SteamWorking) != 0) {
+			yield return new Issue("", true, "Steam is updating or checking Skyrim right now - wait until it has finished (a new game version stops SKSE and its plugins until they are updated), then start again");
+		} else if ((flags & SteamUpdateWaiting) != 0) {
+			yield return new Issue("", false, "Steam has an update waiting for Skyrim - it may start during the run, and a new game version stops SKSE and its plugins until they are updated. " +
+				"Let it finish first if you want it, or hold it back in Steam's settings for the game");
+		}
+	}
 
 	public static IEnumerable<Issue> Memory((double Total, double Free)? a_mem)
 	{

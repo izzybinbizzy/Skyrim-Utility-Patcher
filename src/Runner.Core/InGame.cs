@@ -812,6 +812,7 @@ public static partial class InGame
 	// every other DynDOLOD mod stay on (his word 2026-10-27).
 	public static void Deactivate(RunContext a_ctx, StepSettings a_s)
 	{
+		CopySaves(a_ctx);
 		var outs = a_ctx.Setup.EnabledSteps.Select(s => new StepSettings(s.Settings).OutputMod).OfType<string>().ToList();
 		a_ctx.CleanSaveExtraOff = a_ctx.Profile.Dependents(outs);
 		var dyn = a_s.Raw["dyndolod_off"] != null ? a_s.Bool("dyndolod_off", false) : HasDynDolod(a_ctx.Profile);
@@ -900,8 +901,51 @@ public static partial class InGame
 	// recorded before QASmoke, DynDOLOD on again, saved (his addition 1). A compile at this start means the shader cache was
 	// out of date - said in the run's result (his question 2026-10-27, "rebuilding another tool wont cause shaders to need to
 	// be rebuilt")
+	// his checklist 464: before the first in-game step of a run, the player's saves (each save and its SKSE co-save) are copied into
+	// the run's backup folder - once a run, the setup's "copySaves" (on unless switched off). A copy that cannot be made is said and
+	// the run goes on: it is a safety copy, never a reason to stop
+	public const string SavesCopyFolder = "saves before the run";
+
+	public static string? CopySaves(RunContext a_ctx)
+	{
+		if (Setup.Bool(a_ctx.Setup.Root, "copySaves") == false) {
+			return null;
+		}
+		var to = Path.Combine(a_ctx.BackupFolder, SavesCopyFolder);
+		if (Directory.Exists(to)) {
+			return to;
+		}
+		var from = SavesDir(a_ctx.Profile);
+		try {
+			if (!Directory.Exists(from)) {
+				return null;
+			}
+			var files = new DirectoryInfo(from).EnumerateFiles().Where(f => f.Extension.Equals(".ess", StringComparison.OrdinalIgnoreCase) ||
+				f.Extension.Equals(".skse", StringComparison.OrdinalIgnoreCase)).ToList();
+			var part = to + ".part";
+			if (Directory.Exists(part)) {
+				Directory.Delete(part, true);
+			}
+			Directory.CreateDirectory(part);
+			foreach (var f in files) {
+				a_ctx.Cancel.ThrowIfCancellationRequested();
+				f.CopyTo(Path.Combine(part, f.Name), false);
+			}
+			// whole or not at all: a copy cut off part way is never taken for a full one
+			Directory.Move(part, to);
+			var mb = files.Sum(f => f.Length) / 1048576.0;
+			var saves = files.Count(f => f.Extension.Equals(".ess", StringComparison.OrdinalIgnoreCase));
+			a_ctx.Log.Detail($"your saves copied first: {saves} save(s), {mb:0} MB, into the run's backup ({SavesCopyFolder})");
+			return to;
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+			a_ctx.Log.Warn($"your saves could not be copied first ({e.Message}) - the run goes on; your saves folder is untouched by it");
+			return null;
+		}
+	}
+
 	public static void PlaySave(RunContext a_ctx, StepSettings a_s)
 	{
+		CopySaves(a_ctx);
 		var player = a_ctx.CleanSaveName == null ? NewestPlayerSave(a_ctx.Profile, OurRuns(a_ctx), Character(a_ctx)) : null;
 		// a named save that is gone (deleted, renamed) is passed over for the fallbacks, never loaded and failed on
 		var named = a_s.Str("save") is { Length: > 0 } n && SaveTime(a_ctx.Profile, n) != null ? n : null;
