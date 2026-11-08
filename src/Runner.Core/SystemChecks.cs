@@ -29,7 +29,7 @@ public static partial class SystemChecks
 		Guard("the plugin limit", () => PluginLimit(CountPlugins(a_profile)));
 		Guard("whether Windows waits to restart", () => Power(RestartPending(), null));
 		Guard("the battery", () => Power(false, Battery()));
-		Guard("whether Steam is updating the game", () => SteamUpdate(a_mo2.GameDir));
+		Guard("whether Steam is updating the game", () => SteamUpdate(a_mo2.GameDir, Procs.Running("steam.exe")));
 		Guard("the folders' path lengths", () => LongPaths(folders.Select(f => f.Dir)));
 		Guard("the PC's memory", () => Memory(MemoryProbe()));
 		var notes = new List<Issue>();
@@ -58,13 +58,17 @@ public static partial class SystemChecks
 	};
 
 	// his checklist 438: Steam changing the game under a run. Steam's own record of the game (appmanifest_489830.acf in the steamapps
-	// folder above "common") says what it is doing; a copy with no such record (GOG, a modlist's own copy) has nothing to read
-	const long SteamUpdateWaiting = 0x2 | 0x200;
-	const long SteamWorking = 0x100 | 0x400 | 0x10000 | 0x20000 | 0x40000 | 0x80000 | 0x100000 | 0x200000 | 0x400000;
+	// folder above "common") says what it is doing - when the record is of this very folder; another copy in the same library, GOG or a
+	// modlist's own copy has nothing to read. Only a state of real work with Steam running refuses a run: a queued or paused update
+	// (a player staying on a version on purpose) or Steam closed in the middle of one only warns
+	const long SteamUpdateWaiting = 0x2 | 0x200 | 0x400;
+	const long SteamPaused = 0x200;
+	const long SteamWorking = 0x100 | 0x800 | 0x1000 | 0x10000 | 0x20000 | 0x40000 | 0x80000 | 0x100000 | 0x200000 | 0x400000 | 0x800000;
 
-	public static IEnumerable<Issue> SteamUpdate(string a_gameDir)
+	public static IEnumerable<Issue> SteamUpdate(string a_gameDir, bool a_steamRunning)
 	{
-		var common = Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(a_gameDir));
+		var folder = Path.TrimEndingDirectorySeparator(a_gameDir);
+		var common = Path.GetDirectoryName(folder);
 		var steamapps = common == null ? null : Path.GetDirectoryName(common);
 		if (steamapps == null || !string.Equals(Path.GetFileName(common), "common", StringComparison.OrdinalIgnoreCase)) {
 			yield break;
@@ -73,13 +77,18 @@ public static partial class SystemChecks
 		if (!File.Exists(manifest)) {
 			yield break;
 		}
-		var m = System.Text.RegularExpressions.Regex.Match(Files.ReadSharedText(manifest), "\"StateFlags\"\\s+\"(\\d+)\"");
+		var text = Files.ReadSharedText(manifest);
+		var dir = System.Text.RegularExpressions.Regex.Match(text, "\"installdir\"\\s+\"([^\"]+)\"");
+		if (dir.Success && !dir.Groups[1].Value.Equals(Path.GetFileName(folder), StringComparison.OrdinalIgnoreCase)) {
+			yield break;
+		}
+		var m = System.Text.RegularExpressions.Regex.Match(text, "\"StateFlags\"\\s+\"(\\d+)\"");
 		if (!m.Success || !long.TryParse(m.Groups[1].Value, out var flags)) {
 			yield break;
 		}
-		if ((flags & SteamWorking) != 0) {
+		if (a_steamRunning && (flags & SteamPaused) == 0 && (flags & SteamWorking) != 0) {
 			yield return new Issue("", true, "Steam is updating or checking Skyrim right now - wait until it has finished (a new game version stops SKSE and its plugins until they are updated), then start again");
-		} else if ((flags & SteamUpdateWaiting) != 0) {
+		} else if ((flags & (SteamUpdateWaiting | SteamWorking)) != 0) {
 			yield return new Issue("", false, "Steam has an update waiting for Skyrim - it may start during the run, and a new game version stops SKSE and its plugins until they are updated. " +
 				"Let it finish first if you want it, or hold it back in Steam's settings for the game");
 		}

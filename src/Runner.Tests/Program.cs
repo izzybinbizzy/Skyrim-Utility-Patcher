@@ -38,6 +38,7 @@ public static class Program
 		SystemChecks.CloudFolders = () => [];
 		SystemChecks.ProgramFolders = () => [];
 		SystemChecks.IsNetwork = _ => false;
+		InGame.FreeBytes = _ => 1L << 50;
 		var tests = typeof(Program).GetMethods(System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)
 			.Where(m => m.Name.StartsWith("T_", StringComparison.Ordinal) && m.Name.Contains(filter, StringComparison.OrdinalIgnoreCase)).OrderBy(m => m.MetadataToken);
 		foreach (var t in tests) {
@@ -3919,8 +3920,9 @@ public static class Program
 			"a mod the setup itself names for the step is its own choice, plugin or not - and still switched on, for the steps that do not read that list");
 	}
 
-	// his checklist 464: before the first in-game step the player's saves are copied into the run's backup - saves and co-saves, nothing
-	// else, once a run, the original untouched; the setup can switch it off, and a copy that cannot be made never stops the run
+	// his checklist 464: before the first step that loads a save the player's saves are copied into the run's backup - saves and co-saves,
+	// nothing else, once a run, the original untouched; the setup can switch it off; no room, no folder, a Stop or a copy that cannot be
+	// made never stops the run or leaves a part behind
 	static void T_TheSavesAreCopiedBeforeAnInGameStep()
 	{
 		using var f = new FakeMo2();
@@ -3951,11 +3953,30 @@ public static class Program
 		Directory.Delete(copy!, true);
 		Equal<string?>(null, InGame.CopySaves(ctx), "switched off in the setup: nothing copied");
 		setup.Root["copySaves"] = true;
+		// not enough room beside what the run needs: said, nothing copied, and the run goes on
+		var keepFree = InGame.FreeBytes;
+		try {
+			InGame.FreeBytes = _ => 1024;
+			Equal<string?>(null, InGame.CopySaves(ctx), "no room: no copy");
+			Check(!Directory.Exists(Path.Combine(backup, InGame.SavesCopyFolder + ".part")), "no part left");
+		} finally {
+			InGame.FreeBytes = keepFree;
+		}
+		// a Stop during the copy leaves no part behind
+		using var stop = new CancellationTokenSource();
+		stop.Cancel();
+		var stopping = new RunContext { Setup = setup, Mo2 = mo2, Profile = p, Control = ctx.Control, Log = log, Journal = j, Cancel = stop.Token, BackupFolder = backup };
+		Throws<OperationCanceledException>(() => InGame.CopySaves(stopping), "a Stop ends the copy");
+		Check(!Directory.Exists(Path.Combine(backup, InGame.SavesCopyFolder + ".part")), "and leaves no part behind");
 		// the backup folder cannot be made (a file stands where it should be): said, and the run goes on
 		Directory.Delete(backup, true);
 		File.WriteAllText(backup, "a file in the way");
 		Equal<string?>(null, InGame.CopySaves(ctx), "a copy that cannot be made never stops the run");
 		File.Delete(backup);
+		// no saves folder: said, and the run goes on
+		Directory.Delete(saves, true);
+		Equal<string?>(null, InGame.CopySaves(ctx), "no saves folder: nothing to copy");
+		Check(Files.ReadSharedText(log.TextPath!).Contains("no saves folder", StringComparison.Ordinal), "and the log says so");
 	}
 
 	// his checklist 438: Steam's own record of the game says whether it is updating it (refused), has an update waiting (a warning)
@@ -3967,21 +3988,45 @@ public static class Program
 		Directory.CreateDirectory(game);
 		var manifest = Path.Combine(root, "steamapps", "appmanifest_489830.acf");
 		try {
-			Equal(0, SystemChecks.SteamUpdate(game).Count(), "no record: nothing to read");
-			void State(int a_flags) => File.WriteAllText(manifest, "\"AppState\"\n{\n\t\"appid\"\t\t\"489830\"\n\t\"StateFlags\"\t\t\"" + a_flags + "\"\n}\n");
+			Equal(0, SystemChecks.SteamUpdate(game, true).Count(), "no record: nothing to read");
+			void State(int a_flags) => File.WriteAllText(manifest, "\"AppState\"\n{\n\t\"appid\"\t\t\"489830\"\n\t\"installdir\"\t\t\"Skyrim Special Edition\"\n\t\"StateFlags\"\t\t\"" + a_flags + "\"\n}\n");
 			State(4);
-			Equal(0, SystemChecks.SteamUpdate(game).Count(), "fully installed: nothing to say");
-			State(1026);
-			Check(SystemChecks.SteamUpdate(game).Single().Blocking, "updating: the run does not start");
+			Equal(0, SystemChecks.SteamUpdate(game, true).Count(), "fully installed: nothing to say");
 			State(1048580);
-			Check(SystemChecks.SteamUpdate(game).Single().Blocking, "downloading: the same");
+			Check(SystemChecks.SteamUpdate(game, true).Single().Blocking, "downloading: the run does not start");
+			Check(!SystemChecks.SteamUpdate(game, false).Single().Blocking, "Steam closed in the middle of it: only a warning, nothing is working on it");
+			State(1026);
+			Check(!SystemChecks.SteamUpdate(game, true).Single().Blocking, "an update queued: a warning");
+			State(1542);
+			Check(!SystemChecks.SteamUpdate(game, true).Single().Blocking, "an update paused on purpose: a warning, the run may start");
 			State(6);
-			Check(!SystemChecks.SteamUpdate(game).Single().Blocking, "an update waiting: a warning");
-			Equal(0, SystemChecks.SteamUpdate(Path.Combine(root, "Game Root")).Count(), "a copy outside steamapps: nothing to read");
-			Equal(1, SystemChecks.SteamUpdate(game + Path.DirectorySeparatorChar).Count(), "a trailing slash reads the same (the update still waiting)");
+			Check(!SystemChecks.SteamUpdate(game, true).Single().Blocking, "an update waiting: a warning");
+			Equal(0, SystemChecks.SteamUpdate(Path.Combine(root, "Game Root"), true).Count(), "a copy outside steamapps: nothing to read");
+			Directory.CreateDirectory(Path.Combine(root, "steamapps", "common", "Other Copy"));
+			Equal(0, SystemChecks.SteamUpdate(Path.Combine(root, "steamapps", "common", "Other Copy"), true).Count(), "another folder in the same library: the record is not of it");
+			Equal(1, SystemChecks.SteamUpdate(game + Path.DirectorySeparatorChar, true).Count(), "a trailing slash reads the same (the update still waiting)");
 		} finally {
 			Directory.Delete(root, true);
 		}
+	}
+
+	// his checklist 458: what holds a teleport - a beast form or a mount that cannot be left stops the step in the end; a kill move, a
+	// conversation, a menu or a scene are waited out and go on, so a wrong reading never fails a run; nothing held = no wait
+	static void T_WhatHoldsATeleportIsKnown()
+	{
+		InGame.PlayerState S(bool a_mounted = false, bool a_beast = false, bool a_menu = false, bool a_controlsOff = false, bool a_busy = false) =>
+			new(a_mounted, a_beast, a_menu, a_controlsOff, a_busy);
+		Check(InGame.WhatHoldsTeleport(S()) == null, "free to go");
+		Check(InGame.WhatHoldsTeleport(S(a_beast: true)) is { Stop: true }, "a beast form stops in the end");
+		Check(InGame.WhatHoldsTeleport(S(a_mounted: true)) is { Stop: true }, "a mount that cannot be left stops in the end");
+		Check(InGame.WhatHoldsTeleport(S(a_menu: true)) is { Stop: false }, "a conversation or menu is waited out and goes on");
+		Check(InGame.WhatHoldsTeleport(S(a_controlsOff: true)) is { Stop: false }, "a scene too");
+		Check(InGame.WhatHoldsTeleport(S(a_busy: true)) is { Stop: false }, "a kill move or bleeding out too");
+		Check(InGame.WhatHoldsTeleport(S(a_beast: true, a_menu: true))?.Why.Contains("werewolf", StringComparison.Ordinal) == true, "the most serious is named");
+		Check(InGame.IsBeastRace("0x000CDD84"), "the werewolf race");
+		Check(InGame.IsBeastRace("0x0200283A") && InGame.IsBeastRace("0x0300283a"), "the vampire lord race, at Dawnguard's slot, any letter case");
+		Check(!InGame.IsBeastRace("0x00013746") && !InGame.IsBeastRace("0x1200283A") && !InGame.IsBeastRace(null) && !InGame.IsBeastRace("CDD84"),
+			"a normal race, the same low digits in a player's mod, nothing, or another shape are no beast");
 	}
 
 	static void T_EveryToolStepHasItsHelpPage()

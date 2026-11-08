@@ -535,18 +535,76 @@ public static partial class InGame
 
 	const string Player = "0x00000014";
 
-	// before a teleport: off a horse, out of a fight (god mode is on from the load) - his addition 4
+	// what the player is doing just before a teleport (his checklist 458)
+	public sealed record PlayerState(bool Mounted, bool Beast, bool Menu, bool ControlsOff, bool Busy);
+
+	// the game's werewolf race and Dawnguard's vampire lord race, whichever official master slot Dawnguard loads at
+	public static bool IsBeastRace(string? a_formKey)
+	{
+		if (a_formKey is not { Length: 10 } k || !k.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) {
+			return false;
+		}
+		return k.Equals("0x000CDD84", StringComparison.OrdinalIgnoreCase) ||
+		       (k[2..4] is "01" or "02" or "03" or "04" && k[4..].Equals("00283A", StringComparison.OrdinalIgnoreCase));
+	}
+
+	// what holds a teleport, the most serious first (null = nothing). Stop: it does not pass by waiting long enough to be sure, and a
+	// save made in it would be a bad one to rebuild from; the rest are waited out and then go on with a word in the log, so a reading
+	// that is wrong never fails a run
+	public static (string Why, bool Stop)? WhatHoldsTeleport(PlayerState a_s) =>
+		a_s.Beast ? ("in werewolf or vampire lord form", true) :
+		a_s.Mounted ? ("on a mount that cannot be left (a dragon in flight)", true) :
+		a_s.Busy ? ("in a kill move or bleeding out", false) :
+		a_s.Menu ? ("in a conversation or a menu", false) :
+		a_s.ControlsOff ? ("in a scene, with your controls off", false) : null;
+
+	static PlayerState ReadPlayer(RunContext a_ctx)
+	{
+		bool On(string a_function) => a_ctx.DevBench.PapyrusOn(Player, "Actor", a_function)?.GetValue<bool>() == true;
+		return new PlayerState(On("IsOnMount"), IsBeastRace(DevBench.FormKey(a_ctx.DevBench.PapyrusOn(Player, "Actor", "GetRace"))),
+			a_ctx.DevBench.Papyrus("Utility", "IsInMenuMode")?.GetValue<bool>() == true,
+			a_ctx.DevBench.Papyrus("Game", "IsMovementControlsEnabled")?.GetValue<bool>() == false,
+			On("IsInKillMove") || On("IsBleedingOut"));
+	}
+
+	public static TimeSpan TeleportWait { get; set; } = TimeSpan.FromMinutes(3);
+
+	// before a teleport: off a horse, out of a fight (god mode is on from the load) - his addition 4; a beast form, a dragon, a
+	// conversation, a menu or a scene waited out (his checklist 458). Swimming needs nothing: the teleport itself ends it
 	static void ReadyToMove(RunContext a_ctx)
 	{
-		try {
-			if (a_ctx.DevBench.PapyrusOn(Player, "Actor", "IsOnMount")?.GetValue<bool>() == true) {
-				a_ctx.DevBench.PapyrusOn(Player, "Actor", "Dismount");
-				Thread.Sleep(4000);
-				a_ctx.Log.Detail("off the horse first");
+		var sw = Stopwatch.StartNew();
+		string? said = null;
+		while (true) {
+			(string Why, bool Stop)? held;
+			try {
+				if (a_ctx.DevBench.PapyrusOn(Player, "Actor", "IsOnMount")?.GetValue<bool>() == true) {
+					a_ctx.DevBench.PapyrusOn(Player, "Actor", "Dismount");
+					Thread.Sleep(4000);
+					a_ctx.Log.Detail("off the mount first");
+				}
+				a_ctx.DevBench.PapyrusOn(Player, "Actor", "StopCombat");
+				held = WhatHoldsTeleport(ReadPlayer(a_ctx));
+			} catch (Exception e) when (Helps(a_ctx, e)) {
+				a_ctx.Log.Warn("could not check your character before the teleport: " + e.Message);
+				return;
 			}
-			a_ctx.DevBench.PapyrusOn(Player, "Actor", "StopCombat");
-		} catch (Exception e) when (Helps(a_ctx, e)) {
-			a_ctx.Log.Warn("could not check the horse / fight before the teleport: " + e.Message);
+			if (held is not { } h) {
+				return;
+			}
+			if (said != h.Why) {
+				said = h.Why;
+				a_ctx.Log.Detail($"you are {h.Why} - waiting before the teleport");
+			}
+			if (sw.Elapsed > TeleportWait) {
+				if (h.Stop) {
+					throw new StepFailedException($"your character is {h.Why}, and was still after {TeleportWait.TotalMinutes:0} minutes - load a save where you are not, and run this step again");
+				}
+				a_ctx.Log.Warn($"your character still reads as {h.Why} after {TeleportWait.TotalMinutes:0} minutes - going on with the teleport");
+				return;
+			}
+			a_ctx.Cancel.WaitHandle.WaitOne(TimeSpan.FromSeconds(3));
+			a_ctx.Cancel.ThrowIfCancellationRequested();
 		}
 	}
 
@@ -901,10 +959,13 @@ public static partial class InGame
 	// recorded before QASmoke, DynDOLOD on again, saved (his addition 1). A compile at this start means the shader cache was
 	// out of date - said in the run's result (his question 2026-10-27, "rebuilding another tool wont cause shaders to need to
 	// be rebuilt")
-	// his checklist 464: before the first in-game step of a run, the player's saves (each save and its SKSE co-save) are copied into
-	// the run's backup folder - once a run, the setup's "copySaves" (on unless switched off). A copy that cannot be made is said and
-	// the run goes on: it is a safety copy, never a reason to stop
+	// his checklist 464: before the first step that loads a save, the player's saves (each save and its SKSE co-save) are copied into
+	// the run's backup folder - once a run, the setup's "copySaves" (on unless switched off). A copy that cannot be made, or that would
+	// not leave the room the run needs, is said and the run goes on: it is a safety copy, never a reason to stop
 	public const string SavesCopyFolder = "saves before the run";
+
+	// the free bytes on a folder's drive (the offline tests answer for the disk)
+	public static Func<string, long> FreeBytes { get; set; } = a_path => new DriveInfo(Path.GetPathRoot(Path.GetFullPath(a_path))!).AvailableFreeSpace;
 
 	public static string? CopySaves(RunContext a_ctx)
 	{
@@ -915,14 +976,23 @@ public static partial class InGame
 		if (Directory.Exists(to)) {
 			return to;
 		}
-		var from = SavesDir(a_ctx.Profile);
+		var part = to + ".part";
 		try {
+			var from = SavesDir(a_ctx.Profile);
 			if (!Directory.Exists(from)) {
+				a_ctx.Log.Warn($"your saves were not copied first: no saves folder at {from}");
 				return null;
 			}
 			var files = new DirectoryInfo(from).EnumerateFiles().Where(f => f.Extension.Equals(".ess", StringComparison.OrdinalIgnoreCase) ||
 				f.Extension.Equals(".skse", StringComparison.OrdinalIgnoreCase)).ToList();
-			var part = to + ".part";
+			var bytes = files.Sum(f => f.Length);
+			var mb = bytes / 1048576.0;
+			Directory.CreateDirectory(a_ctx.BackupFolder);
+			// the run's outputs and backups come first: the room the pre-check promised them stays free
+			if (FreeBytes(a_ctx.BackupFolder) < bytes + a_ctx.Setup.MinFreeGb * 1073741824L) {
+				a_ctx.Log.Warn($"your saves were not copied first: {mb:0} MB would not leave the {a_ctx.Setup.MinFreeGb} GB this run needs free - your saves folder is untouched by it");
+				return null;
+			}
 			if (Directory.Exists(part)) {
 				Directory.Delete(part, true);
 			}
@@ -933,13 +1003,27 @@ public static partial class InGame
 			}
 			// whole or not at all: a copy cut off part way is never taken for a full one
 			Directory.Move(part, to);
-			var mb = files.Sum(f => f.Length) / 1048576.0;
 			var saves = files.Count(f => f.Extension.Equals(".ess", StringComparison.OrdinalIgnoreCase));
 			a_ctx.Log.Detail($"your saves copied first: {saves} save(s), {mb:0} MB, into the run's backup ({SavesCopyFolder})");
 			return to;
-		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+		} catch (OperationCanceledException) {
+			DropPart(part);
+			throw;
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException) {
+			DropPart(part);
 			a_ctx.Log.Warn($"your saves could not be copied first ({e.Message}) - the run goes on; your saves folder is untouched by it");
 			return null;
+		}
+	}
+
+	static void DropPart(string a_part)
+	{
+		try {
+			if (Directory.Exists(a_part)) {
+				Directory.Delete(a_part, true);
+			}
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+			// a part left behind goes with the run's backup, and is never taken for a copy
 		}
 	}
 

@@ -316,7 +316,7 @@ public static class SettingsPanel
 		Field(stack, apply, "Run the tools at a lower priority (the PC stays smoother; a run may take a little longer)", work, "lowerPriority", JsonValueKind.True);
 		// his checklist 464
 		work["copySaves"] ??= true;
-		Field(stack, apply, "Copy your saves into the run's backup before the first in-game step", work, "copySaves", JsonValueKind.True);
+		Field(stack, apply, "Copy your saves into the run's backup before the first step that loads a save", work, "copySaves", JsonValueKind.True);
 		Field(stack, apply, "Commands before a run (one per line, each must succeed)", work, "beforeRun", JsonValueKind.Array);
 		Field(stack, apply, "Commands after a run (one per line)", work, "afterRun", JsonValueKind.Array);
 		// History > What MO2 changed: a profile only tests use, or test mods, can be left out of the view (nothing is lost)
