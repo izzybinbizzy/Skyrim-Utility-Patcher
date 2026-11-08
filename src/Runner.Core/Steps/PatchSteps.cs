@@ -111,7 +111,7 @@ public abstract class LauncherStep : IStep
 		PointAtThisRun(a_ctx, outDir);
 		var exeDir = a_ctx.Mo2.Executable(a_s.Req("executable"))?.Binary is { Length: > 0 } bin ? Path.GetDirectoryName(bin) : null;
 		var names = StartButtonNames(exeDir != null && TranslationFolder != null ? Path.Combine(exeDir, TranslationFolder) : null, StartNames).ToArray();
-		using (new Toggle(a_ctx, [mod, .. a_s.List("enable_during")], a_s.List("disable_during"), name, a_ctx.Cancel)) {
+		using (new Toggle(a_ctx, [mod, .. a_s.List("enable_during"), .. StepKit.ToolMods(a_ctx, a_s)], a_s.List("disable_during"), name, a_ctx.Cancel)) {
 			try {
 				using var proc = a_ctx.Control.RunExecutable(a_s.Req("executable"), image, a_s.Str("args"), a_ctx.Cancel);
 				var w = StepKit.WaitWindow(a_ctx, image, t => Regex.IsMatch(t, TitleRx), TimeSpan.FromMinutes(3), name + "'s window");
@@ -265,7 +265,7 @@ public sealed class PgPatcherStep : IStep
 				Files.WriteAtomic(live, conf.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
 				a_ctx.Log.Detail($"PGPatcher settings: {a_s.Str("settings") ?? "its own"} (output {mod})");
 			}
-			using (new Toggle(a_ctx, [], [mod, .. a_s.List("disable_during")], "PGPatcher", a_ctx.Cancel)) {
+			using (new Toggle(a_ctx, StepKit.ToolMods(a_ctx, a_s), [mod, .. a_s.List("disable_during")], "PGPatcher", a_ctx.Cancel)) {
 				try {
 					using var proc = a_ctx.Control.RunExecutable(a_s.Req("executable"), image, a_s.Str("args") ?? "--autostart", a_ctx.Cancel);
 					var esp = Path.Combine(a_ctx.Mo2.ModDir(mod), "PGPatcher.esp");
@@ -334,7 +334,7 @@ public sealed class SynthesisStep : IStep
 		var espOw = Path.Combine(a_ctx.Mo2.OverwriteDir, "Synthesis.esp");
 		var t0 = DateTime.UtcNow;
 		Build(a_ctx, a_s, image, exePath);
-		using (new Toggle(a_ctx, [], a_s.List("disable_during"), "Synthesis", a_ctx.Cancel)) {
+		using (new Toggle(a_ctx, StepKit.ToolMods(a_ctx, a_s), a_s.List("disable_during"), "Synthesis", a_ctx.Cancel)) {
 			try {
 				var tRun = DateTime.UtcNow;
 				var logs = Path.Combine(Path.GetDirectoryName(exePath)!, "logs");
@@ -578,6 +578,7 @@ public sealed class WryeBashStep : IStep
 		var image = a_s.Str("image") ?? "Wrye Bash.exe";
 		var patch = a_s.Str("patch") ?? "Bashed Patch, 0.esp";
 		var t0 = DateTime.UtcNow;
+		using var toolMod = StepKit.ToolModOn(a_ctx, a_s);
 		try {
 			a_ctx.Control.RunExecutable(a_s.Req("executable"), image, null, a_ctx.Cancel).Dispose();
 			a_ctx.Guide.Ask(Key, $"In Wrye Bash: right-click \"{patch}\" in the Mods tab, Rebuild Patch, build it with your options, then close Wrye Bash and press Done.", a_ctx.Cancel);
@@ -656,7 +657,7 @@ public sealed class PandoraStep : IStep
 		StepKit.KeepFile(a_ctx, settings);
 		try {
 			Files.WriteAtomic(settings, conf.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
-			using (new Toggle(a_ctx, a_s.List("enable_during"), a_s.List("disable_during"), "Pandora", a_ctx.Cancel)) {
+			using (new Toggle(a_ctx, [.. a_s.List("enable_during"), .. StepKit.ToolMods(a_ctx, a_s)], a_s.List("disable_during"), "Pandora", a_ctx.Cancel)) {
 				try {
 					using var proc = a_ctx.Control.RunExecutable(a_s.Req("executable"), image, a_s.Str("args") ?? "--auto_run --auto_close", a_ctx.Cancel);
 					a_ctx.Activity(Key, "Pandora is building behaviour files");

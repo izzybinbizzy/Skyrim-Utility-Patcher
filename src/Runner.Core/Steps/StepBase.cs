@@ -40,6 +40,61 @@ public static class StepRegistry
 // what the steps share
 public static class StepKit
 {
+	// a tool whose program lives inside a mod switched off in this profile: Mod Organizer cannot start it from there (it hands the
+	// start to a copy of itself, which ends with -1, and nothing runs - measured on Landscape Fixer 2026-11-08), so that mod is
+	// switched on for the tool's run and put back after. One that holds a plugin is never switched on by the run (it would change
+	// the load order): the step stops and names it for the player. The list goes into the step's own switch, which is undone only
+	// after the tool is closed (undone before, Mod Organizer's close waited on the tool still open - the trial of 2026-11-08 04:51)
+	public static List<string> ToolMods(RunContext a_ctx, StepSettings a_s)
+	{
+		var title = a_s.Req("executable");
+		if (ToolMod(a_ctx.Mo2, a_ctx.Profile, title) is not { } mod) {
+			return [];
+		}
+		// a mod the setup itself names for this step is its own choice, plugin or not (some steps do not read that list, so the mod
+		// is still returned here)
+		if (!a_s.List("enable_during").Contains(mod, StringComparer.OrdinalIgnoreCase)) {
+			NoPluginIn(a_ctx.Mo2, mod, title);
+		}
+		a_ctx.Log.Detail($"{title}'s program is inside the switched-off mod \"{mod}\" - switched on for its run, off again after");
+		return [mod];
+	}
+
+	// the same as a switch of its own, for a step with no switch around its tool (held until the tool is closed)
+	public static Toggle? ToolModOn(RunContext a_ctx, StepSettings a_s) =>
+		ToolMods(a_ctx, a_s) is { Count: > 0 } mods ? new Toggle(a_ctx, mods, [], a_s.Req("executable") + "'s own mod", a_ctx.Cancel) : null;
+
+	// a tool mod that holds a plugin, or cannot be read, is never switched on by the program (a folder that cannot be listed is no
+	// proof that it holds none)
+	public static void NoPluginIn(Mo2Instance a_mo2, string a_mod, string a_tool)
+	{
+		bool holds;
+		try {
+			holds = Directory.EnumerateFiles(a_mo2.ModDir(a_mod)).Any(f => Plugins.IsPlugin(Path.GetFileName(f)));
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+			throw new StepFailedException($"{a_tool}'s program is inside the mod \"{a_mod}\", which is switched off in this profile and could not be read ({e.Message}) - tick that mod");
+		}
+		if (holds) {
+			throw new StepFailedException($"{a_tool}'s program is inside the mod \"{a_mod}\", which is switched off in this profile - Mod Organizer cannot " +
+				"start a program from a switched-off mod; tick that mod (it holds a plugin, so the program does not switch it on for you)");
+		}
+	}
+
+	// the switched-off mod a tool's program lives in (null: its program is outside the mods folder, or its mod is on)
+	public static string? ToolMod(Mo2Instance a_mo2, Profile a_profile, string a_title)
+	{
+		if (a_mo2.Executable(a_title)?.Binary is not { Length: > 0 } bin) {
+			return null;
+		}
+		var mods = Path.GetFullPath(a_mo2.ModsDir);
+		var full = Path.GetFullPath(bin);
+		if (!Files.IsUnder(full, mods)) {
+			return null;
+		}
+		var mod = Path.GetRelativePath(mods, full).Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)[0];
+		return a_profile.States().TryGetValue(mod, out var state) && state == '-' ? mod : null;
+	}
+
 	// a generated-output mod's files moved into the run's backup (the folder and its meta.ini stay), recorded so a step that
 	// does not finish gets them back
 	public static int ParkMod(RunContext a_ctx, string a_step, string a_mod)
