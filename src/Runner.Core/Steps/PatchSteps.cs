@@ -408,6 +408,8 @@ public sealed class SynthesisStep : IStep
 		return (patcher != null ? $"its patcher \"{patcher}\" failed: " : "a patcher failed: ") + (err.Length > 300 ? err[..300] : err);
 	}
 
+	public const string GoRx = @"^GoButton|\bRun\b|RunPatchers";
+
 	// its Run button: an enabled one on screen (it has two "GoButton"s - 2026-10-27 the first one pressed nothing and the window
 	// sat on its main screen), pressed, and the run proven started by its window changing; else the other one, else the step fails
 	// naming what the window shows - never a window left open doing nothing
@@ -416,7 +418,7 @@ public sealed class SynthesisStep : IStep
 		var idle = TimeSpan.FromMinutes(Math.Max(1, a_ctx.Setup.IdleMinutes));
 		var sw = System.Diagnostics.Stopwatch.StartNew();
 		List<System.Windows.Automation.AutomationElement> Buttons() => Uia.All(a_w(), System.Windows.Automation.ControlType.Button)
-			.Where(b => Regex.IsMatch(Uia.AutomationId(b) + " " + Uia.Name(b), @"^GoButton|\bRun\b|RunPatchers", RegexOptions.IgnoreCase) && Uia.Usable(b)).ToList();
+			.Where(b => Regex.IsMatch(Uia.AutomationId(b) + " " + Uia.Name(b), GoRx, RegexOptions.IgnoreCase) && Uia.Usable(b)).ToList();
 		// a window that went away reads as "no buttons, new text" - so a closed Synthesis is caught first, never taken for a start
 		void StillOpen(string a_when)
 		{
@@ -616,6 +618,56 @@ public sealed class WryeBashStep : IStep
 			a_ctx.Log.Detail($"{a_patch} moved from overwrite into {a_mod} ({ours.Count} file(s))");
 		} else if (!File.Exists(inMod) || File.GetLastWriteTimeUtc(inMod) <= a_t0) {
 			throw new StepFailedException($"Wrye Bash wrote no new {a_patch}");
+		}
+	}
+}
+
+// His checklist 436: the patchers with no unattended route (their pages and sources read, sup audit's patchers research): each opened through Mod
+// Organizer, the player builds with it and closes it, what it wrote lands in overwrite and goes into its own output mod. Off in a new setup: a run
+// left alone should not wait for a player.
+public sealed class GuidedToolStep(string a_key, string a_tool, string a_ask, string? a_makes, bool a_writesElsewhere = false) : IStep
+{
+	public static readonly IReadOnlyList<GuidedToolStep> All = [
+		new("easynpc", "EasyNPC", "In EasyNPC: make your picks and build its merge, then close EasyNPC and press Done.", null, true),
+		// a patcher can name its own plugin, so any file it writes counts; a setup's "makes" holds it to one
+		new("upf", "zEdit", "In zEdit: open Manage Patchers, build your patchers, then close zEdit and press Done.", null),
+		new("smash", "Mator Smash", "In Mator Smash: right-click and build the Smashed Patch, then close Smash and press Done.", "Smashed Patch.esp"),
+		new("reqtificator", "ReqTificator", "In ReqTificator: press Patch and let it finish, then close it and press Done.", "Requiem for the Indifferent.esp"),
+	];
+
+	public string Key => a_key;
+
+	public IEnumerable<Issue> Check(CheckContext a_c, StepSettings a_s)
+	{
+		foreach (var i in StepKit.CheckExecutable(a_c, Key, a_s.Str("executable"))) yield return i;
+		if (a_s.OutputMod == null) yield return new Issue(Key, true, "no output mod is set");
+	}
+
+	public void Run(RunContext a_ctx, StepSettings a_s)
+	{
+		var image = a_s.Req("image");
+		var before = Runner.OverwriteFiles(a_ctx);
+		using (new Toggle(a_ctx, [.. a_s.List("enable_during"), .. StepKit.ToolMods(a_ctx, a_s)], a_s.List("disable_during"), a_tool, a_ctx.Cancel)) {
+			try {
+				a_ctx.Control.RunExecutable(a_s.Req("executable"), image, null, a_ctx.Cancel).Dispose();
+				a_ctx.Guide.Ask(Key, a_ask, a_ctx.Cancel);
+				var sw = System.Diagnostics.Stopwatch.StartNew();
+				while (StepKit.StartedRunning(a_ctx.Control, image).Count > 0) {
+					a_ctx.Cancel.ThrowIfCancellationRequested();
+					if (sw.Elapsed > TimeSpan.FromMinutes(2)) {
+						throw new StepFailedException($"{a_tool} is still open - close it, then start the step again");
+					}
+					Thread.Sleep(1000);
+				}
+			} finally {
+				StepKit.CloseTool(a_ctx, image);
+			}
+		}
+		// a tool that writes where the player told it to (EasyNPC's own folder) promises nothing here, and its output mod is not called rebuilt
+		if (AddOnStep.Collect(a_ctx, Key, a_s.OutputMod!, a_s.Str("makes") ?? a_makes, before, a_writesElsewhere)) {
+			a_ctx.SetAfter(a_s.OutputMod!);
+		} else {
+			a_ctx.OutputUntouched = true;
 		}
 	}
 }

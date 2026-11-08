@@ -9,8 +9,12 @@ public static class StepCatalog
 	public static readonly IReadOnlyList<StepInfo> All = [
 		new("shaders", "Shader caches", "The game compiles each shader mod's cache at its main menu (Community Shaders and its forks).", InGame: true),
 		new("cleansave", "Clean save", "DynDOLOD's clean save: switched off in game, your place noted, to QASmoke, saved; the old outputs off; loaded, saved.", InGame: true),
+		new("easynpc", "EasyNPC", "Merges the NPC looks you pick - guided: the picks are yours, so you build it and press Done."),
+		new("upf", "zEdit's patchers", "Builds zEdit's Unified Patching Framework patch - guided: it has no unattended mode, so you build it and press Done."),
+		new("smash", "Mator Smash", "Builds the Smashed Patch - guided: Smash has no unattended mode, so you build it and press Done."),
 		new("wryebash", "Wrye Bash", "Builds the Bashed Patch - guided: Wrye Bash has no unattended mode, so you build it and press Done."),
 		new("synthesis", "Synthesis", "Runs the saved Synthesis pipeline."),
+		new("reqtificator", "ReqTificator", "Requiem's patch - guided: ReqTificator has no unattended mode, so you build it and press Done."),
 		new("landscapefixer", "Landscape Fixer", "Snow and blend fixes for the game's landscape meshes, in one plugin."),
 		new("pgpatcher", "PGPatcher", "Patches meshes and plugins for parallax, complex material and PBR textures."),
 		new("xlodgen", "xLODGen", "Terrain LOD for every worldspace."),
@@ -26,9 +30,10 @@ public static class StepCatalog
 
 	public static readonly IReadOnlyList<string> DefaultOrder = All.Select(s => s.Key).ToList();
 
-	public static bool Known(string a_key) => All.Any(s => s.Key == a_key);
+	public static bool Known(string a_key) => a_key.StartsWith(AddOns.KeyPrefix, StringComparison.Ordinal) || All.Any(s => s.Key == a_key);
 
-	public static StepInfo Info(string a_key) => All.FirstOrDefault(s => s.Key == a_key) ?? new StepInfo(a_key, a_key, "");
+	public static StepInfo Info(string a_key) => All.FirstOrDefault(s => s.Key == a_key) ??
+		(a_key.StartsWith(AddOns.KeyPrefix, StringComparison.Ordinal) ? new StepInfo(a_key, a_key[AddOns.KeyPrefix.Length..], "An add-on, from its author's own mod.") : new StepInfo(a_key, a_key, ""));
 
 	public static string Name(string a_key) => Info(a_key).Name;
 
@@ -37,6 +42,10 @@ public static class StepCatalog
 		("cleansave", "xlodgen", "the clean save is made before any output is rebuilt"),
 		("synthesis", "dyndolod", "DynDOLOD should be generated after every other patch (dyndolod.info)"),
 		("wryebash", "dyndolod", "DynDOLOD should be generated after every other patch (dyndolod.info)"),
+		("easynpc", "dyndolod", "DynDOLOD should be generated after every other patch (dyndolod.info)"),
+		("upf", "dyndolod", "DynDOLOD should be generated after every other patch (dyndolod.info)"),
+		("smash", "dyndolod", "DynDOLOD should be generated after every other patch (dyndolod.info)"),
+		("reqtificator", "dyndolod", "DynDOLOD should be generated after every other patch (dyndolod.info)"),
 		("landscapefixer", "pgpatcher", "Landscape Fixer's author: run it before PGPatcher, xLODGen, TexGen and DynDOLOD"),
 		("landscapefixer", "dyndolod", "Landscape Fixer's author: run it before PGPatcher, xLODGen, TexGen and DynDOLOD"),
 		("landscapefixer", "xlodgen", "Landscape Fixer's author: run it before PGPatcher, xLODGen, TexGen and DynDOLOD"),

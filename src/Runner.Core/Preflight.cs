@@ -68,6 +68,10 @@ public static class Preflight
 			var s = new StepSettings(a_setup.StepSettings(key) ?? []);
 			try {
 				outList.AddRange(step.Check(c, s));
+				// his checklist 445: a note, never a stop
+				if (ToolProof.Newer(key, ToolUpdates.Yours(a_mo2, s).Version) is { } newer) {
+					outList.Add(newer);
+				}
 			} catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Text.Json.JsonException) {
 				outList.Add(new Issue(key, true, "its check could not read a file: " + e.Message));
 			} catch (Exception e) when (e is InvalidOperationException or FormatException) {
@@ -86,24 +90,11 @@ public static class Preflight
 		return outList;
 	}
 
-	// started by Mod Organizer (as one of its executables): our own parent is ModOrganizer.exe or its virtual-folder helper
+	// started as one of Mod Organizer's executables: it hooks its virtual folder into those. A window its Tools menu opened is only its child, and runs as any other
 	static bool InsideMo2()
 	{
-		var me = Environment.ProcessId;
-		var snap = Procs.Snapshot();
-		var parent = snap.FirstOrDefault(p => p.Pid == me).Parent;
-		for (int depth = 0; depth < 4 && parent != 0; ++depth) {
-			try {
-				using var p = Process.GetProcessById(parent);
-				if (p.ProcessName.Equals("ModOrganizer", StringComparison.OrdinalIgnoreCase) || p.ProcessName.StartsWith("usvfs", StringComparison.OrdinalIgnoreCase)) {
-					return true;
-				}
-			} catch (ArgumentException) {
-				return false;
-			}
-			parent = snap.FirstOrDefault(p => p.Pid == parent).Parent;
-		}
-		return false;
+		using var me = Process.GetCurrentProcess();
+		return Mo2Control.InVfs(me);
 	}
 }
 
@@ -121,6 +112,9 @@ public static class Duplicates
 		["synthesis"] = ["Synthesis.esp"],
 		["landscapefixer"] = ["LandscapeFixer.esp"],
 		["wryebash"] = ["Bashed Patch, 0.esp"],
+		["upf"] = ["zPatch.esp"],
+		["smash"] = ["Smashed Patch.esp"],
+		["reqtificator"] = ["Requiem for the Indifferent.esp"],
 	};
 
 	// what in a mod folder shows it holds a step's output: one of its own files, or (grass cache, terrain LOD) a file of its kind

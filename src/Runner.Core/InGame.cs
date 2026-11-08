@@ -394,11 +394,27 @@ public static partial class InGame
 			.Select(b => b is JsonObject bo ? (bo["text"] ?? bo["label"])?.ToString() ?? "" : b?.ToString() ?? "").ToList();
 		var (answer, idx) = DevBench.DecideBox(body, labels, d["buttonCount"]?.GetValue<int>());
 		if (answer == null) {
+			// a game in another language (his checklist 439); read again until the game settings answer, a load may not serve them yet
+			if (a_ctx.GameWords is not { HasAskYes: > 0 }) {
+				a_ctx.GameWords = GameWords.Read(a_ctx.Mo2.GameDir, s => GameSetting(a_ctx, s));
+			}
+			(answer, idx) = DevBench.DecideBox(body, labels, d["buttonCount"]?.GetValue<int>(), a_ctx.GameWords);
+		}
+		if (answer == null) {
 			throw new StepFailedException("the game shows a box this step does not answer: " + body);
 		}
 		a_ctx.DevBench.Call("menu", new { action = "accept", index = idx });
 		a_ctx.Log.Detail($"game box {answer}: {(body.Length > 160 ? body[..160] + " ..." : body)}");
 		return body;
+	}
+
+	static string? GameSetting(RunContext a_ctx, string a_name)
+	{
+		try {
+			return a_ctx.DevBench.Papyrus("Game", "GetGameSettingString", a_name)?.ToString();
+		} catch (Exception e) when (e is HttpRequestException or TaskCanceledException or InvalidOperationException or FormatException or System.Text.Json.JsonException) {
+			return null;
+		}
 	}
 
 	// a Windows box the game or SKSE's loader shows before DevBench answers (DevBench cannot see it, and the start waits under
@@ -490,9 +506,10 @@ public static partial class InGame
 				continue;
 			}
 			var buttons = Uia.RealButtons(e);
-			outList.Add(new NativeBox(Uia.Name(e), Uia.TextOf(e, 800), buttons.Select(b => Uia.Name(b).Replace("&", "").Trim()).ToList(),
+			// each button by what it is: its words are Windows' language
+			outList.Add(new NativeBox(Uia.Name(e), Uia.TextOf(e, 800), buttons.Select(Uia.RoleName).ToList(),
 				label => {
-					if (buttons.FirstOrDefault(x => Uia.Name(x).Replace("&", "").Trim() == label) is { } btn) {
+					if (buttons.FirstOrDefault(x => Uia.RoleName(x) == label) is { } btn) {
 						Uia.Press(btn);
 					}
 				}));
@@ -695,6 +712,7 @@ public static partial class InGame
 	static void LaunchGame(RunContext a_ctx, StepSettings a_s)
 	{
 		NoGameRunning(a_ctx);
+		QuietGame.Apply(a_ctx);
 		a_ctx.Control.LaunchGame(a_s.Str("launch_executable") ?? "SKSE", FreshGamePid(), a_ctx.Cancel);
 	}
 

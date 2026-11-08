@@ -82,17 +82,30 @@ public partial class App : Application
 		// the theme picked last time, before the window is drawn
 		Theme.ApplySaved();
 		WindowFrame.PaintEveryWindowOnOpen();
+		// his checklist 476
+		var languageProblem = WindowWords.LoadPicked();
+		WindowWords.OnEveryWindow();
 		var w = new MainWindow();
 		if (Theme.Icon is { } icon) {
 			w.Icon = icon;
 		}
 		MainWindow = w;
 		w.Show();
+		if (languageProblem != "") {
+			w.Say(languageProblem);
+		}
+		// his checklist 468: started from Mod Organizer's Tools menu, on the profile it shows
+		if (args.Length == 6 && args[0] == "--for-profile" && args[2] == "--mo2" && args[4] == "--base") {
+			w.ShowProfile(args[3], args[5], args[1]);
+		}
 		// runs at a set time are gone (his checklist answer 451): a task an older version made is cleared away, off the
 		// window's thread (a failure leaves it; it can start nothing that is not there)
 		_ = Task.Run(() => {
 			try {
-				Schedule.RemoveLeftoversOnce(AppPaths.Data);
+				// said once with every name: a message line shows only its last message
+				if (Schedule.RemoveLeftoversOnce(AppPaths.Data) is { Count: > 0 } left) {
+					w.Dispatcher.BeginInvoke(() => w.Say("Old timed runs' tasks could not be removed - delete them in Windows' Task Scheduler: " + string.Join(", ", left)));
+				}
 			} catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) {
 			}
 		});
@@ -166,7 +179,7 @@ public partial class App : Application
 		// past runs: their logs written into a scratch folder for the history view to read, removed after
 		var runs = Path.Combine(Path.GetTempPath(), $"Skyrim Utility Patcher page runs {Guid.NewGuid():N}");
 		try {
-			var steps = StepCatalog.DefaultOrder.Where(k => k is not ("wryebash" or "anvillod")).ToList();
+			var steps = StepCatalog.DefaultOrder.Where(k => k is not ("wryebash" or "anvillod" or "easynpc" or "upf" or "smash" or "reqtificator")).ToList();
 			var full = new List<string> { "21:02:10  Skyrim Utility Patcher - " + name + " (profile " + name + "), " + steps.Count + " steps",
 				"21:02:10  every output switched off - each back on once its tool rebuilt it" };
 			var at = new DateTime(2026, 10, 27, 21, 2, 22);

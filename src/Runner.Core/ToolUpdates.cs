@@ -25,6 +25,10 @@ public static partial class ToolUpdates
 		["acmos"] = new("79205", null, "https://www.nexusmods.com/skyrimspecialedition/mods/79205?tab=files"),
 		["grass"] = new("194151", null, "https://www.nexusmods.com/skyrimspecialedition/mods/194151?tab=files"),
 		["anvillod"] = new("194477", null, "https://www.nexusmods.com/skyrimspecialedition/mods/194477?tab=files"),
+		["easynpc"] = new("52313", null, "https://www.nexusmods.com/skyrimspecialedition/mods/52313?tab=files"),
+		["smash"] = new("39378", null, "https://www.nexusmods.com/skyrimspecialedition/mods/39378?tab=files"),
+		["reqtificator"] = new("60888", null, "https://www.nexusmods.com/skyrimspecialedition/mods/60888?tab=files"),
+		["upf"] = new(null, "z-edit/zedit", "https://github.com/z-edit/zedit/releases"),
 		// its Nexus page says "MOVED" (read 2026-10-27): its releases are on GitHub
 		["wryebash"] = new(null, "wrye-bash/wrye-bash", "https://github.com/wrye-bash/wrye-bash/releases"),
 		["synthesis"] = new(null, "Mutagen-Modding/Synthesis", "https://github.com/Mutagen-Modding/Synthesis/releases"),
@@ -50,17 +54,30 @@ public static partial class ToolUpdates
 		if (string.IsNullOrEmpty(exe) || !File.Exists(exe)) {
 			return (null, "");
 		}
+		// Java's own version says nothing of the program it runs, and a version that cannot be read stops nothing: it is only not known
+		if (Mo2Control.IsJava(Path.GetFileName(exe))) {
+			return (exe, "");
+		}
+		try {
+			return (exe, VersionOf(a_mo2, exe));
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+			return (exe, "");
+		}
+	}
+
+	static string VersionOf(Mo2Instance a_mo2, string exe)
+	{
 		// a tool installed as a Mod Organizer mod: MO2's own record of the version it installed
 		if (Files.IsUnder(exe, a_mo2.ModsDir)) {
 			var modDir = Path.Combine(a_mo2.ModsDir, Path.GetRelativePath(a_mo2.ModsDir, exe).Split(Path.DirectorySeparatorChar)[0]);
 			var meta = Path.Combine(modDir, "meta.ini");
 			if (File.Exists(meta) && Files.ReadSharedText(meta).Split('\n').Select(l => l.Trim())
 				    .FirstOrDefault(l => l.StartsWith("version=", StringComparison.OrdinalIgnoreCase)) is { } v && v.Length > "version=".Length) {
-				return (exe, v["version=".Length..]);
+				return v["version=".Length..];
 			}
 		}
 		var info = FileVersionInfo.GetVersionInfo(exe);
-		return (exe, info.FileVersion ?? info.ProductVersion ?? "");
+		return info.FileVersion ?? info.ProductVersion ?? "";
 	}
 
 	[GeneratedRegex(@"\d+")]
@@ -144,8 +161,8 @@ public static partial class ToolUpdates
 			try {
 				// never back on the caller's thread (a window thread that waits on this would deadlock)
 				var newest = src.NexusId != null ? await Nexus(http, src.NexusId, a_ct).ConfigureAwait(false) : await GitHub(http, src.GitHub!, a_ct).ConfigureAwait(false);
-				outList.Add(new Result(step.Key, tool, yours == "" ? "?" : yours, newest, exe != null && IsNewer(yours, newest), src.Page,
-					exe == null ? "its program was not found" : null));
+				outList.Add(new Result(step.Key, tool, yours == "" ? "?" : yours, newest, exe != null && yours != "" && IsNewer(yours, newest), src.Page,
+					exe == null ? "its program was not found" : yours == "" ? "its version could not be read" : null));
 			} catch (Exception e) when (e is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException or InvalidOperationException) {
 				outList.Add(new Result(step.Key, tool, yours, "", false, src.Page, "could not ask its page: " + e.Message));
 			}

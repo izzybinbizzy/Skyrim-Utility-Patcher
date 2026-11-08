@@ -27,11 +27,11 @@ public static class StepRegistry
 		new ShaderStep(), new CleanSaveStep(), new WryeBashStep(), new SynthesisStep(), new LandscapeFixerStep(), new PgPatcherStep(),
 		new XLodGenStep(), new AcmosStep(), new GrassStep(), new TreeLodGenStep(), new TexGenStep(), new DynDolodStep(),
 		new AnvilLodStep(), new PandoraStep(), new PlaySaveStep(),
-	}.ToDictionary(s => s.Key);
+	}.Concat(GuidedToolStep.All).ToDictionary(s => s.Key);
 
 	public static IReadOnlyDictionary<string, IStep> All => Steps;
 
-	public static IStep? For(string a_key) => Steps.GetValueOrDefault(a_key);
+	public static IStep? For(string a_key) => a_key.StartsWith(AddOns.KeyPrefix, StringComparison.Ordinal) ? new AddOnStep(a_key) : Steps.GetValueOrDefault(a_key);
 
 	// the offline tests put their own steps in (a step that writes files, fails or waits) to drive the whole run
 	public static void Replace(IStep a_step) => Steps[a_step.Key] = a_step;
@@ -166,6 +166,8 @@ public static class StepKit
 					}
 				} else {
 					Files.WriteAtomic(k.Path, File.ReadAllBytes(k.Backup));
+					// as it was, its time too: a file in overwrite with a new time reads as the step's own
+					File.SetLastWriteTimeUtc(k.Path, File.GetLastWriteTimeUtc(k.Backup));
 				}
 				k.Done = true;
 				a_ctx.Log.Detail($"{Path.GetFileName(k.Path)} put back as it was");
@@ -265,25 +267,29 @@ public static class StepKit
 	}
 
 	// a tool left open keeps MO2 locked: its windows asked to close, then the process tree ended (by PID)
-	public static void CloseTool(RunContext a_ctx, string? a_image)
+	public static void CloseTool(RunContext a_ctx, string? a_image) => CloseTool(a_ctx.Control, a_image, a_ctx.Log);
+
+	// the processes of this image that this run started, and the children of them (a packed program runs its window in a child)
+	public static List<int> StartedRunning(Mo2Control a_control, string a_image)
+	{
+		var mine = new HashSet<int>(a_control.Started);
+		foreach (var root in a_control.Started) {
+			foreach (var c in Procs.Tree(root)) {
+				mine.Add(c);
+			}
+		}
+		var procs = Procs.ByImage(a_image);
+		var ours = procs.Select(p => p.Id).Where(mine.Contains).ToList();
+		procs.ForEach(p => p.Dispose());
+		return ours;
+	}
+
+	public static void CloseTool(Mo2Control a_control, string? a_image, RunLog a_log)
 	{
 		if (string.IsNullOrEmpty(a_image)) {
 			return;
 		}
-		// only what this run started, and the children of it (a packed program runs its window in a child)
-		List<int> Ours()
-		{
-			var mine = new HashSet<int>(a_ctx.Control.Started);
-			foreach (var root in a_ctx.Control.Started) {
-				foreach (var c in Procs.Tree(root)) {
-					mine.Add(c);
-				}
-			}
-			var procs = Procs.ByImage(a_image);
-			var ours = procs.Select(p => p.Id).Where(mine.Contains).ToList();
-			procs.ForEach(p => p.Dispose());
-			return ours;
-		}
+		List<int> Ours() => StartedRunning(a_control, a_image);
 		var left = Ours();
 		if (left.Count == 0) {
 			return;
@@ -298,7 +304,7 @@ public static class StepKit
 		foreach (var pid in Ours()) {
 			Procs.KillTree(pid);
 		}
-		a_ctx.Log.Detail($"{a_image} closed");
+		a_log.Detail($"{a_image} closed");
 	}
 
 	public static Func<IReadOnlyCollection<int>> PidsOf(string a_image) => () => Procs.Pids(a_image);

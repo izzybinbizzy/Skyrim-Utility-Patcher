@@ -11,6 +11,10 @@ public sealed class RunContext
 	public required Profile Profile { get; init; }
 	public required Mo2Control Control { get; init; }
 	public required RunLog Log { get; init; }
+	// the game's own words for its load boxes, read the first time a box is not in English
+	public GameWords? GameWords { get; set; }
+	// the settings files the small, muted game window changed for this step
+	public List<string> QuietFiles { get; } = [];
 	public required Journal Journal { get; init; }
 	public required CancellationToken Cancel { get; init; }
 	public required string BackupFolder { get; init; }
@@ -26,6 +30,9 @@ public sealed class RunContext
 	public DateTime? GameLaunched { get; set; }
 	public Dictionary<string, string> CleanSaveExtraOff { get; set; } = [];
 	public string Mo2Dir => Path.GetDirectoryName(Mo2.Exe)!;
+
+	// this step made nothing of its output mod (a guided tool wrote elsewhere): the mod is not this run's, so a put-back and Undo leave it as it was
+	public bool OutputUntouched { get; set; }
 
 	public void SetAfter(params string[] a_mods) => PendingEnable.AddRange(a_mods);
 

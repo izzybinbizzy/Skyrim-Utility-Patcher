@@ -195,6 +195,24 @@ public sealed partial class MainViewModel : Observable
 	}
 
 
+	// the setup of this Mod Organizer and profile, selected; false when there is none
+	public bool SelectFor(string a_mo2Exe, string a_base, string a_profile)
+	{
+		foreach (var item in Setups) {
+			try {
+				var s = ToolRunner.Setup.Load(item.File);
+				if (string.Equals(s.Profile, a_profile, StringComparison.OrdinalIgnoreCase) && Files.SamePath(s.Mo2Exe, a_mo2Exe) &&
+				    Files.SamePath(Mo2Instance.Load(s.Mo2Exe, s.Mo2Instance).BaseDir, a_base)) {
+					SelectedSetup = item;
+					return true;
+				}
+			} catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or InvalidDataException or System.Text.Json.JsonException) {
+				// a setup that does not read is no match
+			}
+		}
+		return false;
+	}
+
 	public void LoadSteps()
 	{
 		Steps.Clear();
@@ -996,7 +1014,7 @@ public sealed partial class MainViewModel : Observable
 
 	// each step's usual minutes (the old updater's own logs, 30 Sep - 26 Oct 2026) - the made-up run of the pictures only
 	internal static readonly Dictionary<string, double> DemoMinutes = new() {
-		["shaders"] = 28, ["cleansave"] = 7.5, ["wryebash"] = 3, ["synthesis"] = 1.3, ["landscapefixer"] = 9, ["pgpatcher"] = 4,
+		["shaders"] = 28, ["cleansave"] = 7.5, ["easynpc"] = 3, ["upf"] = 3, ["smash"] = 3, ["reqtificator"] = 3, ["wryebash"] = 3, ["synthesis"] = 1.3, ["landscapefixer"] = 9, ["pgpatcher"] = 4,
 		["xlodgen"] = 17.5, ["acmos"] = 1.5, ["grass"] = 0.8, ["treelodgen"] = 2.3, ["texgen"] = 5.5, ["dyndolod"] = 24, ["anvillod"] = 24,
 		["pandora"] = 0.5, ["playsave"] = 7,
 	};

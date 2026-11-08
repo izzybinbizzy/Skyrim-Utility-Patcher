@@ -141,8 +141,18 @@ public static class Runner
 		log.Mirror(Path.Combine(runs, "current log.txt"));
 		using var cts = new CancellationTokenSource();
 		var commands = new Commands(journal, cts.Cancel);
-		var profile = new Profile(mo2, setup.Profile, () => new Mo2Control(mo2, setup.Profile, RunLog.Null).Running);
-		var control = new Mo2Control(mo2, setup.Profile, log) { LowerPriority = Setup.Bool(setup.Root, "lowerPriority") == true };
+		Mo2Control? forThisRun = null;
+		var profile = new Profile(mo2, setup.Profile, () => forThisRun?.HeldOpen != true && new Mo2Control(mo2, setup.Profile, RunLog.Null).Running);
+		var control = new Mo2Control(mo2, setup.Profile, log) {
+			LowerPriority = Setup.Bool(setup.Root, "lowerPriority") == true,
+			CompanionOn = Setup.Bool(setup.Root, "keepMo2Open") == true && Mo2MenuEntry.Present(mo2),
+		};
+		forThisRun = control;
+		journal.Mo2KeptOpen = control.CompanionOn;
+		control.CompanionGaveUp = () => {
+			journal.Mo2KeptOpen = false;
+			journal.Save();
+		};
 		var ctx = new RunContext {
 			Setup = setup, Mo2 = mo2, Profile = profile, Control = control, Log = log, Journal = journal, Cancel = cts.Token,
 			BackupFolder = journal.BackupDir, Guide = a_guide?.Invoke(journal) ?? new FileGuide(journal, commands.TakeContinue, commands.ClearContinue),
@@ -241,6 +251,7 @@ public static class Runner
 					made = RunStep(ctx, ps);
 				} finally {
 					journal.InGameAfter = false;
+					journal.NeedsRestore = journal.Kept.Any(k => !k.Done);
 					journal.Save();
 				}
 				if (!made) {
@@ -518,6 +529,7 @@ public static class Runner
 	{
 		var r = a_ctx.Journal.Step(a_s.Key)!;
 		var step = StepRegistry.For(a_s.Key);
+		a_ctx.OutputUntouched = false;
 		a_ctx.Log.Say("");
 		a_ctx.Log.Say($"=== {StepCatalog.Name(a_s.Key)} ===");
 		a_ctx.Log.Simple($"{a_ctx.Journal.Steps.IndexOf(r) + 1}/{a_ctx.Journal.Steps.Count} {StepCatalog.Name(a_s.Key)} started");
@@ -541,6 +553,7 @@ public static class Runner
 			foreach (var live in learned) {
 				StepKit.PutFilesBack(a_ctx, live);
 			}
+			QuietGame.PutBack(a_ctx);
 		} catch (Exception e) {
 			var stopped = e is OperationCanceledException;
 			r.State = stopped ? StepState.Stopped : StepState.Failed;
@@ -564,10 +577,11 @@ public static class Runner
 			}
 			PutBackParked(a_ctx, a_s.Key);
 			StepKit.PutFilesBack(a_ctx);
+			a_ctx.QuietFiles.Clear();
 			MoveNewOverwrite(a_ctx, overwriteBefore);
 			return false;
 		}
-		foreach (var m in new[] { new StepSettings(a_s.Settings).OutputMod }.OfType<string>().Concat(a_ctx.PendingEnable)) {
+		foreach (var m in new[] { a_ctx.OutputUntouched ? null : new StepSettings(a_s.Settings).OutputMod }.OfType<string>().Concat(a_ctx.PendingEnable)) {
 			StepKit.MarkReplaced(a_ctx, m);
 			if (!a_ctx.Journal.Built.Contains(m)) {
 				a_ctx.Journal.Built.Add(m);
@@ -718,6 +732,8 @@ public static class Runner
 
 	public static void PutBack(RunContext a_ctx, Dictionary<string, byte[]>? a_snap)
 	{
+		// the run is over: Mod Organizer closes as after any run
+		a_ctx.Control.CompanionOn = false;
 		a_ctx.Control.Close();
 		// what the player changed in Mod Organizer while the run went on (a mod ticked, unticked or installed) is kept, never
 		// undone by the put-back - except on the mods this run owns (its outputs and the mods it replaces), which it decides
@@ -803,7 +819,7 @@ public static class Runner
 		// what the cut-off run last wrote: anything else in the mod list now - changed during the run or since - is the player's,
 		// kept by the put-back as at the end of a run (an older run left no such file: nothing is kept, as before)
 		ctx.Profile.OursFile = Path.Combine(a_j.Folder, Profile.WatchFileName);
-		if (ctx.Profile.LoadOurs()) {
+		if (!a_j.Mo2KeptOpen && ctx.Profile.LoadOurs()) {
 			log.Detail("the run's own switches read back - your own changes in Mod Organizer are kept");
 		}
 		// the run folder is <data>\Runs\<run>. What changed since the last look (the cut-off run's own changes, and anything
@@ -1003,7 +1019,7 @@ public static class Runner
 	}
 
 	// overwrite's files and their times (what a step adds there is told apart from what was there before)
-	static Dictionary<string, DateTime> OverwriteFiles(RunContext a_ctx)
+	public static Dictionary<string, DateTime> OverwriteFiles(RunContext a_ctx)
 	{
 		var d = a_ctx.Mo2.OverwriteDir;
 		return Directory.Exists(d) ? Directory.EnumerateFiles(d, "*", SearchOption.AllDirectories)

@@ -11,12 +11,15 @@ namespace ToolRunner.App;
 //   "Skyrim Utility Patcher.exe" stop | stop-after                                                     ask the running run to stop
 //   "Skyrim Utility Patcher.exe" updates --setup <file>                                                its tools' newest versions (asks their pages)
 //   "Skyrim Utility Patcher.exe" changes --setup <file> [--look]                                       what Mod Organizer changed, newest first
+//   "Skyrim Utility Patcher.exe" tools --mo2 <ModOrganizer.exe> [--instance <folder>] [--add]          which tools it finds, where to get the rest; --add puts the found ones in Mod Organizer's list
+//   "Skyrim Utility Patcher.exe" test-tools --setup <file>                                             each tool opened to the window a run presses; nothing pressed
+//   "Skyrim Utility Patcher.exe" addon-check <file>                                                    what is wrong with an add-on file, in plain words
 //   "Skyrim Utility Patcher.exe" bugreport [--setup <file>]                                            one zip for a bug report (the setup's last run), names masked
 //   "Skyrim Utility Patcher.exe" share --setup <file> [--out <folder>]                                 a copy of the setup to share: its paths and commands taken out
 // exit 0 = finished / clean, 1 = failed / refused, 2 = stopped, 3 = bad arguments, 4 = (updates) a tool has a newer version
 public static class Cli
 {
-	public static bool Handles(string[] a_args) => a_args.Length > 0 && a_args[0] is "run" or "retry" or "queue" or "check" or "preview" or "lod" or "restore" or "stop" or "stop-after" or "import" or "updates" or "changes" or "bugreport" or "share" or "undo" or "--help" or "-h" or "/?";
+	public static bool Handles(string[] a_args) => a_args.Length > 0 && a_args[0] is "tools" or "addon-check" or "test-tools" or "run" or "retry" or "queue" or "check" or "preview" or "lod" or "restore" or "stop" or "stop-after" or "import" or "updates" or "changes" or "bugreport" or "share" or "undo" or "--help" or "-h" or "/?";
 
 	static string? Opt(string[] a_args, string a_name)
 	{
@@ -29,8 +32,13 @@ public static class Cli
 		ConsoleAttach.ToParent();
 		// runs at a set time are gone: a task an older version left is cleared on the command line too (a player who never
 		// opens the window), before the command itself
+		// (never before a stop: Windows' task list can take half a minute, and a run is waiting on it)
 		try {
-			Schedule.RemoveLeftoversOnce(AppPaths.Data);
+			if (a_args[0] is not ("stop" or "stop-after")) {
+				foreach (var left in Schedule.RemoveLeftoversOnce(AppPaths.Data)) {
+					Console.WriteLine("an old timed run's task could not be removed - delete it in Windows' Task Scheduler: " + left);
+				}
+			}
 		} catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) {
 		}
 		try {
@@ -48,6 +56,9 @@ public static class Cli
 				"updates" => Updates(a_args),
 				"changes" => Changes(a_args),
 				"bugreport" => BugReportCmd(a_args),
+				"tools" => ToolsCmd(a_args),
+				"addon-check" => AddOnCheckCmd(a_args),
+				"test-tools" => TestToolsCmd(a_args),
 				"share" => ShareCmd(a_args),
 				_ => Help(),
 			};
@@ -64,7 +75,7 @@ public static class Cli
 
 	static int Help()
 	{
-		Console.WriteLine("Skyrim Utility Patcher - run | retry | queue | check | preview | lod | restore | undo | stop | stop-after | updates | changes | import | bugreport | share   (see the readme)");
+		Console.WriteLine("Skyrim Utility Patcher - run | retry | queue | check | preview | lod | restore | undo | stop | stop-after | updates | changes | import | bugreport | share | tools | test-tools | addon-check   (see the readme)");
 		return 0;
 	}
 
@@ -279,6 +290,59 @@ public static class Cli
 		Console.WriteLine(since == null ? "not watched yet - a run or a look starts it" : $"watched since {since.Value.ToString("yyyy-MM-dd HH:mm", InvariantCulture)}");
 		foreach (var r in Enumerable.Reverse(Mo2Changes.Shown(Mo2Changes.Read(dir), setup.ChangesHideProfiles, setup.ChangesHideMods))) {
 			Console.WriteLine($"{r.When.ToString("yyyy-MM-dd HH:mm", InvariantCulture)}  {r.Mod}: {r.What}  [{(r.Profiles.Count == 0 ? "Mod Organizer" : string.Join(", ", r.Profiles))}]  {r.Who}");
+		}
+		return 0;
+	}
+
+	// test-tools --setup <file>, exit 0 = what a run presses is there in every tool
+	static int TestToolsCmd(string[] a_args)
+	{
+		if (Opt(a_args, "--setup") is not { } s) {
+			Console.WriteLine("test-tools needs --setup <file>");
+			return 3;
+		}
+		var results = ToolProof.TestAll(Setup.Load(Path.GetFullPath(s)), RunLog.Null, CancellationToken.None);
+		foreach (var r in results) {
+			Console.WriteLine((r.Good ? "good  " : "LOOK  ") + r.Text);
+		}
+		return results.All(r => r.Good) ? 0 : 1;
+	}
+
+	// for modders: addon-check <file>, exit 0 = it is right
+	static int AddOnCheckCmd(string[] a_args)
+	{
+		if (a_args.Length < 2) {
+			Console.WriteLine("addon-check needs the add-on file");
+			return 3;
+		}
+		var file = Path.GetFullPath(a_args[1]);
+		// the mod's folder is the one above the add-on folder, when it sits in one
+		var parent = Path.GetDirectoryName(file);
+		var mod = Path.GetFileName(parent) == AddOns.FolderInMod ? Path.GetDirectoryName(parent) : null;
+		var problems = AddOns.Problems(Files.ReadSharedText(file), mod);
+		Console.WriteLine(problems.Count == 0 ? "It is right." : string.Join(Environment.NewLine, problems));
+		return problems.Count == 0 ? 0 : 1;
+	}
+
+	// the first-start helper: tools --mo2 <ModOrganizer.exe> [--instance <folder>] [--add]
+	static int ToolsCmd(string[] a_args)
+	{
+		if (Opt(a_args, "--mo2") is not { } exe) {
+			Console.WriteLine("tools needs --mo2 <ModOrganizer.exe>");
+			return 3;
+		}
+		var mo2 = Mo2Instance.Load(exe, Opt(a_args, "--instance"));
+		var rows = ToolFinder.Find(mo2);
+		foreach (var r in rows) {
+			Console.WriteLine(r.State switch {
+				ToolFinder.Found.Listed => $"{r.Tool.Name}: in the list",
+				ToolFinder.Found.NotListed => $"{r.Tool.Name}: found, not in the list - {r.Binary}",
+				_ => $"{r.Tool.Name}: not found - {r.Tool.Where}: {r.Tool.Page}",
+			});
+		}
+		if (a_args.Contains("--add")) {
+			var added = ToolFinder.AddFound(mo2, rows);
+			Console.WriteLine(added.Count == 0 ? "nothing to add" : "added to Mod Organizer's list: " + string.Join(", ", added));
 		}
 		return 0;
 	}

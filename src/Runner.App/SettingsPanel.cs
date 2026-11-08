@@ -323,6 +323,12 @@ public static class SettingsPanel
 		// his checklist 464
 		work["copySaves"] ??= true;
 		Field(stack, apply, "Copy your saves into the run's backup before the first step that loads a save", work, "copySaves", JsonValueKind.True);
+		// his checklist 477
+		work["keepMo2Open"] ??= false;
+		Field(stack, apply, "Keep Mod Organizer open during a run, for fewer restarts (needs the entry in Mod Organizer's Tools menu; it closes as usual when that does not answer)", work, "keepMo2Open", JsonValueKind.True);
+		// his checklist 460
+		work["quietGame"] ??= false;
+		Field(stack, apply, "Run the game steps in a small, muted window, so you can keep using the PC (your game settings go back after each step)", work, "quietGame", JsonValueKind.True);
 		Field(stack, apply, "Commands before a run (one per line, each must succeed)", work, "beforeRun", JsonValueKind.Array);
 		Field(stack, apply, "Commands after a run (one per line)", work, "afterRun", JsonValueKind.Array);
 		// History > What MO2 changed: a profile only tests use, or test mods, can be left out of the view (nothing is lost)
@@ -331,6 +337,38 @@ public static class SettingsPanel
 		Field(stack, apply, "What MO2 changed - mods left out whose name starts with (one per line)", changes, "hideModsStartingWith", JsonValueKind.Array);
 
 		// the window's look for every setup (his ask 2026-10-27: themes his design agent makes from "Theme template.json")
+		// his checklist 476
+		Head("THE WINDOW'S LANGUAGE");
+		var languageNote = new TextBlock { Text = "English, or a language file in the Languages folder. A file holds each English text and its translation; what it leaves out stays English. Nothing is translated yet: this is ready for whoever wants to.",
+			Style = (Style)a_w.FindResource("MutedText"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 8) };
+		var languages = new ComboBox { MinWidth = 220, Margin = new Thickness(0, 0, 10, 0), ItemsSource = WindowWords.Available(), SelectedItem = WindowWords.Picked() };
+		System.Windows.Automation.AutomationProperties.SetName(languages, "The window's language");
+		languages.SelectionChanged += (_, _) => {
+			if (languages.SelectedItem is string picked && picked != WindowWords.Picked()) {
+				try {
+					WindowWords.Pick(picked);
+					languageNote.Text = "It applies the next time this program starts.";
+				} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+					a_vm.Say("The language could not be kept: " + e.Message, "bad");
+				}
+			}
+		};
+		var makeLanguage = new Button { Content = "Make a language file ...", Style = (Style)a_w.FindResource("Ghost"), ToolTip = "A file with the texts this window shows now, ready to translate. Press it again with History open to add those too." };
+		makeLanguage.Click += (_, _) => {
+			try {
+				var file = WindowWords.WriteTemplate(a_w);
+				a_vm.Say("Made: " + file, "good");
+				MainViewModel.OpenFolder(WindowWords.Folder);
+			} catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException) {
+				a_vm.Say("The language file could not be made: " + e.Message, "bad");
+			}
+		};
+		stack.Children.Add(languageNote);
+		var languageRow = new StackPanel { Orientation = Orientation.Horizontal };
+		languageRow.Children.Add(languages);
+		languageRow.Children.Add(makeLanguage);
+		stack.Children.Add(languageRow);
+
 		Head("THE WINDOW'S LOOK");
 		var themeNote = new TextBlock { Text = "A theme is a copy of \"Theme template.json\" (in the Themes folder) with new values. It applies at once.",
 			Style = (Style)a_w.FindResource("MutedText"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 8) };
@@ -412,6 +450,157 @@ public static class SettingsPanel
 
 		NewVersions(a_w, stack);
 
+		// his checklist 433-435: add-ons from other modders, each allowed by the player
+		Head("ADD-ONS");
+		var addOnNote = new TextBlock { Style = (Style)a_w.FindResource("MutedText"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 8),
+			Text = "A modder can add their patcher with one file in their own mod. The wiki has the guide and an example." };
+		var addOnRows = new StackPanel();
+		var lookAddOns = new Button { Content = "Look for add-ons in this profile", Style = (Style)a_w.FindResource("Ghost"), Margin = new Thickness(0, 0, 8, 0) };
+		var checkAddOn = new Button { Content = "Check my add-on file ...", Style = (Style)a_w.FindResource("Ghost"), ToolTip = "For modders: says in plain words what is wrong with an add-on file" };
+		lookAddOns.Click += async (_, _) => {
+			addOnRows.Children.Clear();
+			if (a_vm.Setup is not { } current) {
+				return;
+			}
+			lookAddOns.IsEnabled = false;
+			try {
+				// a long mod list on a slow disk: off the window's thread
+				var (mo2, found) = await Task.Run(() => {
+					var there = Mo2Instance.Load(current.Mo2Exe, current.Mo2Instance);
+					return (there, AddOns.Find(there, new Profile(there, current.Profile, () => true)));
+				});
+				if (a_vm.Setup != current) {
+					return;
+				}
+				addOnNote.Text = found.Count == 0 ? "No ticked mod of this profile holds an add-on." : $"{found.Count} add-on file(s) in this profile's ticked mods.";
+				foreach (var hit in found) {
+					var row = new DockPanel { Margin = new Thickness(0, 2, 0, 2) };
+					if (hit.AddOn is { } addOn && !AddOns.Allowed(current, addOn)) {
+						var allow = new Button { Content = AddOns.InSetup(current, addOn) ? "It changed: allow it again" : "Add it", Style = (Style)a_w.FindResource("Ghost"), Margin = new Thickness(8, 0, 0, 0) };
+						allow.Click += (_, _) => {
+							if (HasChanges) {
+								a_vm.Say("Save or undo your changes first.", "warn");
+								return;
+							}
+							if (AddOns.OutputTaken(mo2, current, addOn) is { } taken) {
+								a_vm.Say($"{addOn.Name} would write into your mod {taken}, and a run replaces what its output holds. Rename that mod to use this add-on.", "bad");
+								return;
+							}
+							if (Setup.Bool(current.Root, AddOns.NoAskSetting) != true && !Ask.Show(a_w, "Add this add-on?", addOn.Says, "Allow it", "Not now")) {
+								return;
+							}
+							// the box can stay open while a run starts: a run's plan is what its preview showed
+							if (a_vm.SetupInUse) {
+								a_vm.Say("A run is using this setup: add it when the run is done.", "warn");
+								return;
+							}
+							var order = AddOns.AddToSetup(current.Root, addOn, current.Profile);
+							current.Save();
+							a_vm.LoadSetups(current.File);
+							a_w.ShowPanel("settings", true);
+							if (order != null) {
+								a_vm.Say(order, "warn");
+							}
+						};
+						DockPanel.SetDock(allow, Dock.Right);
+						row.Children.Add(allow);
+					}
+					row.Children.Add(new TextBlock { TextWrapping = TextWrapping.Wrap, Text = hit.AddOn is { } a ?
+						$"{a.Name}, by {a.Author}, in {hit.Mod}" + (AddOns.InSetup(current, a) ? " - in this setup" : "") :
+						$"{hit.File}: {string.Join("; ", hit.Problems)}" });
+					addOnRows.Children.Add(row);
+				}
+			} catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException) {
+				a_vm.Say("The add-ons could not be looked for: " + e.Message, "bad");
+			} finally {
+				lookAddOns.IsEnabled = true;
+			}
+		};
+		checkAddOn.Click += (_, _) => {
+			var d = new Microsoft.Win32.OpenFileDialog { Filter = "Add-on file|*.json", Title = "Your add-on file" };
+			if (d.ShowDialog(a_w) != true) {
+				return;
+			}
+			try {
+				var parent = Path.GetDirectoryName(d.FileName);
+				var problems = AddOns.Problems(Files.ReadSharedText(d.FileName), Path.GetFileName(parent) == AddOns.FolderInMod ? Path.GetDirectoryName(parent) : null);
+				a_vm.Say(problems.Count == 0 ? "That add-on file is right." : string.Join(" ", problems.Select(p => p + ".")), problems.Count == 0 ? "good" : "bad");
+			} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+				a_vm.Say("That file could not be read: " + e.Message, "bad");
+			}
+		};
+		stack.Children.Add(addOnNote);
+		var addOnBar = new WrapPanel { Orientation = Orientation.Horizontal };
+		addOnBar.Children.Add(lookAddOns);
+		addOnBar.Children.Add(checkAddOn);
+		stack.Children.Add(addOnBar);
+		stack.Children.Add(addOnRows);
+		work[AddOns.NoAskSetting] ??= false;
+		Field(stack, apply, "Do not ask before adding an add-on, or when its file changes", work, AddOns.NoAskSetting, JsonValueKind.True);
+
+		// his checklist 468: the program in Mod Organizer's Tools menu
+		if (a_vm.Setup is { } menuSetup && Environment.ProcessPath is { } program) {
+			try {
+				var menuMo2 = Mo2Instance.Load(menuSetup.Mo2Exe, menuSetup.Mo2Instance);
+				Head("MOD ORGANIZER'S TOOLS MENU");
+				var menuNote = new TextBlock { Style = (Style)a_w.FindResource("MutedText"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 8),
+					Text = Mo2MenuEntry.IsCurrent(menuMo2, program) ? "This program is in Mod Organizer's Tools menu. It opens here on the profile Mod Organizer shows." :
+						"An entry in Mod Organizer's Tools menu that opens this program on the profile Mod Organizer shows. It is one small file in Mod Organizer's plugins folder." };
+				stack.Children.Add(menuNote);
+				if (!Mo2MenuEntry.IsCurrent(menuMo2, program)) {
+					var addMenu = new Button { Content = "Add it to the Tools menu", Style = (Style)a_w.FindResource("Ghost"), HorizontalAlignment = HorizontalAlignment.Left };
+					addMenu.Click += (_, _) => {
+						try {
+							Mo2MenuEntry.Add(menuMo2, program);
+							menuNote.Text = "Added. It shows the next time Mod Organizer starts.";
+							addMenu.IsEnabled = false;
+						} catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException) {
+							a_vm.Say("The entry could not be added: " + e.Message, "bad");
+						}
+					};
+					stack.Children.Add(addMenu);
+				}
+			} catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException) {
+				a_vm.Say("Mod Organizer could not be read for its plugins: " + e.Message, "warn");
+			}
+		}
+
+		// his checklist 492: our add-on, only where Root Builder is in this setup's Mod Organizer
+		if (a_vm.Setup is { } rootSetup) {
+			try {
+				var rootMo2 = Mo2Instance.Load(rootSetup.Mo2Exe, rootSetup.Mo2Instance);
+				var state = RootBuilderAddOn.StateOf(rootMo2);
+				if (state != RootBuilderAddOn.State.NoRootBuilder) {
+					Head("ROOT BUILDER");
+					var rootNote = new TextBlock { Style = (Style)a_w.FindResource("MutedText"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 8),
+						Text = "Runs wait for Root Builder to put its files in place and to take them out. Our add-on, Root Builder Profiles, keeps what Root Builder leaves behind per profile " +
+						"and offers to move presets no mod owns out of the game folder. It is optional, and it needs Root Builder itself." };
+					stack.Children.Add(rootNote);
+					if (state == RootBuilderAddOn.State.Current) {
+						rootNote.Text += " It is in Mod Organizer.";
+					} else {
+						var addOn = new Button { Content = state == RootBuilderAddOn.State.NotAdded ? "Add Root Builder Profiles ..." : "Update Root Builder Profiles ...", Style = (Style)a_w.FindResource("Ghost"), HorizontalAlignment = HorizontalAlignment.Left };
+						addOn.Click += (_, _) => {
+							if (!Ask.Show(a_w, RootBuilderAddOn.Title, "It goes into Mod Organizer's plugins folder, and Mod Organizer loads it the next time it starts. To take it out, delete its folder there, rootbuilderprofiles.", "Add it", "Not now")) {
+								return;
+							}
+							try {
+								RootBuilderAddOn.Add(rootMo2);
+								rootNote.Text = "Root Builder Profiles is in Mod Organizer now. It loads the next time Mod Organizer starts.";
+								addOn.IsEnabled = false;
+							} catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException) {
+								a_vm.Say("The add-on could not be added: " + e.Message, "bad");
+							}
+						};
+						stack.Children.Add(addOn);
+					}
+				}
+			} catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException) {
+				// a setup whose Mod Organizer does not read says so in its check: nothing to offer here
+				a_vm.Say("Mod Organizer could not be read for its plugins: " + e.Message, "warn");
+			}
+		}
+
 		// his ask 2026-10-27: aware of a tool's updates, the download from the runner (its page, in the player's browser)
 		Head("TOOL UPDATES");
 		var updNote = new TextBlock { Text = "Asks each tool's own page (Nexus, GitHub) for its newest version - only when you press this.",
@@ -446,6 +635,30 @@ public static class SettingsPanel
 				updCheck.IsEnabled = true;
 			}
 		};
+		// his checklist 445: what a tool's update may have moved, looked for before a run needs it
+		var testTools = new Button { Content = "Test my tools ...", Style = (Style)a_w.FindResource("Ghost"), HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 0, 0, 8),
+			ToolTip = "Opens each tool that is driven through its window, up to the window a run presses, and looks for what it would press" };
+		var testRows = new StackPanel();
+		testTools.Click += async (_, _) => {
+			if (a_vm.Setup is not { } testSetup || !Ask.Show(a_w, "Test my tools", "Each tool this program drives through its window opens through Mod Organizer, up to the window a run presses, and closes again. " +
+				"Nothing is pressed and nothing is built. Mod Organizer closes for it, and the LOD tools read your whole load order first, so it can take a while.", "Test them", "Not now")) {
+				return;
+			}
+			testTools.IsEnabled = false;
+			testRows.Children.Clear();
+			try {
+				var results = await Task.Run(() => ToolProof.TestAll(testSetup, RunLog.Null, CancellationToken.None));
+				foreach (var r in results) {
+					testRows.Children.Add(new TextBlock { Text = r.Text, TextWrapping = TextWrapping.Wrap, Foreground = Brushes2.Get(r.Good ? "Text" : "Bad"), Margin = new Thickness(0, 2, 0, 2) });
+				}
+			} catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidOperationException or StepFailedException) {
+				a_vm.Say("The tools could not be tested: " + e.Message, "bad");
+			} finally {
+				testTools.IsEnabled = true;
+			}
+		};
+		stack.Children.Add(testTools);
+		stack.Children.Add(testRows);
 		stack.Children.Add(updNote);
 		stack.Children.Add(updCheck);
 		stack.Children.Add(updRows);

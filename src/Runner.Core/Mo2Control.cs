@@ -97,7 +97,7 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 				continue;
 			}
 			var image = Procs.Image(pid);
-			if (image == "" || image.Equals("ModOrganizer.exe", StringComparison.OrdinalIgnoreCase)) {
+			if (image == "" || image.Equals("ModOrganizer.exe", StringComparison.OrdinalIgnoreCase) || IsThisProgram(image)) {
 				continue;
 			}
 			if (a_windowed && Native.TopWindowsOf([pid]).Count == 0) {
@@ -108,7 +108,32 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 		return outList;
 	}
 
-	public bool Running => IsRunning();
+	// a program anyone can be running: being new is not enough to make one the tool
+	public static bool IsShared(string a_image) => IsJava(a_image) || a_image.Equals("cmd.exe", StringComparison.OrdinalIgnoreCase);
+
+	public static bool IsJava(string a_image) => a_image.Equals("javaw.exe", StringComparison.OrdinalIgnoreCase) || a_image.Equals("java.exe", StringComparison.OrdinalIgnoreCase);
+
+	// this program started from Mod Organizer's Tools menu (his checklist 468) is its child, and never a program the run waits for
+	public static bool IsThisProgram(string a_image) => Journal.IsRunnerName(Path.GetFileNameWithoutExtension(a_image));
+
+	public bool Running => IsRunning() && !HeldOpen;
+
+	// his checklist 477: the option to keep Mod Organizer open during a run. HeldOpen: it stays open, and the order files may be written; what is written is
+	// read back in before anything else starts or it closes, or it would write its old lists over them
+	public bool CompanionOn { get; set; }
+	public bool HeldOpen { get; private set; }
+	// the companion did not answer and Mod Organizer closes as usual after all: the run's record must say so
+	public Action? CompanionGaveUp { get; set; }
+	public static TimeSpan CompanionPing { get; set; } = TimeSpan.FromSeconds(5);
+	public static TimeSpan CompanionRefresh { get; set; } = TimeSpan.FromMinutes(3);
+
+	void ReadBackIn(CancellationToken a_ct)
+	{
+		if (!Companion.Ask(Mo2, ProfileName, "refresh", CompanionRefresh, a_ct)) {
+			throw new StepFailedException($"Mod Organizer's companion did not read the lists back in within {CompanionRefresh.TotalMinutes:0} minutes - put your profile back, then switch off \"Keep Mod Organizer open\" in Settings");
+		}
+		HeldOpen = false;
+	}
 
 	public List<string> DownloadsInProgress() => Downloads(Mo2.DownloadsDir).Active;
 
@@ -185,7 +210,7 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 		return outList;
 	}
 
-	static bool InVfs(Process a_p)
+	public static bool InVfs(Process a_p)
 	{
 		try {
 			return a_p.Modules.Cast<ProcessModule>().Any(m => m.ModuleName.StartsWith("usvfs", StringComparison.OrdinalIgnoreCase));
@@ -231,6 +256,13 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 
 	public void Start(CancellationToken a_ct)
 	{
+		if (HeldOpen) {
+			if (IsRunning()) {
+				ReadBackIn(a_ct);
+			} else {
+				HeldOpen = false;
+			}
+		}
 		if (!Running) {
 			WaitForLeftovers(a_ct);
 			_log.Detail($"starting Mod Organizer (profile {ProfileName})");
@@ -353,7 +385,7 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 			return;
 		}
 		foreach (var b in Uia.Boxes(Pids()).Where(b => b.Text == a_text)) {
-			if (Uia.Button(b.Element, "OK", "Close") is { } ok) {
+			if ((b.Buttons.Count == 1 ? b.Buttons[0] : Uia.Button(b.Element, "OK", "Close")) is { } ok) {
 				Uia.Press(ok);
 			}
 		}
@@ -425,6 +457,7 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 	public void Close(TimeSpan? a_timeout = null, CancellationToken a_ct = default)
 	{
 		if (!IsRunning()) {
+			HeldOpen = false;
 			return;
 		}
 		if (RunningProbe == null && Unreadable().Count > 0) {
@@ -465,7 +498,23 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 		if (RunningProbe == null) {
 			WaitWhilePlayerUses(a_ct);
 		}
+		if (CompanionOn && RunningProbe == null) {
+			if (HeldOpen || Companion.Ask(Mo2, ProfileName, "ping", CompanionPing, a_ct)) {
+				HeldOpen = true;
+				// what comes next must not build on the last tool's Root files
+				WaitForRootBuilder(a_ct);
+				return;
+			}
+			_log.Warn("Mod Organizer's companion does not answer, so Mod Organizer closes between the steps as usual (add the Tools menu entry in Settings, and start Mod Organizer once)");
+			CompanionOn = false;
+			CompanionGaveUp?.Invoke();
+		}
+		if (HeldOpen) {
+			ReadBackIn(a_ct);
+		}
+		WaitForRootBuilder(a_ct);
 		_log.Detail("closing Mod Organizer");
+		_boxesBeforeClose = [.. Uia.Boxes(Pids()).Select(b => b.Text)];
 		var sw = Stopwatch.StartNew();
 		var limit = a_timeout ?? TimeSpan.FromMinutes(5);
 		var lastPost = TimeSpan.FromSeconds(-30);
@@ -487,7 +536,43 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 		Thread.Sleep(800);
 	}
 
+	// his checklist 443: Mod Organizer closed before Root Builder's clear would leave its files in the game folder
+	void WaitForRootBuilder(CancellationToken a_ct)
+	{
+		if (RunningProbe == null && Mo2.RootBuilderBuilds && !_rootBuilderStuck && !WaitForClear(Mo2.RootBuilderDeployed, a_ct)) {
+			// once: left over from a build the player made, it would cost this wait at every close of the run
+			_rootBuilderStuck = true;
+			_log.Warn($"Root Builder may still have its files in the game folder after {RootBuilderWait.TotalMinutes:0} minutes - going on all the same; it takes them out at Mod Organizer's next start");
+		}
+	}
+
+	public static TimeSpan RootBuilderWait { get; set; } = TimeSpan.FromMinutes(3);
+	public static TimeSpan RootBuilderLook { get; set; } = TimeSpan.FromSeconds(1);
+	// its first build reads the whole game folder before the program starts
+	static readonly TimeSpan RootBuilderBuildTime = TimeSpan.FromMinutes(10);
+
+	TimeSpan StartLimit(TimeSpan a_normal) => Mo2.RootBuilderBuilds ? a_normal + RootBuilderBuildTime : a_normal;
+
+	// true = its files are out of the game folder; false = they still stood at the limit
+	public static bool WaitForClear(Func<bool> a_deployed, CancellationToken a_ct)
+	{
+		var sw = Stopwatch.StartNew();
+		while (a_deployed()) {
+			if (sw.Elapsed > RootBuilderWait) {
+				return false;
+			}
+			a_ct.WaitHandle.WaitOne(RootBuilderLook);
+			a_ct.ThrowIfCancellationRequested();
+		}
+		return true;
+	}
+
+	bool _rootBuilderStuck;
 	readonly HashSet<string> _leftAlone = [];
+	HashSet<string> _boxesBeforeClose = [];
+
+	// his checklist 439: a Mod Organizer set to words we cannot read (its own setting, else Windows' language, as it picks one itself)
+	public static bool SpeaksOther(string a_setting, string a_windows) => !(a_setting == "" ? a_windows : a_setting).StartsWith("en", StringComparison.OrdinalIgnoreCase);
 
 	public static TimeSpan PlayerQuiet { get; set; } = TimeSpan.FromSeconds(45);
 
@@ -512,7 +597,8 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 	}
 
 	// the questions and notices Mod Organizer itself shows when it closes - every Windows language says them in its own words, so
-	// the known shapes are read by their key words in English and by MO2's own one-button notice (an OK alone)
+	// the known shapes are read by their key words in English and by MO2's own one-button notice (an OK alone). In another language
+	// nothing else is answered Yes: its only close question is the downloads one (read off its source), told by the state below
 	public static bool CloseBox(string a_text, int a_buttons = 0) =>
 		a_buttons == 1 ||
 		System.Text.RegularExpressions.Regex.IsMatch(a_text, @"\b(quit\w*|exit\w*|clos\w*|error\w*|fail\w*|warning\w*|notification\w*)\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
@@ -522,16 +608,26 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 	// Notifications window and its own Qt error boxes block the close - answered OK / Close
 	void AnswerCloseBoxes()
 	{
+		var otherWords = SpeaksOther(Mo2.Language, System.Globalization.CultureInfo.CurrentUICulture.Name);
 		foreach (var box in Uia.Boxes(Pids())) {
-			if (box.Text.Contains("download", StringComparison.OrdinalIgnoreCase)) {
-				var cancel = Uia.Button(box.Element, "Cancel", "No");
+			// our add-on's questions are about the player's own files: never answered for them (it asks nothing during a run; an older copy may)
+			if (box.Title.Equals(RootBuilderAddOn.Title, StringComparison.OrdinalIgnoreCase)) {
+				if (_leftAlone.Add(box.Text)) {
+					_log.Warn($"Mod Organizer shows a box this run does not answer - left for you: {Trim(box.Text)}");
+				}
+				continue;
+			}
+			// what the box asks cannot be read in another language, but the state it would ask about can
+			var cameAfter = otherWords && !_boxesBeforeClose.Contains(box.Text);
+			if (box.Text.Contains("download", StringComparison.OrdinalIgnoreCase) || (cameAfter && DownloadsInProgress().Count > 0)) {
+				var cancel = Uia.Button(box.Element, "Cancel", "No") ?? (cameAfter ? Uia.NoByPlace(box.Buttons) : null);
 				if (cancel != null) {
 					Uia.Press(cancel);
 				}
 				throw new Mo2BusyException("Mod Organizer asked about downloads in progress - answered Cancel, left open: " + Trim(box.Text));
 			}
-			if (box.Text.Contains("running", StringComparison.OrdinalIgnoreCase) && ForeignChildren(false) is { Count: > 0 } theirs) {
-				if (Uia.Button(box.Element, "No", "Cancel") is { } no) {
+			if ((box.Text.Contains("running", StringComparison.OrdinalIgnoreCase) || cameAfter) && ForeignChildren(false) is { Count: > 0 } theirs) {
+				if ((Uia.Button(box.Element, "No", "Cancel") ?? (cameAfter ? Uia.NoByPlace(box.Buttons) : null)) is { } no) {
 					Uia.Press(no);
 				}
 				throw new Mo2BusyException($"Mod Organizer asked to end programs that are still running, among them yours ({string.Join(", ", theirs.Select(t => t.Image).Distinct())}) - answered No, left open: {Trim(box.Text)}");
@@ -553,8 +649,9 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 		}
 		var main = MainWindow();
 		if (main != 0 && Uia.FromHandle(main) is { } e) {
-			foreach (var w in Uia.All(e, System.Windows.Automation.ControlType.Window).Where(w => Uia.Name(w) == "Notifications")) {
-				if (Uia.Button(w, "Close") is { } c) {
+			// by its class and its button's object name in any language (MO2's ProblemsDialog, closeButton)
+			foreach (var w in Uia.All(e, System.Windows.Automation.ControlType.Window).Where(w => Uia.Name(w) == "Notifications" || Uia.ClassName(w) == "ProblemsDialog")) {
+				if ((Uia.Button(w, "Close") ?? Uia.RealButtons(w).FirstOrDefault(b => Uia.AutomationId(b).EndsWith("closeButton", StringComparison.Ordinal))) is { } c) {
 					_log.Detail("Mod Organizer's notifications box closed");
 					Uia.Press(c);
 				}
@@ -565,15 +662,17 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 	static string Trim(string a_s) => a_s.Length > 200 ? a_s[..200] + " ..." : a_s;
 
 	// run one of MO2's executables through the running instance; returns the tool's process once it exists
-	public Process RunExecutable(string a_title, string a_image, string? a_args, CancellationToken a_ct, TimeSpan? a_startTimeout = null)
+	// a_byPath: a_title is the program's own path, for one that is in no Executables list (an add-on's)
+	public Process RunExecutable(string a_title, string a_image, string? a_args, CancellationToken a_ct, TimeSpan? a_startTimeout = null, bool a_byPath = false)
 	{
 		Start(a_ct);
 		var old = Procs.Pids(a_image).ToHashSet();
-		if (old.Count > 0) {
+		// (Java is any Java program's: only a new process counts as the tool, below)
+		if (old.Count > 0 && !IsShared(a_image)) {
 			throw new StepFailedException($"{a_image} is already running (process {string.Join(", ", old)}) - close it first");
 		}
 		_log.Detail($"running {a_title} through Mod Organizer{(string.IsNullOrEmpty(a_args) ? "" : " with " + a_args)}");
-		var cmd = $"{Quote(Mo2.Exe)}{Instance} -p {Quote(ProfileName)} run -e {Quote(a_title)}" + (string.IsNullOrEmpty(a_args) ? "" : $" -a {Quote(a_args)}");
+		var cmd = $"{Quote(Mo2.Exe)}{Instance} -p {Quote(ProfileName)} run {(a_byPath ? "" : "-e ")}{Quote(a_title)}" + (string.IsNullOrEmpty(a_args) ? "" : $" -a {Quote(a_args)}");
 		var logAt = LogLength();
 		var asked = DateTime.Now;
 		// what Mod Organizer starts while the tool is awaited - every process whose parent is one of its own, as it appears (a tool
@@ -594,10 +693,11 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 					started.Add($"(processes could not be listed: {e.Message})");
 				}
 			}
-			return FreshPid(a_image, old);
+			return FreshPid(a_image, old, IsShared(a_image) ? IsMo2s : null);
 		}
-		var pid = LaunchTool(cmd, Watch, a_startTimeout ?? TimeSpan.FromMinutes(3), a_ct) ?? throw new StepFailedException(
-			$"{a_image} did not start within {(a_startTimeout ?? TimeSpan.FromMinutes(3)).TotalMinutes:0} minutes - is MO2's executable \"{a_title}\" right?" +
+		var startLimit = StartLimit(a_startTimeout ?? TimeSpan.FromMinutes(3));
+		var pid = LaunchTool(cmd, Watch, startLimit, a_ct) ?? throw new StepFailedException(
+			$"{a_image} did not start within {startLimit.TotalMinutes:0} minutes - is MO2's executable \"{a_title}\" right?" +
 			WhatMo2Said(a_title, a_image, logAt) + KeepEvidence(a_title, logAt, asked, started));
 		_log.Detail($"{a_image} started (process {pid})");
 		Ours(pid);
@@ -736,12 +836,35 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 
 	// hand MO2 one request and wait for the tool's process; a request MO2 lost (its "secondary process" box) is asked again
 	// once MO2 is ready - at most twice more
-	static int FreshPid(string a_image, HashSet<int> a_old)
+	// a_accept: a process of this image can also be somebody else's (Java), so being new is not enough
+	public static int FreshPid(string a_image, HashSet<int> a_old, Func<int, bool>? a_accept = null)
 	{
 		var procs = Procs.ByImage(a_image);
-		var pid = procs.Select(p => p.Id).FirstOrDefault(id => !a_old.Contains(id));
+		var pid = procs.Select(p => p.Id).FirstOrDefault(id => !a_old.Contains(id) && (a_accept == null || a_accept(id)));
 		procs.ForEach(p => p.Dispose());
 		return pid;
+	}
+
+	// started under Mod Organizer, or hooked into its virtual folder (the shell that started it may have ended). A process ends only by a PID this run started
+	bool IsMo2s(int a_pid)
+	{
+		var mo2 = Pids().ToHashSet();
+		var parents = new Dictionary<int, int>();
+		foreach (var (pid, parent) in Procs.Snapshot()) {
+			parents[pid] = parent;
+		}
+		var at = a_pid;
+		for (var up = 0; up < 8 && parents.TryGetValue(at, out var parent); ++up, at = parent) {
+			if (mo2.Contains(parent)) {
+				return true;
+			}
+		}
+		try {
+			using var p = Process.GetProcessById(a_pid);
+			return InVfs(p);
+		} catch (Exception e) when (e is ArgumentException or InvalidOperationException) {
+			return false;
+		}
 	}
 
 	public int? LaunchTool(string a_cmd, Func<int> a_freshPid, TimeSpan a_limit, CancellationToken a_ct)
@@ -775,8 +898,9 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 		EnsureSteam(a_ct);
 		Start(a_ct);
 		_log.Detail($"starting the game through Mod Organizer ({a_title})");
-		var pid = LaunchTool($"{Quote(Mo2.Exe)}{Instance} -p {Quote(ProfileName)} run -e {Quote(a_title)}", a_gamePid, TimeSpan.FromMinutes(5), a_ct) ??
-			throw new StepFailedException($"the game did not start within 5 minutes - is MO2's executable \"{a_title}\" right?");
+		var startLimit = StartLimit(TimeSpan.FromMinutes(5));
+		var pid = LaunchTool($"{Quote(Mo2.Exe)}{Instance} -p {Quote(ProfileName)} run -e {Quote(a_title)}", a_gamePid, startLimit, a_ct) ??
+			throw new StepFailedException($"the game did not start within {startLimit.TotalMinutes:0} minutes - is MO2's executable \"{a_title}\" right?");
 		// the run's own game: the only one it may close (a game the player starts is never touched)
 		Started.Add(pid);
 		return pid;

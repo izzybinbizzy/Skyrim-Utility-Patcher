@@ -1648,6 +1648,132 @@ public static class Program
 		Check(File.Exists(Path.Combine(f.Mods, "Output A", "OutA.esp")), "the old output is still there");
 		Check(ProfileOf(f).IsOn("Output A"), "and switched back on");
 		Equal(1, StepCatalog.DefaultOrder.ToList().IndexOf("synthesis") - StepCatalog.DefaultOrder.ToList().IndexOf("wryebash"), "Wrye Bash sits right before Synthesis");
+		// his checklist 436: the patchers with no unattended route are guided the same way, and made only for what Mod Organizer's list holds, switched off
+		foreach (var key in new[] { "easynpc", "upf", "smash", "reqtificator" }) {
+			Check(StepRegistry.For(key) is GuidedToolStep, key + " is a step");
+			Check(StepCatalog.DefaultOrder.ToList().IndexOf(key) < StepCatalog.DefaultOrder.ToList().IndexOf("dyndolod"), key + " comes before the LOD tools");
+		}
+		var iniFile = Path.Combine(f.Instance, "ModOrganizer.ini");
+		var smash = Path.Combine(f.Root, "tools", "MatorSmash.exe");
+		Directory.CreateDirectory(Path.GetDirectoryName(smash)!);
+		File.WriteAllText(smash, "");
+		File.WriteAllText(iniFile, ToolFinder.WithExecutable(ToolFinder.WithExecutable(File.ReadAllText(iniFile), "Smash", smash, ""), "Run Reqtificator", Path.Combine(f.Root, "tools", "javaw.exe"), "-jar x.jar"));
+		var made = SetupMaker.Make(f.Exe, f.Instance, "Test", "made", f.Data);
+		var smashStep = made.Steps.Single(s => s.Key == "smash");
+		Check(!smashStep.On && Setup.Str(smashStep.Settings, "image") == "MatorSmash.exe", "Smash: its program, switched off");
+		var req = made.Steps.Single(s => s.Key == "reqtificator");
+		Check(!req.On && Setup.Str(req.Settings, "executable") == "Run Reqtificator" && Setup.Str(req.Settings, "image") == "javaw.exe", "ReqTificator by its title: " + req.Settings.ToJsonString());
+		Check(!made.Steps.Any(s => s.Key is "easynpc" or "upf"), "and none for what the list does not hold");
+	}
+
+	// a guided tool that wrote elsewhere leaves its output mod out of the run: not rebuilt, not set aside by Undo
+	static void T_AnOutputNothingWroteStaysThePlayers()
+	{
+		using var f = new FakeMo2();
+		StepRegistry.Replace(new FakeStep("easynpc", (ctx, s) => ctx.OutputUntouched = true));
+		f.WriteSetup(("easynpc", new JsonObject { ["output_mod"] = "Output A" }));
+		Equal(RunState.Finished, Runner.Run(new RunRequest(f.SetupFile, f.Data)).State, "the run finished");
+		var j = Journal.All(Runner.RunsDir(f.Data)).First();
+		Check(!j.Built.Contains("Output A"), "not called built");
+		Check(ProfileOf(f).IsOn("Output A"), "as it was before the run");
+		Check(!RunUndo.LeftSomething(j), "and nothing for Undo to take");
+		Check(File.Exists(Path.Combine(f.Mods, "Output A", "OutA.esp")), "its files where they were");
+	}
+
+	// a file put back is as it was, its time too: in overwrite a new time would read as the step's own file
+	static void T_AFilePutBackKeepsItsTime()
+	{
+		using var f = new FakeMo2();
+		f.WriteSetup(("acmos", []));
+		var ctx = StepContext(f, "acmos");
+		var file = Path.Combine(f.Overwrite, "kept.ini");
+		File.WriteAllText(file, "before");
+		var then = new DateTime(2020, 1, 2, 3, 4, 5, DateTimeKind.Utc);
+		File.SetLastWriteTimeUtc(file, then);
+		StepKit.KeepFile(ctx, file);
+		File.WriteAllText(file, "changed");
+		Equal(0, StepKit.PutFilesBack(ctx, file).Count, "put back");
+		Equal("before", File.ReadAllText(file), "its words");
+		Equal(then, File.GetLastWriteTimeUtc(file), "and its time");
+	}
+
+	// a program anyone can be running counts as the tool only when it is Mod Organizer's; a script's own program is the command interpreter
+	static void T_ASharedProgramCountsOnlyWhenItIsMo2s()
+	{
+		Check(Mo2Control.IsShared("javaw.exe") && Mo2Control.IsShared("CMD.EXE") && !Mo2Control.IsShared("Reqtificator.exe"), "which programs are anyone's");
+		using var ping = Process.Start(new ProcessStartInfo("ping", "-n 30 127.0.0.1") { CreateNoWindow = true, UseShellExecute = false, RedirectStandardOutput = true })!;
+		try {
+			Equal(0, Mo2Control.FreshPid("PING.EXE", [], _ => false), "somebody else's is not the tool");
+			Equal(ping.Id, Mo2Control.FreshPid("PING.EXE", [], id => id == ping.Id), "its own is");
+		} finally {
+			ping.Kill();
+			ping.WaitForExit();
+		}
+		using var f = new FakeMo2();
+		var bat = Path.Combine(f.Root, "tools", "Reqtificator.bat");
+		Directory.CreateDirectory(Path.GetDirectoryName(bat)!);
+		File.WriteAllText(bat, "");
+		var ini = Path.Combine(f.Instance, "ModOrganizer.ini");
+		File.WriteAllText(ini, ToolFinder.WithExecutable(File.ReadAllText(ini), "Reqtificator", bat, ""));
+		Equal("cmd.exe", Setup.Str(SetupMaker.Make(f.Exe, f.Instance, "Test", "made", f.Data).Steps.Single(s => s.Key == "reqtificator").Settings, "image"), "a script is followed through its interpreter");
+		// a Java tool's version is Java's, not the tool's: not known, and never read as up to date
+		var java = Path.Combine(f.Root, "tools", "javaw.exe");
+		File.WriteAllText(java, "");
+		File.WriteAllText(ini, ToolFinder.WithExecutable(File.ReadAllText(ini), "Java Tool", java, ""));
+		Equal("", ToolUpdates.Yours(Mo2Instance.Load(f.Exe, f.Instance), new StepSettings(new JsonObject { ["executable"] = "Java Tool" })).Version, "no version from Java");
+	}
+
+	// Root Builder's folder for this game and version decides; a mark left by another copy says nothing about this one
+	static void T_RootBuilderIsAskedAboutThisGame()
+	{
+		Equal("CGamesSkyrim_SE", Mo2Instance.RootBuilderFolderName(@"C:\Games\Skyrim SE"), "named as Root Builder names it");
+		Equal("1_6_1170_0", Mo2Instance.RootBuilderFolderName("1.6.1170.0"), "a version too");
+		using var f = new FakeMo2();
+		var mo2 = Mo2Instance.Load(f.Exe, f.Instance);
+		var data = Path.Combine(Path.GetDirectoryName(f.Exe)!, "plugins", "data", "RootBuilder");
+		var other = Path.Combine(data, "another copy", "1_5_97_0");
+		Directory.CreateDirectory(other);
+		File.WriteAllText(Path.Combine(other, "BuildData.json"), "{}");
+		Check(mo2.RootBuilderDeployed(), "no folder for this game yet: any mark counts");
+		var mine = Path.Combine(data, Mo2Instance.RootBuilderFolderName(mo2.GameDir));
+		Directory.CreateDirectory(mine);
+		Check(!mo2.RootBuilderDeployed(), "its own folder holds none: another copy's mark says nothing");
+		File.WriteAllText(Path.Combine(mine, "BuildData.json"), "{}");
+		Check(mo2.RootBuilderDeployed(), "its own mark does");
+	}
+
+	// a language file: a value left empty stays English, a name is only a name, and a file that does not read is not replaced
+	static void T_ALanguageFileCannotHarmTheWindow()
+	{
+		ToolRunner.App.WindowWords.Use(new Dictionary<string, string> { ["Start"] = "Starten", ["Empty"] = null!, ["Blank"] = "  " });
+		ToolRunner.App.WindowWords.Use(new Dictionary<string, string>());
+		Check(ToolRunner.App.WindowWords.GoodName("Deutsch") && ToolRunner.App.WindowWords.GoodName("My language"), "a name");
+		foreach (var bad in new[] { @"..\outside", "a/b", @"C:\x", "..", ".", " " }) {
+			Check(!ToolRunner.App.WindowWords.GoodName(bad), "no language's name: " + bad);
+		}
+		var name = "a test " + Guid.NewGuid().ToString("N")[..8];
+		var mine = Path.Combine(ToolRunner.App.WindowWords.Folder, name + ".json");
+		Directory.CreateDirectory(ToolRunner.App.WindowWords.Folder);
+		File.WriteAllText(mine, "{ broken");
+		try {
+			Exception? failed = null;
+			var t = new Thread(() => {
+				try {
+					Throws<InvalidDataException>(() => ToolRunner.App.WindowWords.WriteTemplate(new System.Windows.Controls.StackPanel(), name), "a file that does not read stops it");
+				} catch (Exception e) {
+					failed = e;
+				}
+			});
+			t.SetApartmentState(ApartmentState.STA);
+			t.Start();
+			t.Join();
+			if (failed != null) {
+				throw failed;
+			}
+			Equal("{ broken", File.ReadAllText(mine), "a translator's file that does not read is left as it is");
+		} finally {
+			File.Delete(mine);
+		}
 	}
 
 	// a command whose program path is quoted (a path with spaces) runs as written - cmd's own quoting, not Windows' escaping
@@ -4340,6 +4466,20 @@ public static class Program
 		}
 	}
 
+	static void T_TheRealGameArchiveHoldsItsWords()
+	{
+		if (Environment.GetEnvironmentVariable("SUP_REAL_MO2") is not { Length: > 0 } exe) {
+			Console.WriteLine("      (skipped: SUP_REAL_MO2 not set)");
+			return;
+		}
+		var game = Mo2Instance.Load(exe, Environment.GetEnvironmentVariable("SUP_REAL_BASE")).GameDir;
+		var texts = GameWords.TranslationsIn(Path.Combine(game, "Data", "Skyrim - Interface.bsa"));
+		Check(texts.Count >= 8, $"every language's file: {texts.Count}");
+		var w = GameWords.Of(texts, []);
+		Equal(("answered NO", 1), DevBench.DecideBox("This save relies on Creations you have already downloaded but are currently inactive:\nMod.esp\nActivate now?", ["Ja", "Nein"], 2, w), "the German buttons, off the game's own file");
+		Check(w.AsksNo("You can also search for missing content in the Creations menu."), "a box's own English text, off that file");
+	}
+
 	// his checklist 459: a save that did not happen is said in the player's words, and names the way forward (the real proof of the force
 	// is in-game, on the full run's list)
 	static void T_ASaveThatDidNotHappenIsSaid()
@@ -4397,6 +4537,460 @@ public static class Program
 		Check(C("DynDOLOD.esm", "Late.esm").Single().Text.Contains("Late.esm", StringComparison.Ordinal), "a master after DynDOLOD.esm");
 		Check(C("DynDOLOD.esm", "Late.esl").Single().Text.Contains("Late.esl", StringComparison.Ordinal), "a light master after it too");
 		Equal(0, C("Early.esm", "DynDOLOD.esm", "Some.esp").Count, "plugins after DynDOLOD.esm are fine");
+	}
+
+	// his checklist 439: a standard Windows button by its control id, a Qt box's by where it stands; a Mod Organizer in another language
+	// answers only what came after the close request
+	static void T_ButtonsAreKnownByWhatTheyDo()
+	{
+		Equal("Yes", Uia.StandardName("6"), "a Windows box's Yes, in any language");
+		Equal("No", Uia.StandardName("CommandButton_7"), "a task dialog's No");
+		Equal("OK", Uia.StandardName("1"), "OK");
+		Equal<string?>(null, Uia.StandardName("9"), "not a standard button");
+		Equal<string?>(null, Uia.StandardName("0"), "nor this");
+		Equal<string?>(null, Uia.StandardName("mainWindow.closeButton"), "a Qt name is no id");
+		Equal<string?>(null, Uia.StandardName(""), "no id at all");
+		Equal("1|0", string.Join("|", Uia.ReadingOrder([(100.0, 50.0), (10.0, 50.0)])), "a row is read left to right");
+		Equal("0|1", string.Join("|", Uia.ReadingOrder([(10.0, 50.0), (10.0, 90.0)])), "a column top to bottom");
+		Check(!Mo2Control.SpeaksOther("en", "de-DE") && !Mo2Control.SpeaksOther("", "en-US"), "English by its setting, or by Windows when it has none");
+		Check(Mo2Control.SpeaksOther("de", "en-US") && Mo2Control.SpeaksOther("", "fr-FR"), "another language by its setting first");
+		Check(!Mo2Control.CloseBox("Wirklich beenden?", 2), "a question it cannot read is left for the player");
+		Check(Mo2Control.IsJava("javaw.exe") && !Mo2Control.IsJava("xEdit.exe"), "Java is any Java program's");
+	}
+
+	// his checklist 439: the game's own words for its load boxes, from a game archive laid out as the game's is
+	static void T_GameBoxesAreReadInItsOwnLanguage()
+	{
+		const string German = "$Yes\tJa\r\n$No\tNein\r\n$SaveGameMissingContentActivate\tJetzt aktivieren?\r\n$SaveGameInactiveContent\tDieser Spielstand braucht inaktive Inhalte:\r\n$Other\tEtwas anderes\r\n$SaveGameUnownedContinue\t\r\n";
+		var w = GameWords.Of([German], ["Dieser Spielstand braucht fehlende Inhalte. Weiter laden?"]);
+		Equal(("answered NO", 1), DevBench.DecideBox("Dieser Spielstand braucht inaktive Inhalte:\nMod.esp\nJetzt aktivieren?", ["Ja", "Nein"], 2, w), "the first box: No, in the game's words");
+		Equal(("answered YES", 0), DevBench.DecideBox("Dieser Spielstand braucht fehlende Inhalte. Weiter laden?", ["Ja", "Nein"], 2, w), "the second box: Yes");
+		Equal<string?>(null, DevBench.DecideBox("Etwas anderes", ["Ja", "Nein"], 2, w).Answer, "any other box is not answered");
+		Equal<string?>(null, DevBench.DecideBox("Dieser Spielstand braucht fehlende Inhalte. Weiter laden?", ["Oui", "Non"], 2, w).Answer, "nor one whose buttons it cannot read");
+		Equal(("answered NO", 1), DevBench.DecideBox("Some content is missing, search the Creations menu?", ["Yes", "No"], 2, w), "English still reads");
+		Equal(0, GameWords.Of([], []).HasAskYes, "nothing read: nothing known");
+		var dir = Path.Combine(Path.GetTempPath(), "SUP words " + Guid.NewGuid().ToString("N"));
+		try {
+			Directory.CreateDirectory(Path.Combine(dir, "Data"));
+			var other = "something else"u8.ToArray();
+			var text = System.Text.Encoding.Unicode.GetPreamble().Concat(System.Text.Encoding.Unicode.GetBytes(German)).ToArray();
+			var names = System.Text.Encoding.Latin1.GetBytes("other.txt\0translate_german.txt\0");
+			const int FolderName = 11;
+			var dataAt = 36 + 24 + FolderName + 2 * 16 + names.Length;
+			using (var o = new BinaryWriter(File.Create(Path.Combine(dir, "Data", "Skyrim - Interface.bsa")))) {
+				o.Write(0x00415342u);
+				o.Write(105u);
+				o.Write(36u);
+				o.Write(3u);
+				o.Write(1);
+				o.Write(2);
+				o.Write(FolderName - 1);
+				o.Write(names.Length);
+				o.Write(0u);
+				o.Write(1UL);
+				o.Write(2);
+				o.Write(0u);
+				o.Write(0UL);
+				o.Write((byte)(FolderName - 1));
+				o.Write(System.Text.Encoding.Latin1.GetBytes("interface\0"));
+				o.Write(1UL);
+				o.Write((uint)other.Length);
+				o.Write((uint)dataAt);
+				o.Write(2UL);
+				o.Write((uint)text.Length);
+				o.Write((uint)(dataAt + other.Length));
+				o.Write(names);
+				o.Write(other);
+				o.Write(text);
+			}
+			var read = GameWords.Read(dir, s => s == "sSaveGameContentIsMissing" ? "Dieser Spielstand braucht fehlende Inhalte. Weiter laden?" : null);
+			Equal(1, read.HasAskYes, "the game setting that answered");
+			Equal(("answered NO", 1), DevBench.DecideBox("Jetzt aktivieren?", ["Ja", "Nein"], 2, read), "read out of the archive");
+			Equal(0, GameWords.Read(Path.Combine(dir, "none"), _ => null).HasAskYes, "a game folder with no archive is no failure");
+			File.WriteAllBytes(Path.Combine(dir, "Data", "Skyrim - Interface.bsa"), [1, 2, 3]);
+			Equal(0, GameWords.Read(dir, _ => null).HasAskYes, "nor one that does not read");
+		} finally {
+			Directory.Delete(dir, true);
+		}
+	}
+
+	// his checklist 443 / 492: Root Builder setups are waited for, and our add-on goes in beside Root Builder, never without it
+	static void T_RootBuilderIsWaitedFor()
+	{
+		using var f = new FakeMo2();
+		var plain = Mo2Instance.Load(f.Exe, f.Instance);
+		Check(!plain.RootBuilderBuilds && !plain.RootBuilderDeployed(), "no Root Builder: nothing to wait for");
+		Equal(RootBuilderAddOn.State.NoRootBuilder, RootBuilderAddOn.StateOf(plain), "and no add-on to offer");
+		var plugins = Path.Combine(Path.GetDirectoryName(f.Exe)!, "plugins");
+		Directory.CreateDirectory(Path.Combine(plugins, "rootbuilder"));
+		Check(Mo2Instance.Load(f.Exe, f.Instance).RootBuilderBuilds, "nothing in the ini: Root Builder's own default, its automatic build on");
+		var iniFile = Path.Combine(f.Instance, "ModOrganizer.ini");
+		var noPlugins = File.ReadAllText(iniFile);
+		File.WriteAllText(iniFile, noPlugins + "[Plugins]\r\nRootBuilder\\autobuild=false\r\n");
+		Check(!Mo2Instance.Load(f.Exe, f.Instance).RootBuilderBuilds, "its automatic build off: it builds only when the player asks");
+		File.WriteAllText(iniFile, noPlugins + "[Plugins]\r\nRootBuilder\\enabled=false\r\n");
+		Check(!Mo2Instance.Load(f.Exe, f.Instance).RootBuilderBuilds, "the plugin switched off in Mod Organizer: nothing builds");
+		File.WriteAllText(iniFile, noPlugins + "[Plugins]\r\nRootBuilder\\autobuild=true\r\n");
+		var mo2 = Mo2Instance.Load(f.Exe, f.Instance);
+		Check(mo2.RootBuilderBuilds, "its automatic build on");
+		Check(!mo2.RootBuilderDeployed(), "nothing built yet");
+		var data = Path.Combine(plugins, "data", "RootBuilder", "game", "1_6_1170_0");
+		Directory.CreateDirectory(data);
+		File.WriteAllText(Path.Combine(data, "BuildData.json"), "{}");
+		Check(mo2.RootBuilderDeployed(), "built: its files are in the game folder");
+		var keep = (Mo2Control.RootBuilderWait, Mo2Control.RootBuilderLook);
+		try {
+			Mo2Control.RootBuilderLook = TimeSpan.FromMilliseconds(5);
+			var reads = 0;
+			Check(Mo2Control.WaitForClear(() => ++reads < 3, CancellationToken.None), "waited until they are out");
+			Equal(3, reads, "looked until then");
+			Mo2Control.RootBuilderWait = TimeSpan.FromMilliseconds(30);
+			Check(!Mo2Control.WaitForClear(() => true, CancellationToken.None), "and not for ever");
+			using var stop = new CancellationTokenSource();
+			stop.Cancel();
+			Throws<OperationCanceledException>(() => Mo2Control.WaitForClear(() => true, stop.Token), "a Stop ends the wait");
+		} finally {
+			(Mo2Control.RootBuilderWait, Mo2Control.RootBuilderLook) = keep;
+		}
+		Equal(RootBuilderAddOn.State.NotAdded, RootBuilderAddOn.StateOf(mo2), "the add-on on offer");
+		RootBuilderAddOn.Add(mo2);
+		Equal(RootBuilderAddOn.State.Current, RootBuilderAddOn.StateOf(mo2), "added");
+		var added = Path.Combine(plugins, "rootbuilderprofiles");
+		Check(File.ReadAllText(Path.Combine(added, "__init__.py")).Contains("def createPlugin", StringComparison.Ordinal), "under the name Mod Organizer loads");
+		Check(File.ReadAllText(Path.Combine(added, "core.py")).Contains("\"Local\\\\" + Brand.Name + " run\"", StringComparison.Ordinal), "it knows this program's run lock by its real name");
+		File.AppendAllText(Path.Combine(added, "core.py"), "# changed\n");
+		Equal(RootBuilderAddOn.State.Different, RootBuilderAddOn.StateOf(mo2), "another copy of it is told apart");
+		RootBuilderAddOn.Add(mo2);
+		Equal(RootBuilderAddOn.State.Current, RootBuilderAddOn.StateOf(mo2), "and brought level");
+	}
+
+	// his checklist 467: the tools on the PC named against Mod Organizer's list, the found ones added to it with every other line left alone
+	static void T_TheFirstStartHelperFindsTools()
+	{
+		using var f = new FakeMo2();
+		foreach (var (mod, exe) in new[] { ("DynDOLOD Tool", "DynDOLODx64.exe"), ("Far, away", "Synthesis.exe"), ("Tool Mod", Path.Combine("sub", "folder", "PGPatcher.exe")) }) {
+			Directory.CreateDirectory(Path.GetDirectoryName(Path.Combine(f.Mods, mod, exe))!);
+			File.WriteAllText(Path.Combine(f.Mods, mod, exe), "");
+		}
+		var mo2 = Mo2Instance.Load(f.Exe, f.Instance);
+		var iniBefore = File.ReadAllText(mo2.IniPath);
+		var rows = ToolFinder.Find(mo2, [f.Mods]);
+		ToolFinder.Row Of(List<ToolFinder.Row> a_rows, string a_step) => a_rows.Single(r => r.Tool.Step == a_step);
+		Equal(ToolFinder.Found.NotListed, Of(rows, "dyndolod").State, "on the PC, not in the list");
+		Equal(ToolFinder.Found.NotListed, Of(rows, "pgpatcher").State, "a tool in a mod's sub folder too");
+		Equal(ToolFinder.Found.Missing, Of(rows, "pandora").State, "not on the PC");
+		Check(Of(rows, "pandora").Tool.Page.StartsWith("https://", StringComparison.Ordinal) && Of(rows, "pandora").Tool.Where != "", "says where to get it and where it goes");
+		Equal(3, ToolFinder.AddFound(mo2, rows).Count, "the found ones added");
+		Check(File.ReadAllText(ToolFinder.BackupOf(mo2)) == iniBefore, "the list as it was is kept beside it");
+		var after = Mo2Instance.Load(f.Exe, f.Instance);
+		Equal("-sse", after.Executable("DynDOLOD")!.Arguments, "the xEdit family names its game");
+		Check(Files.SamePath(after.Executable("Synthesis")!.Binary, Path.Combine(f.Mods, "Far, away", "Synthesis.exe")), "a path with a comma reads back whole");
+		Check(after.Executable("SKSE") != null && after.SelectedProfile == "Test", "what was there stays");
+		Check(File.ReadAllText(after.IniPath).Contains("[Settings]", StringComparison.Ordinal), "and the sections after it");
+		var again = ToolFinder.Find(after, [f.Mods]);
+		Equal(ToolFinder.Found.Listed, Of(again, "dyndolod").State, "now in the list");
+		Equal(0, ToolFinder.AddFound(after, again).Count, "nothing to add twice");
+		// a title already taken by something else; a list with no section yet
+		Directory.CreateDirectory(Path.Combine(f.Mods, "Other"));
+		File.WriteAllText(Path.Combine(f.Mods, "Other", "TexGenx64.exe"), "");
+		File.WriteAllText(after.IniPath, File.ReadAllText(after.IniPath).Replace(@"title=SKSE", @"title=TexGen", StringComparison.Ordinal));
+		var clash = Mo2Instance.Load(f.Exe, f.Instance);
+		Equal("TexGen (2)", ToolFinder.AddFound(clash, ToolFinder.Find(clash, [f.Mods])).Single(), "a title in use is left to its owner");
+		var made = ToolFinder.WithExecutable("[General]\nx=1\n", "A", Path.Combine(f.Root, "a.exe"), "");
+		var read = Mo2Instance.ReadQtIni(made);
+		Check(read["General"]["x"] == "1" && read["customExecutables"]["size"] == "1" && read["customExecutables"][@"1\title"] == "A", "a list that was not there is made: " + made);
+	}
+
+	// his checklist 468: the Tools menu entry points at the program that added it, and a run never waits for that program under Mod Organizer
+	static void T_TheToolsMenuEntryOpensThisProgram()
+	{
+		using var f = new FakeMo2();
+		var mo2 = Mo2Instance.Load(f.Exe, f.Instance);
+		const string Program = @"D:\Tools\Skyrim Utility Patcher.exe";
+		Check(!Mo2MenuEntry.IsCurrent(mo2, Program), "not there yet");
+		Mo2MenuEntry.Add(mo2, Program);
+		Check(Mo2MenuEntry.IsCurrent(mo2, Program), "added");
+		var file = Path.Combine(Path.GetDirectoryName(f.Exe)!, "plugins", "skyrimutilitypatcher.py");
+		var text = File.ReadAllText(file);
+		Check(text.Contains("PROGRAM = r\"" + Program + "\"", StringComparison.Ordinal) && !text.Contains("@PROGRAM@", StringComparison.Ordinal), "it points at the program");
+		Check(text.Contains("\"--for-profile\"", StringComparison.Ordinal) && text.Contains("\"--mo2\"", StringComparison.Ordinal) && text.Contains("\"--base\"", StringComparison.Ordinal), "and asks for what the window takes");
+		Check(!Mo2MenuEntry.IsCurrent(mo2, @"E:\Moved\Skyrim Utility Patcher.exe"), "a program moved since is offered it again");
+		Check(Mo2Control.IsThisProgram(Brand.Name + ".exe"), "this program under Mod Organizer is not one a run waits for");
+		Check(!Mo2Control.IsThisProgram("SSEEdit.exe"), "another program is");
+	}
+
+	// his checklist 460: the settings of the small, muted window, for the step only: back after it, after a failure too; off, nothing changes
+	static void T_TheQuietGameWindowGoesBack()
+	{
+		const string Prefs = "[AudioMenu]\r\nfAudioMasterVolume=1.0000\r\nfVal=1\r\n[Display]\r\nbBorderless=1\r\nbFull Screen=1\r\niSize H=1080\r\niSize W=1920\r\nother=keep\r\n[General]\r\nsLanguage=ENGLISH\r\n";
+		var changed = QuietGame.GamePrefs(Prefs);
+		var read = Mo2Instance.ReadQtIni(changed);
+		Equal("0", read["Display"]["bFull Screen"], "windowed");
+		Equal("0", read["Display"]["bBorderless"], "with its border");
+		Equal("960", read["Display"]["iSize W"], "small");
+		Equal("1", read["General"]["bAlwaysActive"], "and running behind other windows");
+		Equal("0.0000", read["AudioMenu"]["fAudioMasterVolume"], "muted");
+		Equal("keep", read["Display"]["other"], "the rest as it was");
+		Equal(Prefs.Split("\r\n").Length + 1, changed.Split("\r\n").Length, "only the missing line was added");
+		var tweaks = QuietGame.DisplayTweaks("[Render]\n#    true  - Exclusive fullscreen mode\nFullscreen = true\nBorderless = true\nBorderlessUpscale = false\n#Resolution=1920x1080\nResolutionScale=0.75\n[Other]\nResolution=keep\n");
+		Check(tweaks.Contains("\nFullscreen=false\n", StringComparison.Ordinal) && tweaks.Contains("\nBorderless=false\n", StringComparison.Ordinal), "its windowed mode: " + tweaks);
+		Check(tweaks.Contains("\nBorderlessUpscale = false\n", StringComparison.Ordinal) && tweaks.Contains("#    true  - Exclusive fullscreen mode", StringComparison.Ordinal), "another setting and its comment are left alone");
+		Check(tweaks.Contains("\nResolution=960x540\n", StringComparison.Ordinal) && tweaks.Contains("\n#ResolutionScale=0.75\n", StringComparison.Ordinal), "the size, and the scale that would apply over it taken out");
+		Check(tweaks.Contains("[Other]\nResolution=keep\n", StringComparison.Ordinal), "only in its own section");
+		Equal("[X]\nk=1\n", QuietGame.Set("[X]\nk=0\n", "X", "k", "1"), "an active line is set");
+		Equal("[X]\na=b\n[Y]\nk=1\n", QuietGame.Set("[X]\na=b\n", "Y", "k", "1"), "a section that was not there");
+
+		using var f = new FakeMo2();
+		var prefs = Path.Combine(f.ProfileDir, "skyrimprefs.ini");
+		File.WriteAllText(prefs, Prefs);
+		File.WriteAllText(Path.Combine(f.ProfileDir, "settings.ini"), "[General]\r\nLocalSettings=true\r\n");
+		var tweakFile = Path.Combine(f.Mods, "Base Mod", "SKSE", "Plugins", "SSEDisplayTweaks.ini");
+		Directory.CreateDirectory(Path.GetDirectoryName(tweakFile)!);
+		const string TweaksBefore = "[Render]\r\nFullscreen = true\r\n";
+		File.WriteAllText(tweakFile, TweaksBefore);
+		var seen = "";
+		var fail = false;
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => {
+			QuietGame.Apply(ctx);
+			QuietGame.Apply(ctx);
+			seen = File.ReadAllText(prefs) + File.ReadAllText(tweakFile);
+			if (fail) {
+				throw new StepFailedException("a failure");
+			}
+		}));
+		var setup = f.WriteSetup(("landscapefixer", new JsonObject()));
+		Equal(RunState.Finished, Runner.Run(new RunRequest(f.SetupFile, f.Data)).State, "off: the run finished");
+		Check(seen == Prefs + TweaksBefore, "off: nothing changes");
+		foreach (var on in new[] { "LocalSettings=true", "LocalSettings = true", "  localsettings=TRUE " }) {
+			Check(QuietGame.IsLocalSettings(on), "the setting however it is spaced: " + on);
+		}
+		Check(!QuietGame.IsLocalSettings("LocalSettings=false") && !QuietGame.IsLocalSettings("NotLocalSettings=true") && !QuietGame.IsLocalSettings("[General]"), "and no other line");
+		Check(!QuietGame.IsGog(f.Game), "a game with no GOG library is not GOG's, whatever its folder");
+		File.WriteAllText(Path.Combine(f.Game, "Galaxy64.dll"), "");
+		Check(QuietGame.IsGog(f.Game), "one with it is, whatever its folder");
+		setup.Root["quietGame"] = true;
+		setup.Save(f.SetupFile);
+		Equal(RunState.Finished, Runner.Run(new RunRequest(f.SetupFile, f.Data)).State, "on: the run finished");
+		Check(seen.Contains("iSize W=960", StringComparison.Ordinal) && seen.Contains("Fullscreen=false", StringComparison.Ordinal), "on: the step sees the small window");
+		Equal(Prefs, File.ReadAllText(prefs), "and the game's settings go back");
+		Equal(TweaksBefore, File.ReadAllText(tweakFile), "and the mod's");
+		fail = true;
+		Check(Runner.Run(new RunRequest(f.SetupFile, f.Data)).State != RunState.Finished, "a step that fails");
+		Check(seen.Contains("iSize W=960", StringComparison.Ordinal), "had them changed");
+		Equal(Prefs, File.ReadAllText(prefs), "and they go back too");
+		Equal(TweaksBefore, File.ReadAllText(tweakFile), "the mod's as well");
+	}
+
+	// his checklist 433-435: an add-on file is read and checked in plain words, goes where it says in the order, and a file changed since is asked about
+	static void T_AnAddOnFileIsCheckedAndPlaced()
+	{
+		const string Good = """
+			{ "schema": 1, "name": "My Patcher", "author": "A Modder", "page": "https://example.com/p", "program": "tools/MyPatcher.exe", "arguments": "--auto",
+			  "output": "My Patcher Output", "minutes": 30, "makes": "MyPatch.esp", "after": "synthesis" }
+			""";
+		Equal(0, AddOns.Problems(Good).Count, "a right file: " + string.Join("; ", AddOns.Problems(Good)));
+		bool Says(string a_file, string a_word) => AddOns.Problems(a_file).Any(p => p.Contains(a_word, StringComparison.Ordinal));
+		Check(Says("not json", "not valid JSON"), "not JSON");
+		Check(Says("[1]", "one JSON object"), "not an object");
+		Check(Says("""{ "schema": 2 }""", "\"schema\""), "another schema");
+		Check(Says("""{ "schema": 1 }""", "\"program\" is missing"), "a key left out");
+		Check(Says(Good.Replace("\"page\"", "\"pgae\"", StringComparison.Ordinal), "typing mistake"), "a key misspelt");
+		Check(Says(Good.Replace("tools/MyPatcher.exe", "../other/x.exe", StringComparison.Ordinal), "inside your mod"), "a program outside the mod");
+		Check(Says(Good.Replace("tools/MyPatcher.exe", "C:/x.exe", StringComparison.Ordinal), "inside your mod"), "a whole path");
+		Check(Says(Good.Replace("tools/MyPatcher.exe", "tools/run.bat", StringComparison.Ordinal), "inside your mod"), "not a program");
+		Check(Says(Good.Replace("\"synthesis\"", "\"nothing\"", StringComparison.Ordinal), "which is no step"), "a step that does not exist");
+		Check(Says(Good.Replace("My Patcher Output", "My:Output", StringComparison.Ordinal), "good folder name"), "an output that makes no folder");
+		Check(Says(Good.Replace("\"minutes\": 30", "\"minutes\": 0", StringComparison.Ordinal), "\"minutes\""), "a time that is no time");
+		Check(Says(Good.Replace("https://example.com/p", "http://example.com/p", StringComparison.Ordinal), "https"), "a page that is not https");
+
+		using var f = new FakeMo2();
+		var mod = Path.Combine(f.Mods, "Base Mod");
+		var file = Path.Combine(mod, AddOns.FolderInMod, "patcher.json");
+		Directory.CreateDirectory(Path.GetDirectoryName(file)!);
+		File.WriteAllText(file, Good);
+		Check(AddOns.Problems(Good, mod).Any(p => p.Contains("not in the mod", StringComparison.Ordinal)), "the program is looked for in the mod");
+		Directory.CreateDirectory(Path.Combine(mod, "tools"));
+		File.WriteAllText(Path.Combine(mod, "tools", "MyPatcher.exe"), "");
+		var mo2 = Mo2Instance.Load(f.Exe, f.Instance);
+		var found = AddOns.Find(mo2, ProfileOf(f)).Single();
+		var addOn = found.AddOn ?? throw new InvalidOperationException(string.Join("; ", found.Problems));
+		Check(addOn.Says.Contains(addOn.ProgramPath, StringComparison.Ordinal) && addOn.Says.Contains("--auto", StringComparison.Ordinal) && addOn.Says.Contains("My Patcher Output", StringComparison.Ordinal), "the question says what it will start and where it writes");
+		var setup = f.WriteSetup(("synthesis", new JsonObject()), ("pgpatcher", new JsonObject()), ("texgen", new JsonObject()), ("playsave", new JsonObject()));
+		AddOns.AddToSetup(setup.Root, addOn, "Test");
+		Equal("synthesis|addon:My Patcher|pgpatcher|texgen|playsave", string.Join("|", setup.Steps.Select(s => s.Key)), "after the step it names");
+		Equal("My Patcher Output - Test", setup.Steps[1].Settings["output_mod"]?.ToString(), "its output, named as every output");
+		Equal("My Patcher", StepCatalog.Name(addOn.Key), "its name in the window");
+		Check(StepCatalog.Known(addOn.Key) && StepRegistry.For(addOn.Key) is AddOnStep, "a step like any other");
+		Check(setup.Problems().Count == 0, "the setup reads: " + string.Join("; ", setup.Problems()));
+		AddOns.AddToSetup(setup.Root, addOn with { After = null }, "Test");
+		Equal("synthesis|pgpatcher|addon:My Patcher|texgen|playsave", string.Join("|", setup.Steps.Select(s => s.Key)), "saying nothing: before the LOD tools, and never twice");
+		// allowed, then changed
+		var check = new CheckContext { Setup = setup, Mo2 = mo2, Profile = ProfileOf(f), States = ProfileOf(f).States() };
+		var settings = new StepSettings(setup.Steps[2].Settings);
+		var step = new AddOnStep(addOn.Key);
+		Equal(0, step.Check(check, settings).Count(i => i.Blocking), "allowed: nothing blocks");
+		File.AppendAllText(file, " ");
+		Check(step.Check(check, settings).Single(i => i.Blocking).Text.Contains("changed since", StringComparison.Ordinal), "a file changed since is asked about again");
+		Check(AddOns.InSetup(setup, addOn) && AddOns.Allowed(setup, addOn), "the old copy was allowed");
+		var changedNow = AddOns.Find(mo2, ProfileOf(f)).Single().AddOn!;
+		Check(AddOns.InSetup(setup, changedNow) && !AddOns.Allowed(setup, changedNow), "so Settings offers it again");
+		// the real step: what starts is what was allowed
+		f.WriteSetup((addOn.Key, setup.Steps[2].Settings.DeepClone().AsObject()));
+		Throws<StepFailedException>(() => step.Run(StepContext(f, addOn.Key), settings), "changed after the pre-check: it does not start");
+		var other = f.WriteSetup(("synthesis", new JsonObject()), ("pgpatcher", new JsonObject()), ("texgen", new JsonObject()), ("playsave", new JsonObject()));
+		// an output name that is one of the player's mods
+		Check(AddOns.OutputTaken(mo2, other, changedNow) == null, "a name nobody has");
+		f.Mod("My Patcher Output - Test", ("Theirs.esp", false, []));
+		Equal("My Patcher Output - Test", AddOns.OutputTaken(mo2, other, changedNow), "a mod of the player's is named, never replaced");
+		// its two places cannot both hold
+		Check(AddOns.AddToSetup(other.Root, changedNow with { After = "synthesis", Before = "pgpatcher" }, "Test") == null, "both can hold");
+		Check(AddOns.AddToSetup(other.Root, changedNow with { After = "pgpatcher", Before = "synthesis" }, "Test") is { } clash && clash.Contains("the other way round", StringComparison.Ordinal), "both cannot: the player is told");
+		Directory.Delete(Path.Combine(f.Mods, "My Patcher Output - Test"), true);
+		AddOns.AddToSetup(setup.Root, changedNow, "Test");
+		Check(AddOns.Allowed(setup, changedNow), "and allowing it again takes the new file");
+		settings = new StepSettings(setup.Steps.Single(s => s.Key == addOn.Key).Settings);
+		Equal(0, step.Check(check, settings).Count(i => i.Blocking), "nothing blocks then");
+		File.AppendAllText(file, " ");
+		setup.Root[AddOns.NoAskSetting] = true;
+		Equal(0, step.Check(check, settings).Count(i => i.Blocking), "unless the player switched the question off");
+	}
+
+	// what the tool wrote goes into its own output mod; a tool that wrote nothing, or not what it promised, failed and its old output comes back
+	static void T_AnAddOnsFilesGoIntoItsOwnMod()
+	{
+		using var f = new FakeMo2();
+		File.WriteAllText(Path.Combine(f.Overwrite, "there before.ini"), "the player's");
+		var mode = "good";
+		StepRegistry.Replace(new FakeStep("synthesis", (ctx, s) => {
+			var before = Runner.OverwriteFiles(ctx);
+			if (mode != "nothing") {
+				Directory.CreateDirectory(Path.Combine(f.Overwrite, "Docs"));
+				File.WriteAllText(Path.Combine(f.Overwrite, "Docs", "log.txt"), "log");
+				File.WriteAllText(Path.Combine(f.Overwrite, mode == "good" ? "MyPatch.esp" : "Other.esp"), "plugin");
+				Directory.CreateDirectory(Path.Combine(f.Overwrite, "Root"));
+				File.WriteAllText(Path.Combine(f.Overwrite, "Root", "from the game folder.txt"), "Root Builder's");
+			}
+			AddOnStep.Collect(ctx, "synthesis", "Output A", "MyPatch.esp", before);
+			ctx.SetAfter("Output A");
+		}));
+		f.WriteSetup(("synthesis", new JsonObject { ["output_mod"] = "Output A" }));
+		Equal(RunState.Finished, Runner.Run(new RunRequest(f.SetupFile, f.Data)).State, "the run finished");
+		Check(File.Exists(Path.Combine(f.Mods, "Output A", "MyPatch.esp")) && File.Exists(Path.Combine(f.Mods, "Output A", "Docs", "log.txt")), "each file at its own place in its mod");
+		Check(!File.Exists(Path.Combine(f.Mods, "Output A", "OutA.esp")), "the old output left it");
+		Check(!File.Exists(Path.Combine(f.Overwrite, "MyPatch.esp")), "nothing of it stays in overwrite");
+		Check(File.Exists(Path.Combine(f.Overwrite, "there before.ini")), "what was there before stays");
+		Check(File.Exists(Path.Combine(f.Overwrite, "Root", "from the game folder.txt")), "and what Root Builder cleared there is not the tool's");
+		mode = "nothing";
+		Check(Runner.Run(new RunRequest(f.SetupFile, f.Data)).Verdict.Contains("wrote nothing", StringComparison.Ordinal), "a tool that wrote nothing failed");
+		Check(File.Exists(Path.Combine(f.Mods, "Output A", "MyPatch.esp")), "and the output stays");
+		mode = "other";
+		Check(Runner.Run(new RunRequest(f.SetupFile, f.Data)).Verdict.Contains("did not write MyPatch.esp", StringComparison.Ordinal), "nor one that did not write what it promised");
+		Check(File.Exists(Path.Combine(f.Mods, "Output A", "MyPatch.esp")), "and the output stays");
+	}
+
+	// his checklist 445: a tool newer than this release was proven with is a note, never a stop; what a run presses is looked for by its name, or its id
+	static void T_AToolsWindowIsCheckedAgainstWhatARunPresses()
+	{
+		Equal<ToolRunner.Steps.Issue?>(null, ToolProof.Newer("synthesis", "0.36.6.0"), "the version it was proven with");
+		Equal<ToolRunner.Steps.Issue?>(null, ToolProof.Newer("synthesis", "0.30"), "an older one is no news");
+		Equal<ToolRunner.Steps.Issue?>(null, ToolProof.Newer("synthesis", ""), "one that cannot be read says nothing");
+		Equal<ToolRunner.Steps.Issue?>(null, ToolProof.Newer("playsave", "9"), "a step with no tool");
+		var newer = ToolProof.Newer("synthesis", "0.37.0");
+		Check(newer is { Blocking: false } && newer.Text.Contains("0.37.0", StringComparison.Ordinal) && newer.Text.Contains("0.36.6", StringComparison.Ordinal), "a newer one is said, and only said");
+		foreach (var k in ToolProof.ProvenWith.Keys) {
+			Check(StepCatalog.Known(k), k + " is a step");
+		}
+		ToolProof.Look L(string a_step) => ToolProof.Looks.Single(l => l.Step == a_step);
+		Equal<string?>(null, ToolProof.Missing(L("xlodgen"), [("Generate", "1", true)]), "its button there");
+		Check(ToolProof.Missing(L("xlodgen"), [("Generate", "1", false)])?.Contains("Generate", StringComparison.Ordinal) == true, "a button that cannot be pressed does not count");
+		Check(ToolProof.Missing(L("xlodgen"), [("Other", "1", true)])?.Contains("Other", StringComparison.Ordinal) == true, "what it shows instead is named");
+		Check(ToolProof.Missing(L("xlodgen"), [])?.Contains("none", StringComparison.Ordinal) == true, "no buttons at all");
+		Equal<string?>(null, ToolProof.Missing(L("synthesis"), [("", "GoButton", true)]), "Synthesis's by its id");
+		Equal<string?>(null, ToolProof.Missing(L("landscapefixer"), [("Generieren", "", true)], ["Generieren"]), "a tool's own translation of it");
+		Check(ToolProof.Looks.All(l => StepCatalog.Known(l.Step)), "every look is at a step");
+	}
+
+	// his checklist 476: a language file's words reach what no binding fills, what it leaves out stays English, and one that does not read changes nothing
+	static void T_TheWindowCanBeTranslated()
+	{
+		Exception? failed = null;
+		var t = new Thread(() => {
+			try {
+				var bound = new System.Windows.Controls.TextBlock();
+				System.Windows.Data.BindingOperations.SetBinding(bound, System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("Now") { Source = new { Now = "Start" } });
+				var button = new System.Windows.Controls.Button { Content = "Start", ToolTip = "Starts it" };
+				System.Windows.Automation.AutomationProperties.SetName(button, "Start");
+				var left = new System.Windows.Controls.TextBlock { Text = "Not in the file" };
+				var panel = new System.Windows.Controls.StackPanel();
+				panel.Children.Add(button);
+				panel.Children.Add(left);
+				panel.Children.Add(bound);
+				panel.Children.Add(new System.Windows.Controls.ContentControl { Content = new System.Windows.Controls.TextBlock { Text = "Inside" } });
+				Equal("Inside|Not in the file|Start|Starts it", string.Join("|", ToolRunner.App.WindowWords.Seen(panel)), "what a translator gets");
+				ToolRunner.App.WindowWords.Use(new Dictionary<string, string> { ["Start"] = "Starten", ["Starts it"] = "Startet es", ["Inside"] = "Innen", ["Not in the file"] = " " });
+				ToolRunner.App.WindowWords.Tree(panel);
+				Equal("Starten", button.Content?.ToString(), "a button");
+				Equal("Startet es", button.ToolTip?.ToString(), "its tool tip");
+				Equal("Starten", System.Windows.Automation.AutomationProperties.GetName(button), "what a screen reader says");
+				Equal("Not in the file", left.Text, "an empty translation stays English");
+				Equal("Start", bound.Text, "what a binding fills is left alone");
+				Equal("Inside|Not in the file|Start|Starts it", string.Join("|", ToolRunner.App.WindowWords.Seen(panel)), "a file made with a language in use keeps its English keys");
+				var themed = new System.Windows.Controls.TextBlock();
+				themed.SetResourceReference(System.Windows.Controls.TextBlock.TextProperty, "SomeToken");
+				themed.Resources["SomeToken"] = "Token";
+				ToolRunner.App.WindowWords.Seen(themed);
+				themed.Resources["SomeToken"] = "Another";
+				Equal("Another", themed.Text, "a theme's text still follows its resource after the walk");
+			} catch (Exception e) {
+				failed = e;
+			} finally {
+				ToolRunner.App.WindowWords.Use(new Dictionary<string, string>());
+			}
+		});
+		t.SetApartmentState(ApartmentState.STA);
+		t.Start();
+		t.Join();
+		if (failed != null) {
+			throw new InvalidOperationException("the language test: " + failed.Message, failed);
+		}
+		Check(ToolRunner.App.WindowWords.Read("not json", out var problem) == null && problem != "", "a file that does not read says why");
+		Equal("Starten", ToolRunner.App.WindowWords.Read("{ \"Start\": \"Starten\", }", out _)?["Start"], "a file a person wrote reads");
+	}
+
+	// his checklist 477: a question and its answer as files; no answer is said in time and leaves nothing behind
+	static void T_TheCompanionAnswersOrIsPassedOver()
+	{
+		using var f = new FakeMo2();
+		var mo2 = Mo2Instance.Load(f.Exe, f.Instance);
+		var folder = Path.Combine(Path.GetDirectoryName(f.Exe)!, "plugins", "data", "SkyrimUtilityPatcher");
+		Check(!Companion.Ask(mo2, "Test", "ping", TimeSpan.FromMilliseconds(150), CancellationToken.None), "nobody there: no answer");
+		Equal(0, Directory.GetFiles(folder).Length, "and nothing left behind");
+		using var stop = new CancellationTokenSource();
+		var heard = new List<string>();
+		var answering = Task.Run(() => {
+			while (!stop.IsCancellationRequested) {
+				foreach (var ask in Directory.GetFiles(folder, "ask *.txt")) {
+					heard.Add(File.ReadAllText(ask));
+					var id = Path.GetFileNameWithoutExtension(ask)["ask ".Length..];
+					File.Delete(ask);
+					File.WriteAllText(Path.Combine(folder, $"done {id}.txt"), "ok");
+				}
+				Thread.Sleep(10);
+			}
+		});
+		Check(Companion.Ask(mo2, "Test", "refresh", TimeSpan.FromSeconds(20), CancellationToken.None), "it answers");
+		stop.Cancel();
+		answering.Wait();
+		Equal($"refresh\n{mo2.BaseDir}\nTest", heard.Single(), "what was asked, and of which Mod Organizer");
+		Equal(0, Directory.GetFiles(folder).Length, "and nothing left behind");
+		var entry = Mo2MenuEntry.Text(@"D:\Tools\Skyrim Utility Patcher.exe");
+		Check(entry.Contains("self._mine(base, profile)", StringComparison.Ordinal), "the plugin answers only for its own instance and profile");
+		Check(entry.Contains("onNextRefresh", StringComparison.Ordinal) && entry.Contains("refresh(False)", StringComparison.Ordinal), "the plugin reads the lists back in, without saving its own over them");
+		Check(!Mo2MenuEntry.Present(mo2), "no entry yet");
+		Mo2MenuEntry.Add(mo2, @"D:\Tools\Skyrim Utility Patcher.exe");
+		Check(Mo2MenuEntry.Present(mo2), "the entry is there");
+		var control = new Mo2Control(mo2, "Test", RunLog.Null);
+		Check(!control.HeldOpen, "Mod Organizer is not held open unless asked");
 	}
 
 	static void T_EveryToolStepHasItsHelpPage()

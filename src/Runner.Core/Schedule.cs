@@ -23,13 +23,14 @@ public static class Schedule
 	// every such task removed -> their names (only those a_only lets through, for the test)
 	public static List<string> RemoveLeftovers(Func<string, bool>? a_only = null) => Sweep(a_only).Removed;
 
-	// Clean: the list was read and every task of ours in it went
-	static (List<string> Removed, bool Clean) Sweep(Func<string, bool>? a_only = null)
+	// Clean: the list was read and every task of ours in it went; Left: the ones that would not go
+	static (List<string> Removed, bool Clean, List<string> Left) Sweep(Func<string, bool>? a_only = null)
 	{
 		var removed = new List<string>();
+		var left = new List<string>();
 		var (code, csv) = Schtasks("/Query", "/FO", "CSV", "/NH");
 		if (code != 0) {
-			return (removed, false);
+			return (removed, false, left);
 		}
 		var clean = true;
 		var names = csv.Split('\n').Select(l => l.Trim()).Where(l => l.StartsWith('"') && l.IndexOf('"', 1) > 1)
@@ -37,31 +38,42 @@ public static class Schedule
 		foreach (var n in names) {
 			var (c, xml) = Schtasks("/Query", "/TN", n, "/XML");
 			if (c != 0) {
+				// one of our names whose program could not be read: the player looks at it, it is not deleted unread
 				clean = false;
+				left.Add(n);
 			} else if (StartsOurs(xml)) {
 				if (Schtasks("/Delete", "/TN", n, "/F").Code == 0) {
 					removed.Add(n);
 				} else {
 					clean = false;
+					left.Add(n);
 				}
 			}
 		}
-		return (removed, clean);
+		return (removed, clean, left);
 	}
 
 	public const string ClearedMarker = "old timed runs cleared.txt";
 
 	public const string TriedMarker = "old timed runs tried.txt";
+
+	static (bool Clean, List<string> Left) Swept()
+	{
+		var s = Sweep();
+		return (s.Clean, s.Left);
+	}
+
 	public static TimeSpan TryEvery { get; set; } = TimeSpan.FromDays(1);
 
 	// once per data folder: Windows' task list can take half a minute to read, and nothing makes such a task any more. Only a clean pass
 	// leaves the marker - a list that could not be read or a task that would not go is tried again, at most once a day (a command waits for it)
-	public static void RemoveLeftoversOnce(string a_dataDir, Func<bool>? a_sweep = null)
+	// returns the tasks that would not go
+	public static List<string> RemoveLeftoversOnce(string a_dataDir, Func<bool>? a_sweep = null)
 	{
 		var marker = Path.Combine(a_dataDir, ClearedMarker);
 		var tried = Path.Combine(a_dataDir, TriedMarker);
 		if (File.Exists(marker) || (File.Exists(tried) && DateTime.UtcNow - File.GetLastWriteTimeUtc(tried) < TryEvery)) {
-			return;
+			return [];
 		}
 		try {
 			Directory.CreateDirectory(a_dataDir);
@@ -69,14 +81,22 @@ public static class Schedule
 		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
 			// not kept: the next start looks again
 		}
-		if (!(a_sweep?.Invoke() ?? Sweep().Clean)) {
-			return;
+		bool clean;
+		List<string> left = [];
+		if (a_sweep != null) {
+			clean = a_sweep();
+		} else {
+			(clean, left) = Swept();
+		}
+		if (!clean) {
+			return left;
 		}
 		try {
 			Files.WriteAtomic(marker, DateTime.Now.ToString("O", InvariantCulture));
 		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
 			// not kept: the next start looks again
 		}
+		return left;
 	}
 
 	// a harmless task under a given name (the test's own, a year ahead), so RemoveLeftovers can be proven against Windows itself

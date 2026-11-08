@@ -47,6 +47,24 @@ public static class NewSetupDialog
 		Row("Output mod names ({output} and {profile} are filled in)", pattern);
 		stack.Children.Add(note);
 
+		// his checklist 467: a step exists only for a tool Mod Organizer's list holds, so this comes before the setup is made
+		var findTools = new Button { Content = "Find my tools ...", Style = (Style)a_owner.FindResource("Ghost"), HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 10, 0, 0),
+			ToolTip = "Says which tools Mod Organizer's list holds, which are on this PC but not listed, and where to get the rest" };
+		var toolRows = new StackPanel();
+		stack.Children.Add(findTools);
+		stack.Children.Add(new ScrollViewer { Content = toolRows, MaxHeight = 240, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Margin = new Thickness(0, 6, 0, 0) });
+
+		// what was found belongs to the Mod Organizer it was found in: its Add button must not write to one the player has left
+		void ForgetTools()
+		{
+			if (toolRows.Children.Count > 0) {
+				toolRows.Children.Clear();
+				note.Text = "";
+			}
+		}
+		exe.TextChanged += (_, _) => ForgetTools();
+		instance.SelectionChanged += (_, _) => ForgetTools();
+
 		// the instances this program can open: beside it (portable), and the global ones (filled again only for another program,
 		// so a picked instance and profile survive a click in and out of the box)
 		string? loaded = null;
@@ -113,6 +131,60 @@ public static class NewSetupDialog
 				break;
 			}
 		}
+
+		findTools.Click += async (_, _) => {
+			findTools.IsEnabled = false;
+			toolRows.Children.Clear();
+			note.Text = "Looking through your mods and the folders beside Mod Organizer ...";
+			note.Foreground = Brushes2.Get("Muted");
+			try {
+				var (exeText, inst) = (exe.Text.Trim(), InstanceDir());
+				var mo2 = Mo2Instance.Load(exeText, inst);
+				var rows = await Task.Run(() => ToolFinder.Find(mo2));
+				if (exe.Text.Trim() != exeText || InstanceDir() != inst) {
+					note.Text = "";
+					return;
+				}
+				foreach (var r in rows) {
+					var line = new DockPanel { Margin = new Thickness(0, 2, 0, 2) };
+					if (r.State == ToolFinder.Found.Missing) {
+						var page = new Button { Content = "Its page", Style = (Style)a_owner.FindResource("Ghost"), Margin = new Thickness(8, 0, 0, 0), ToolTip = r.Tool.Page };
+						page.Click += (_, _) => System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(r.Tool.Page) { UseShellExecute = true });
+						DockPanel.SetDock(page, Dock.Right);
+						line.Children.Add(page);
+					}
+					line.Children.Add(new TextBlock { TextWrapping = TextWrapping.Wrap, Foreground = Brushes2.Get(r.State == ToolFinder.Found.Missing ? "Muted" : "Text"), Text = r.State switch {
+						ToolFinder.Found.Listed => $"{r.Tool.Name}: in Mod Organizer's list",
+						ToolFinder.Found.NotListed => $"{r.Tool.Name}: found, not in the list yet - {r.Binary}",
+						_ => $"{r.Tool.Name}: not found - {r.Tool.Where}",
+					} });
+					toolRows.Children.Add(line);
+				}
+				var missing = rows.Count(r => r.State == ToolFinder.Found.Missing);
+				note.Text = missing == 0 ? "Every tool was found." : $"{missing} tool(s) not found. A run only needs the ones you use: a step is made for each tool the list holds.";
+				var found = rows.Count(r => r.State == ToolFinder.Found.NotListed);
+				if (found > 0) {
+					var add = new Button { Content = $"Add the {found} found tool(s) to Mod Organizer's list", Style = (Style)a_owner.FindResource("Ghost"), HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 6, 0, 0) };
+					add.Click += (_, _) => {
+						try {
+							var added = ToolFinder.AddFound(Mo2Instance.Load(exeText, inst), rows);
+							add.IsEnabled = false;
+							Fill();
+							note.Text = $"Added to Mod Organizer's list: {string.Join(", ", added)}.";
+						} catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or Mo2BusyException) {
+							note.Text = "Not added: " + e.Message;
+							note.Foreground = Brushes2.Get("Bad");
+						}
+					};
+					toolRows.Children.Add(add);
+				}
+			} catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException) {
+				note.Text = e.Message;
+				note.Foreground = Brushes2.Get("Bad");
+			} finally {
+				findTools.IsEnabled = true;
+			}
+		};
 
 		var create = new Button { Content = "_Make the setup", Style = (Style)a_owner.FindResource("Primary"), Margin = new Thickness(0, 0, 10, 0), IsDefault = true };
 		var cancel = new Button { Content = "Cancel", Style = (Style)a_owner.FindResource("Ghost"), IsCancel = true };

@@ -58,6 +58,15 @@ public partial class MainWindow : Window
 		Theme.Applied += _vm.Repaint;
 	}
 
+	public void Say(string a_text) => _vm.Say(a_text, "warn");
+
+	public void ShowProfile(string a_mo2Exe, string a_base, string a_profile)
+	{
+		if (!_vm.SelectFor(a_mo2Exe, a_base, a_profile)) {
+			_vm.Say($"No setup for the profile {a_profile} yet: press New setup.", "warn");
+		}
+	}
+
 	// which moments of the power countdown were already said (-1 = its start)
 	readonly HashSet<int> _powerSaid = [];
 
@@ -325,6 +334,9 @@ public partial class MainWindow : Window
 			"changes" => WithSwitch(ChangesPanel(null), a_which),
 			_ => SettingsPanel.Build(this, _vm),
 		};
+		if (DrawerBody.Content is DependencyObject drawn) {
+			WindowWords.Tree(drawn);
+		}
 		var opening = Drawer.Visibility != Visibility.Visible;
 		if (opening) {
 			_beforeDrawer = Keyboard.FocusedElement;
