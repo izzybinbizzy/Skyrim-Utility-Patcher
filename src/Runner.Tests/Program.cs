@@ -3902,19 +3902,21 @@ public static class Program
 		using var log = new RunLog(j.Folder);
 		var ctx = new RunContext { Setup = setup, Mo2 = mo2, Profile = p, Control = new Mo2Control(mo2, "Test", log), Log = log, Journal = j,
 			Cancel = CancellationToken.None, BackupFolder = Path.Combine(f.Backups, "tool mod") };
-		using (StepKit.ToolModOn(ctx, "Tool")) {
+		using (StepKit.ToolModOn(ctx, new StepSettings(new JsonObject { ["executable"] = "Tool" }))) {
 			Check(p.IsOn("Tool Mod"), "on for the tool's run");
 			Equal<string?>(null, StepKit.ToolMod(mo2, p, "Tool"), "(and then no longer a switched-off mod)");
 		}
 		Check(!p.IsOn("Tool Mod"), "off again after");
 		var refused = "";
 		try {
-			StepKit.ToolModOn(ctx, "Tool2")?.Dispose();
+			StepKit.ToolModOn(ctx, new StepSettings(new JsonObject { ["executable"] = "Tool2" }))?.Dispose();
 		} catch (StepFailedException e) {
 			refused = e.Message;
 		}
 		Check(refused.Contains("\"Plugin Tool\"", StringComparison.Ordinal) && !p.IsOn("Plugin Tool"), "a tool mod with a plugin is named and left off: " + refused);
-		Equal<Toggle?>(null, StepKit.ToolModOn(ctx, "SKSE"), "nothing to switch for a program outside the mods folder");
+		Equal<Toggle?>(null, StepKit.ToolModOn(ctx, new StepSettings(new JsonObject { ["executable"] = "SKSE" })), "nothing to switch for a program outside the mods folder");
+		Equal(0, StepKit.ToolMods(ctx, new StepSettings(new JsonObject { ["executable"] = "Tool2", ["enable_during"] = new JsonArray("Plugin Tool") })).Count,
+			"a mod the setup itself switches on for the step is its own choice, plugin or not");
 	}
 
 	static void T_EveryToolStepHasItsHelpPage()

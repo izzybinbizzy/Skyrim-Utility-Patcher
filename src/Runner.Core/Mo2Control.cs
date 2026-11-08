@@ -646,7 +646,7 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 			return "";
 		}
 		try {
-			var lines = new List<string> { $"{a_title} was asked for at {a_asked:HH:mm:ss}; it never appeared.", "", "Processes Mod Organizer started meanwhile:" };
+			var lines = new List<string> { $"{a_title} was asked for at {a_asked:HH:mm:ss}; it never appeared.", "", "Mod Organizer's processes and their children seen while waiting (the first ones may be older than the request):" };
 			lines.AddRange(a_started.Count == 0 ? new[] { "  (none seen)" } : a_started.Select(s => "  " + s));
 			lines.AddRange(["", "Mod Organizer's log since the request:"]);
 			lines.AddRange(RawLinesSince(Mo2Log, a_logFrom).Select(s => "  " + s));
@@ -656,8 +656,9 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 				: new List<FileInfo>();
 			foreach (var f in vfs) {
 				lines.AddRange(["", $"Its virtual folder ({f.Name}):"]);
-				lines.AddRange(RawLinesSince(f.FullName, 0).Where(l => l.Contains("inject", StringComparison.OrdinalIgnoreCase) ||
-					l.Contains("inithooks called", StringComparison.OrdinalIgnoreCase) || l.Contains("remove from process", StringComparison.OrdinalIgnoreCase)).Select(s => "  " + s));
+				// its few lines picked from the whole of it first, then the limit (its hook lines would otherwise push them out)
+				lines.AddRange(RawLinesSince(f.FullName, 0, int.MaxValue).Where(l => l.Contains("inject", StringComparison.OrdinalIgnoreCase) ||
+					l.Contains("inithooks called", StringComparison.OrdinalIgnoreCase) || l.Contains("remove from process", StringComparison.OrdinalIgnoreCase)).TakeLast(400).Select(s => "  " + s));
 			}
 			// a title may hold characters a file name cannot (an executable called "xEdit: clean")
 			var safe = string.Concat(a_title.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '-' : c)).Trim();

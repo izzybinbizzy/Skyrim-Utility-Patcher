@@ -182,15 +182,13 @@ public static partial class ToolSettings
 		// the player pressed "Learn its settings": their Mod Organizer closes the way Start closes it, never waited on for half an hour
 		var control = new Mo2Control(mo2, a_setup.Profile, a_log) { AllowCloseTheirs = true };
 		control.Close(null, a_ct);
-		// a tool inside a switched-off mod: Mod Organizer cannot start it from there, so that mod is on while the tool is open and
-		// the profile's order files go back after (one holding a plugin is left to the player, as in a run)
+		// a tool inside a switched-off mod: Mod Organizer cannot start it from there, so that mod is on while the tool is open (one
+		// holding a plugin is left to the player, as in a run). Only that mod is unticked after: what the player changed in Mod
+		// Organizer meanwhile stays
 		var profile = new Profile(mo2, a_setup.Profile, () => control.Running);
-		Dictionary<string, byte[]>? putBack = null;
-		if (StepKit.ToolMod(mo2, profile, title) is { } toolMod) {
-			if (Plugins.InMod(mo2.ModDir(toolMod)).Count > 0) {
-				throw new StepFailedException($"{tool}'s program is inside the mod \"{toolMod}\", which is switched off in this profile - tick that mod (it holds a plugin), then learn again");
-			}
-			putBack = profile.Snapshot();
+		var toolMod = StepKit.ToolMod(mo2, profile, title);
+		if (toolMod != null) {
+			StepKit.NoPluginIn(mo2, toolMod, tool);
 			profile.SetMods([toolMod], [], a_log);
 		}
 		try {
@@ -207,10 +205,14 @@ public static partial class ToolSettings
 				Thread.Sleep(1000);
 			}
 		} finally {
-			if (putBack != null) {
-				// the put-back happens even after a Stop
-				control.Close(null, CancellationToken.None);
-				profile.Restore(putBack);
+			if (toolMod != null) {
+				// even after a Stop; one that cannot go back is named, never left unsaid
+				try {
+					control.Close(null, CancellationToken.None);
+					profile.SetMods([], [toolMod], a_log);
+				} catch (Exception e) when (e is Mo2BusyException or IOException or UnauthorizedAccessException or InvalidOperationException or KeyNotFoundException) {
+					a_log.Warn($"the mod \"{toolMod}\" could not be switched off again ({e.Message}) - untick it in Mod Organizer");
+				}
 			}
 		}
 		var changed = Changed(before, Scan(roots, skip)).Where(f => !f.EndsWith("_Debug_log.txt", StringComparison.OrdinalIgnoreCase)).ToList();
