@@ -22,12 +22,13 @@ public static class RunUndo
 		var dir = Path.Combine(a_backup, OutputsFolder);
 		var zip = Path.Combine(a_backup, OutputsZip);
 		var part = zip + ".part";
+		Dictionary<string, long> want;
 		try {
 			if (!Directory.Exists(dir) || !Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories).Any()) {
 				return;
 			}
 			File.Delete(part);
-			var want = Sizes(dir);
+			want = Sizes(dir);
 			ZipFile.CreateFromDirectory(dir, part, CompressionLevel.Fastest, false);
 			using (var z = ZipFile.OpenRead(part)) {
 				var files = z.Entries.Where(e => !e.FullName.EndsWith('/')).ToList();
@@ -36,11 +37,6 @@ public static class RunUndo
 				}
 			}
 			File.Move(part, zip, true);
-			foreach (var f in new DirectoryInfo(dir).EnumerateFiles("*", SearchOption.AllDirectories).Where(f => f.IsReadOnly)) {
-				f.IsReadOnly = false;
-			}
-			Directory.Delete(dir, true);
-			a_log.Detail($"the old outputs in this run's backup packed: {want.Count} file(s), {want.Values.Sum() / 1048576} MB into {new FileInfo(zip).Length / 1048576} MB");
 		} catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException or NotSupportedException) {
 			a_log.Warn("the old outputs stay unpacked in this run's backup: " + e.Message);
 			try {
@@ -48,6 +44,17 @@ public static class RunUndo
 			} catch (Exception e2) when (e2 is IOException or UnauthorizedAccessException) {
 				// a part left behind goes with the run's backup
 			}
+			return;
+		}
+		// the zip is the whole copy from here on: a folder that will not go only takes room, and Unpack writes over what is left of it
+		try {
+			foreach (var f in new DirectoryInfo(dir).EnumerateFiles("*", SearchOption.AllDirectories).Where(f => f.IsReadOnly)) {
+				f.IsReadOnly = false;
+			}
+			Directory.Delete(dir, true);
+			a_log.Detail($"the old outputs in this run's backup packed: {want.Count} file(s), {want.Values.Sum() / 1048576} MB into {new FileInfo(zip).Length / 1048576} MB");
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+			a_log.Warn("the old outputs are packed in this run's backup, but part of their folder could not be removed: " + e.Message);
 		}
 	}
 
@@ -62,7 +69,37 @@ public static class RunUndo
 		File.Delete(zip);
 	}
 
-	// why this run cannot be undone now (null = it can): only a setup's last run still standing, ended, with its backup there
+	// what stands at a_from (its meta.ini stays) moved into a folder of its own under a_aside: what is set aside is never written over,
+	// not by a second output of the same mod, not by a second press
+	public static void SetAside(string a_from, string a_aside, string a_name)
+	{
+		static bool Meta(string a_n) => a_n.Equals("meta.ini", StringComparison.OrdinalIgnoreCase);
+		if (!Directory.Exists(a_from) || !Directory.EnumerateFileSystemEntries(a_from).Any(e => !Meta(Path.GetFileName(e)))) {
+			return;
+		}
+		var dst = Path.Combine(a_aside, a_name);
+		for (var i = 2; Directory.Exists(dst); ++i) {
+			dst = Path.Combine(a_aside, $"{a_name} {i}");
+		}
+		Files.MoveContents(a_from, dst, Meta);
+	}
+
+	// did this run leave anything an undo would take back? (one that built nothing and put everything back did not)
+	public static bool LeftSomething(Journal a_j) => a_j.Built.Count > 0 || a_j.Retire.Count > 0 || a_j.Parked.Any(p => p.Replaced && !p.PutBack);
+
+	// a later run still standing that changed what undoing a_j would put back: the same setup's, or another's on the same profile or
+	// with an output of a_j's - undoing a_j would lay its old mod list and outputs over that run
+	static bool InTheWay(Journal a_later, Journal a_j)
+	{
+		if (a_later.Undone || a_later.Started <= a_j.Started || (!a_later.Unfinished && !LeftSomething(a_later))) {
+			return false;
+		}
+		static bool Same(string? a_a, string? a_b) => string.Equals(a_a, a_b, StringComparison.OrdinalIgnoreCase);
+		return Same(a_later.SetupFile, a_j.SetupFile) || (Same(a_later.Mo2Exe, a_j.Mo2Exe) && Same(a_later.Mo2Instance, a_j.Mo2Instance) &&
+			(Same(a_later.Profile, a_j.Profile) || a_later.Built.Intersect(a_j.Built, StringComparer.OrdinalIgnoreCase).Any()));
+	}
+
+	// why this run cannot be undone now (null = it can): only the last run on its profile and outputs still standing, ended, with its backup there
 	public static string? WhyNot(Journal a_j, IEnumerable<Journal> a_runs)
 	{
 		if (a_j.Undone) {
@@ -71,11 +108,11 @@ public static class RunUndo
 		if (a_j.Unfinished || (a_j.InGameAfter && a_j.OwnerAlive)) {
 			return "this run did not finish - put your profile back first";
 		}
-		if (a_j.Built.Count == 0 && !a_j.Parked.Any(p => p.Replaced && !p.PutBack)) {
+		if (!LeftSomething(a_j)) {
 			return "this run built nothing to undo";
 		}
-		if (a_runs.Any(j => j.Folder != a_j.Folder && !j.Undone && j.Started > a_j.Started && string.Equals(j.SetupFile, a_j.SetupFile, StringComparison.OrdinalIgnoreCase))) {
-			return "only the last run of a setup can be undone";
+		if (a_runs.FirstOrDefault(j => InTheWay(j, a_j)) is { } later) {
+			return $"only the last run can be undone - a later run of \"{later.SetupName}\" changed the same profile or outputs";
 		}
 		if (!Directory.Exists(a_j.SnapshotDir) || !Directory.EnumerateFiles(a_j.SnapshotDir).Any()) {
 			return "this run's copy of your mod and plugin lists is gone";

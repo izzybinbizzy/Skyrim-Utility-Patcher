@@ -748,7 +748,7 @@ public static class Program
 
 	// his checklist 454: a finished run's old outputs are packed, its folder gone; undoing the run puts each output and the lists back,
 	// sets the new outputs aside (never erased), takes out an output the run made new, keeps what the player changed; it can be done once,
-	// only to the setup's last run; a switched-off pack keeps the folder
+	// only to the last run on that profile and those outputs; a switched-off pack keeps the folder
 	static void T_TheLastRunCanBeUndone()
 	{
 		using var f = new FakeMo2();
@@ -784,10 +784,17 @@ public static class Program
 		var again = Runner.Undo(Journal.Load(j.Folder));
 		Check(again.Verdict.Contains("undone already", StringComparison.Ordinal), "only once: " + again.Verdict);
 		Check(LastRuns.Of(Journal.All(Runner.RunsDir(f.Data)), f.SetupFile).Count == 0, "an undone run no longer counts as a step's last run");
-		// an older run cannot be undone past a newer one
-		var older = new Journal { Id = "older", Folder = Path.Combine(Runner.RunsDir(f.Data), "older"), SetupFile = f.SetupFile, Started = DateTime.Now.AddDays(-1), Built = ["Output A"] };
-		var newer = new Journal { Id = "newer", Folder = Path.Combine(Runner.RunsDir(f.Data), "newer"), SetupFile = f.SetupFile, Started = DateTime.Now, Built = ["Output A"] };
-		Check(RunUndo.WhyNot(older, [older, newer])?.Contains("last run", StringComparison.Ordinal) == true, "only the setup's last run");
+		// an older run cannot be undone past a newer one that changed the same profile or outputs; a later run that changed nothing is in nobody's way
+		Journal J(string a_id, int a_days, string? a_setup = null, string a_profile = "P", string[]? a_built = null, RunState a_state = RunState.Finished) =>
+			new() { Id = a_id, Folder = Path.Combine(Runner.RunsDir(f.Data), a_id), SetupFile = a_setup ?? f.SetupFile, Profile = a_profile, Started = DateTime.Now.AddDays(a_days), State = a_state, Built = [.. a_built ?? ["Output A"]] };
+		var older = J("older", -1);
+		bool Blocked(Journal a_later) => RunUndo.WhyNot(older, [older, a_later])?.Contains("last run", StringComparison.Ordinal) == true;
+		Check(Blocked(J("newer", 0)), "only the last run");
+		Check(!Blocked(J("empty", 0, a_built: [], a_state: RunState.Failed)), "a later run that built nothing is in nobody's way");
+		Check(Blocked(J("cut off", 0, a_built: [], a_state: RunState.Running)), "a later run that did not finish is");
+		Check(Blocked(J("other setup", 0, "other.json")), "so is another setup's run on the same profile");
+		Check(Blocked(J("other profile", 0, "other.json", "Q")), "or on another profile with one of the same outputs");
+		Check(!Blocked(J("elsewhere", 0, "other.json", "Q", ["Output Z"])), "another setup's run elsewhere is not");
 		// a pack that is switched off keeps the folder
 		var dir = Path.Combine(f.Root, "pack test");
 		Directory.CreateDirectory(Path.Combine(dir, RunUndo.OutputsFolder, "Mod"));
@@ -797,6 +804,100 @@ public static class Program
 		RunUndo.Unpack(dir);
 		Equal("a", File.ReadAllText(Path.Combine(dir, RunUndo.OutputsFolder, "Mod", "a.txt")), "unpacked whole");
 		Check(!File.Exists(Path.Combine(dir, RunUndo.OutputsZip)), "the zip gone after it");
+		// a folder that will not go once the zip is whole: said as packed, and the zip brings everything back
+		var held = Path.Combine(f.Root, "pack held");
+		Directory.CreateDirectory(Path.Combine(held, RunUndo.OutputsFolder, "Mod"));
+		File.WriteAllText(Path.Combine(held, RunUndo.OutputsFolder, "Mod", "a.txt"), "a");
+		File.WriteAllText(Path.Combine(held, RunUndo.OutputsFolder, "Mod", "b.txt"), "b");
+		using (var log = new RunLog(held)) {
+			using (new FileStream(Path.Combine(held, RunUndo.OutputsFolder, "Mod", "a.txt"), FileMode.Open, FileAccess.Read, FileShare.Read)) {
+				RunUndo.Pack(held, log);
+			}
+		}
+		Check(File.ReadAllText(Path.Combine(held, "log.txt")).Contains("are packed", StringComparison.Ordinal), "said as packed, not as left unpacked");
+		RunUndo.Unpack(held);
+		Check(File.ReadAllText(Path.Combine(held, RunUndo.OutputsFolder, "Mod", "b.txt")) == "b" && File.ReadAllText(Path.Combine(held, RunUndo.OutputsFolder, "Mod", "a.txt")) == "a", "and the zip brings both back");
+	}
+
+	// an undo cut off half way (a file held open) can be pressed again: what the first press put back stays, what it set aside stays
+	static void T_AnUndoCutOffCanBePressedAgain()
+	{
+		using var f = new FakeMo2();
+		File.WriteAllText(Path.Combine(f.Mods, "Output A", "old.txt"), "old A");
+		File.WriteAllText(Path.Combine(f.Mods, "Output B", "old.txt"), "old B");
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => WriteOutput(ctx, "landscapefixer", "Output A", "OutA.esp")));
+		StepRegistry.Replace(new FakeStep("synthesis", (ctx, s) => WriteOutput(ctx, "synthesis", "Output B", "OutB.esp")));
+		f.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A" }), ("synthesis", new JsonObject { ["output_mod"] = "Output B" }));
+		Equal(RunState.Finished, Runner.Run(new RunRequest(f.SetupFile, f.Data)).State, "the run finished");
+		var j = Journal.All(Runner.RunsDir(f.Data)).First();
+		var undone = Path.Combine(j.BackupDir, "undone");
+		// an undo walks from the last step back: B goes first, then A's new output is held open
+		using (new FileStream(Path.Combine(f.Mods, "Output A", "new.txt"), FileMode.Open, FileAccess.Read, FileShare.None)) {
+			Equal(RunState.Failed, Runner.Undo(Journal.Load(j.Folder)).State, "the first press stops at the held file");
+		}
+		Equal("old B", File.ReadAllText(Path.Combine(f.Mods, "Output B", "old.txt")), "B is back after the first press");
+		var second = Runner.Undo(Journal.Load(j.Folder));
+		Equal(RunState.Restored, second.State, "the second press: " + second.Verdict);
+		Equal("old B", File.ReadAllText(Path.Combine(f.Mods, "Output B", "old.txt")), "B's old output is not taken for the run's");
+		Check(!File.Exists(Path.Combine(f.Mods, "Output B", "new.txt")) && File.Exists(Path.Combine(undone, "Output B", "new.txt")), "B's new output stays set aside");
+		Equal("old A", File.ReadAllText(Path.Combine(f.Mods, "Output A", "old.txt")), "A is back after the second");
+		Check(!File.Exists(Path.Combine(f.Mods, "Output A", "new.txt")) && Directory.GetFiles(undone, "new.txt", SearchOption.AllDirectories).Length == 2, "and its new output set aside too");
+	}
+
+	// two steps writing one output each keep what they wrote; a tool folder's label never passes for a mod of that name; a tool folder whose
+	// move failed is not on record
+	static void T_AnUndoKeepsEveryOutputAside()
+	{
+		using var f = new FakeMo2();
+		var tool = Path.Combine(f.Root, "tool out");
+		var other = Path.Combine(f.Root, "other tool out");
+		var heldDir = Path.Combine(f.Root, "held tool out");
+		foreach (var d in new[] { tool, other, heldDir }) {
+			Directory.CreateDirectory(d);
+			File.WriteAllText(Path.Combine(d, "tool old.txt"), "old");
+		}
+		File.WriteAllText(Path.Combine(f.Mods, "Output A", "old.txt"), "old A");
+		void Second(RunContext a_ctx, string a_text) => File.WriteAllText(Path.Combine(a_ctx.Mo2.ModDir("Output A"), "new.txt"), a_text);
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => {
+			WriteOutput(ctx, "landscapefixer", "Output A", "OutA.esp");
+			Second(ctx, "first");
+		}));
+		StepRegistry.Replace(new FakeStep("synthesis", (ctx, s) => {
+			WriteOutput(ctx, "synthesis", "Output A", "OutA.esp");
+			Second(ctx, "second");
+			StepKit.ParkDir(ctx, tool, "brand new");
+			File.WriteAllText(Path.Combine(tool, "tool new.txt"), "made by the run");
+			StepKit.ParkDir(ctx, other, "base mod");
+			ctx.Profile.EnsureMod("Brand New", ctx.Log);
+			File.WriteAllText(Path.Combine(f.Mods, "Brand New", "fresh.txt"), "made by the run");
+			ctx.Journal.Built.Add("Brand New");
+			ctx.Journal.Added.Add("Brand New");
+			using (new FileStream(Path.Combine(heldDir, "tool old.txt"), FileMode.Open, FileAccess.Read, FileShare.None)) {
+				try {
+					StepKit.ParkDir(ctx, heldDir, "held");
+					Check(false, "a held folder does not move");
+				} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+					Check(!ctx.Journal.Parked.Any(p => p.Mod == "held"), "a move that failed is not on record");
+				}
+			}
+			ctx.Journal.Save();
+		}));
+		f.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A" }), ("synthesis", new JsonObject()));
+		Equal(RunState.Finished, Runner.Run(new RunRequest(f.SetupFile, f.Data)).State, "the run finished");
+		var j = Journal.All(Runner.RunsDir(f.Data)).First();
+		var list = Path.Combine(f.ProfileDir, "modlist.txt");
+		File.WriteAllText(list, File.ReadAllText(list).Replace("+Base Mod", "-Base Mod", StringComparison.Ordinal));
+		var r = Runner.Undo(Journal.Load(j.Folder));
+		Equal(RunState.Restored, r.State, "undone: " + r.Verdict);
+		var undone = Path.Combine(j.BackupDir, "undone");
+		var kept = Directory.GetFiles(undone, "new.txt", SearchOption.AllDirectories).Select(File.ReadAllText).Order(StringComparer.Ordinal).ToList();
+		Equal("first|second", string.Join("|", kept), "both steps' files are kept");
+		Equal("old A", File.ReadAllText(Path.Combine(f.Mods, "Output A", "old.txt")), "the old output is back");
+		Equal(1, Directory.GetFiles(undone, "fresh.txt", SearchOption.AllDirectories).Length, "a mod with a tool folder's name is set aside all the same");
+		Check(!ProfileOf(f).States().ContainsKey("Brand New"), "and taken out");
+		Check(!ProfileOf(f).IsOn("Base Mod"), "the player's change to a mod named like a tool folder's label is kept");
+		Check(File.Exists(Path.Combine(tool, "tool old.txt")) && !File.Exists(Path.Combine(tool, "tool new.txt")), "the tool's folder is as it was");
+		Equal(1, Directory.GetFiles(undone, "tool new.txt", SearchOption.AllDirectories).Length, "what the run left in it is set aside");
 	}
 
 	// ------------------------------------------------------------------ what MO2 changed (his ask 2026-10-27)
@@ -1420,7 +1521,8 @@ public static class Program
 		Check(File.Exists(Path.Combine(f.Mods, "Output A", "Docs", "Bashed Patch, 0.txt")), "its log went with it, at its own place");
 		Check(!File.Exists(Path.Combine(f.Overwrite, "Bashed Patch, 0.esp")), "nothing of the patch left in overwrite");
 		Check(File.Exists(Path.Combine(f.Overwrite, "unrelated.ini")), "another file in overwrite is not taken");
-		Check(Directory.GetFiles(f.Backups, "OutA.esp", SearchOption.AllDirectories).Length == 1, "the old output is in the backup");
+		using var packed = System.IO.Compression.ZipFile.OpenRead(Directory.GetFiles(f.Backups, RunUndo.OutputsZip, SearchOption.AllDirectories).Single());
+		Check(packed.Entries.Any(e => e.Name == "OutA.esp"), "the old output is in the backup");
 	}
 
 	// the player pressed Done without building: the step fails and the old output comes back
@@ -4102,6 +4204,18 @@ public static class Program
 			Check(InGame.WaitUntilFree(() => S(a_mounted: true), Dismount, RunLog.Null, CancellationToken.None)?.Contains("mount", StringComparison.Ordinal) == true, "a mount that cannot be left: the same");
 			Equal(1, asked, "and it is not asked again and again");
 			Equal<string?>(null, InGame.WaitUntilFree(() => S(a_menu: true), Dismount, RunLog.Null, CancellationToken.None), "a menu that does not close: waited out, then on");
+			// holds that keep taking turns end too
+			InGame.TeleportWait = InGame.TeleportShortWait = TimeSpan.FromMilliseconds(200);
+			var turn = 0;
+			var turns = System.Diagnostics.Stopwatch.StartNew();
+			InGame.WaitUntilFree(() => ++turn % 2 == 0 ? S(a_menu: true) : S(a_mounted: true), Dismount, RunLog.Null, CancellationToken.None);
+			Check(turns.Elapsed >= InGame.TeleportWait * 2, "only the wait's own end stops holds that take turns");
+			// each hold has its own limit: a menu after a long form still gets its time
+			InGame.TeleportWait = TimeSpan.FromSeconds(5);
+			InGame.TeleportShortWait = TimeSpan.FromMilliseconds(30);
+			var clock = System.Diagnostics.Stopwatch.StartNew();
+			Equal<string?>(null, InGame.WaitUntilFree(() => clock.ElapsedMilliseconds < 60 ? S(a_beast: true) : clock.ElapsedMilliseconds < 80 ? S(a_menu: true) : S(), Dismount, RunLog.Null, CancellationToken.None), "both end: go on");
+			Check(clock.ElapsedMilliseconds >= 80, "the menu was waited out, not passed on the form's time");
 			using var stop = new CancellationTokenSource();
 			stop.Cancel();
 			Throws<OperationCanceledException>(() => InGame.WaitUntilFree(() => S(a_menu: true), Dismount, RunLog.Null, stop.Token), "a Stop ends the wait");
@@ -4120,7 +4234,7 @@ public static class Program
 		var forced = InGame.SaveNotMade("x", true);
 		Check(forced.Contains("switched back on", StringComparison.Ordinal) && !forced.Contains("Force the save", StringComparison.Ordinal) && forced.Contains("guided", StringComparison.Ordinal),
 			"after the force: what is left to do, not the same advice again: " + forced);
-		Check(InGame.SaveWait <= TimeSpan.FromMinutes(2), "a blocked save is noticed soon, not after minutes");
+		Check(InGame.SaveWait <= TimeSpan.FromMinutes(5), "a blocked save is said, never waited on for long");
 	}
 
 	// the old timed runs' tasks are looked for once per data folder (Windows' task list took 35 s at every start); only a clean pass
@@ -4143,6 +4257,26 @@ public static class Program
 				Directory.Delete(dir, true);
 			}
 		}
+	}
+
+	// his checklist 456: only what each tool's own document says - DynDOLOD.esp and Occlusion.esp last, Occlusion.esp after DynDOLOD.esp,
+	// PG_1.esp last but for those, the Bashed Patch before them, DynDOLOD.esm the last master; Synthesis, PGPatcher.esp and Landscape
+	// Fixer have no documented place; always a warning
+	static void T_OutputPluginsAreCheckedAgainstTheirDocuments()
+	{
+		List<Issue> C(params string[] a_order) => PluginPlaces.Check(a_order);
+		Equal(0, C("Skyrim.esm", "DynDOLOD.esm", "Some.esp", "Bashed Patch, 0.esp", "Synthesis.esp", "PG_1.esp", "DynDOLOD.esp", "Occlusion.esp").Count, "LOOT's own order is clean");
+		Equal(0, C("Some.esp", "Other.esp").Count, "none of them ticked: nothing to say");
+		Equal(0, C("PGPatcher.esp", "LandscapeFixer.esp", "Synthesis.esp", "Some.esp").Count, "no documented place: never warned");
+		Check(C("DynDOLOD.esp", "Occlusion.esp").Count == 0 && C("Occlusion.esp", "DynDOLOD.esp").Single().Text.Contains("right after", StringComparison.Ordinal), "Occlusion.esp after DynDOLOD.esp");
+		var late = C("DynDOLOD.esp", "Late Mod.esp");
+		Check(late.Single().Text.Contains("Late Mod.esp", StringComparison.Ordinal) && !late[0].Blocking, "a plugin after DynDOLOD.esp is named, and only warned about");
+		Check(C("PG_1.esp", "Late Mod.esp").Single().Text.Contains("PGPatcher", StringComparison.Ordinal), "a plugin after PG_1.esp");
+		Equal(0, C("PG_1.esp", "PG_2.esp", "DynDOLOD.esp", "Occlusion.esp").Count, "PG plugins and the DynDOLOD outputs after them are fine");
+		Check(C("PG_1.esp", "Bashed Patch, 0.esp").Any(i => i.Text.StartsWith("Bashed Patch", StringComparison.Ordinal)), "the Bashed Patch after one that must load last");
+		Equal(0, C("Bashed Patch, 0.esp", "Some.esp").Count, "a plugin after the Bashed Patch may say it must load last: not warned");
+		Check(C("DynDOLOD.esm", "Late.esm").Single().Text.Contains("Late.esm", StringComparison.Ordinal), "a master after DynDOLOD.esm");
+		Equal(0, C("Early.esm", "DynDOLOD.esm", "Some.esp").Count, "plugins after DynDOLOD.esm are fine");
 	}
 
 	static void T_EveryToolStepHasItsHelpPage()

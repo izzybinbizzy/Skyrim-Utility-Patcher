@@ -277,6 +277,14 @@ public static class Runner
 			journal.Verdict = $"finished: {todo.Count} step(s) in {total.Elapsed.TotalMinutes:0} min";
 			journal.Ended = DateTime.Now;
 			journal.Save();
+			// his checklist 456: said at the end too - a run's own placement may have just moved them; a look that fails changes nothing
+			try {
+				foreach (var i in PluginPlaces.Check(profile.ActivePlugins())) {
+					log.Warn(i.Text);
+				}
+			} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+				log.Detail("the output plugins' places could not be looked at: " + e.Message);
+			}
 			log.Say("ALL DONE: " + journal.Verdict);
 			log.Simple("ALL DONE: " + journal.Verdict);
 			return new RunOutcome(RunState.Finished, journal.Verdict, journal.Folder);
@@ -707,7 +715,7 @@ public static class Runner
 		a_ctx.Control.Close();
 		// what the player changed in Mod Organizer while the run went on (a mod ticked, unticked or installed) is kept, never
 		// undone by the put-back - except on the mods this run owns (its outputs and the mods it replaces), which it decides
-		var own = a_ctx.Journal.Added.Concat(a_ctx.Journal.Built).Concat(a_ctx.Journal.Retire).Concat(a_ctx.Journal.Parked.Select(p => p.Mod))
+		var own = a_ctx.Journal.Added.Concat(a_ctx.Journal.Built).Concat(a_ctx.Journal.Retire).Concat(a_ctx.Journal.ParkedMods)
 			.ToHashSet(StringComparer.OrdinalIgnoreCase);
 		var theirs = a_ctx.Profile.ChangedByOthers().Where(p => !own.Contains(p.Key)).ToDictionary(p => p.Key, p => p.Value, StringComparer.OrdinalIgnoreCase);
 		if (a_snap != null && a_snap.Count > 0) {
@@ -835,7 +843,7 @@ public static class Runner
 		return new RunOutcome(RunState.Restored, a_j.Verdict, a_j.Folder);
 	}
 
-	// his checklist 454: the setup's last run undone - each output back to what it was before the run (the new one set aside in the run's
+	// his checklist 454: the last run undone - each output back to what it was before the run (the new one set aside in the run's
 	// backup, never erased), outputs the run made new taken out, the order files as they were before it; whatever the player changed
 	// in Mod Organizer since the run began stays
 	public static RunOutcome Undo(Journal a_j)
@@ -869,17 +877,17 @@ public static class Runner
 				NoteChanges(mo2, data, Mo2Changes.Outside, log);
 			}
 			var theirs = ctx.Profile.ChangedByOthers();
-			foreach (var m in a_j.Added.Concat(a_j.Built).Concat(a_j.Retire).Concat(a_j.Parked.Select(p => p.Mod))) {
+			foreach (var m in a_j.Added.Concat(a_j.Built).Concat(a_j.Retire).Concat(a_j.ParkedMods)) {
 				theirs.Remove(m);
 			}
 			var marks = theirs.Count > 0 ? ctx.Profile.PluginMarks() : [];
 			RunUndo.Unpack(a_j.BackupDir);
 			var aside = Path.Combine(a_j.BackupDir, "undone");
-			bool Meta(string a_name) => a_name.Equals("meta.ini", StringComparison.OrdinalIgnoreCase);
-			var parked = a_j.Parked.Where(p => p.Replaced && !p.PutBack).Reverse().ToList();
-			foreach (var p in parked) {
-				if (Directory.Exists(p.From)) {
-					Files.MoveContents(p.From, Path.Combine(aside, p.Mod), Meta);
+			foreach (var p in a_j.Parked.Where(p => p.Replaced && !p.PutBack).Reverse().ToList()) {
+				if (!p.SetAside) {
+					RunUndo.SetAside(p.From, aside, p.Mod);
+					p.SetAside = true;
+					a_j.Save();
 				}
 				if (Directory.Exists(p.To)) {
 					Files.MoveContents(p.To, p.From);
@@ -888,8 +896,9 @@ public static class Runner
 				a_j.Save();
 				log.Detail($"{p.Mod}: back as it was before this run");
 			}
-			foreach (var m in a_j.Built.Except(parked.Select(p => p.Mod), StringComparer.OrdinalIgnoreCase).Where(m => Directory.Exists(mo2.ModDir(m)))) {
-				Files.MoveContents(mo2.ModDir(m), Path.Combine(aside, m), Meta);
+			// only what had no old output: one that had came back above, and pressed again it holds that old output
+			foreach (var m in a_j.Built.Except(a_j.Parked.Where(p => p.Replaced && !p.IsFolder).Select(p => p.Mod), StringComparer.OrdinalIgnoreCase).Where(m => Directory.Exists(mo2.ModDir(m)))) {
+				RunUndo.SetAside(mo2.ModDir(m), aside, m);
 				log.Detail($"{m}: this run's output set aside");
 			}
 			foreach (var a in a_j.Added) {

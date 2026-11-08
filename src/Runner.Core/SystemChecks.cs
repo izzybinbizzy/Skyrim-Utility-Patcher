@@ -27,6 +27,7 @@ public static partial class SystemChecks
 		Guard("whether Mod Organizer is set to run as administrator", () => self ? [] : Admin(false, false, AdminFlagged(a_mo2.Exe)));
 		Guard("for another Mod Organizer", () => OtherMo2(Mo2Paths(), a_mo2.Exe));
 		Guard("the plugin limit", () => PluginLimit(CountPlugins(a_profile)));
+		Guard("the output plugins' places", () => PluginPlaces.Check(a_profile.ActivePlugins()));
 		Guard("whether Windows waits to restart", () => Power(RestartPending(), null));
 		Guard("the battery", () => Power(false, Battery()));
 		Guard("whether Steam is updating the game", () => SteamUpdate(a_mo2.GameDir, SteamRunning()));

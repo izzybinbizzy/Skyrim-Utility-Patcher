@@ -493,7 +493,7 @@ public partial class MainWindow : Window
 		};
 		// his checklist 454: asked first; the box names what it does, and a run that cannot be undone says why
 		var undo = new Button { Content = "Undo this run ...", Style = (Style)FindResource("Ghost"), Margin = new Thickness(8, 0, 0, 0),
-			ToolTip = "Puts each output and your mod and plugin lists back as they were before this run - only the setup's last run" };
+			ToolTip = "Puts each output and your mod and plugin lists back as they were before this run - only the last run on that profile" };
 		undo.Click += async (_, _) => {
 			if (list.SelectedItem is not HistoryRow row) {
 				_vm.Say("Pick a run first.", "warn");

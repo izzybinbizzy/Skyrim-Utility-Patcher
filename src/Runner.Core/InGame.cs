@@ -571,6 +571,7 @@ public static partial class InGame
 	public static string? WaitUntilFree(Func<PlayerState> a_read, Action a_dismount, RunLog a_log, CancellationToken a_ct)
 	{
 		var sw = Stopwatch.StartNew();
+		var since = TimeSpan.Zero;
 		TimeSpan? asked = null;
 		string? said = null;
 		while (true) {
@@ -584,10 +585,12 @@ public static partial class InGame
 			}
 			if (said != h.Why) {
 				said = h.Why;
+				since = sw.Elapsed;
 				a_log.Detail($"you are {h.Why} - waiting before the teleport");
 			}
+			// each hold has its own limit (a conversation after a long dragon flight still gets its minute); holds that keep taking turns end too
 			var limit = h.Stop ? TeleportWait : TeleportShortWait;
-			if (sw.Elapsed > limit) {
+			if (sw.Elapsed - since > limit || sw.Elapsed > TeleportWait * 2) {
 				if (h.Stop) {
 					return $"your character is {h.Why}, and was still after {limit.TotalMinutes:0.#} minute(s) - load a save where you are not, and run this step again";
 				}
@@ -611,6 +614,10 @@ public static partial class InGame
 				a_ctx.DevBench.PapyrusOn(Player, "Actor", "Dismount");
 				a_ctx.Log.Detail("asked to get off the mount first");
 			}, a_ctx.Log, a_ctx.Cancel);
+			if (stop == null) {
+				// a fight that started during the wait
+				a_ctx.DevBench.PapyrusOn(Player, "Actor", "StopCombat");
+			}
 		} catch (Exception e) when (Helps(a_ctx, e)) {
 			a_ctx.Log.Warn("could not check your character before the teleport: " + e.Message);
 			return;
@@ -805,7 +812,7 @@ public static partial class InGame
 
 	// the game's own save, waited until the file is on disk and stopped growing, then the game closed
 	// how long a save may take to appear at all; one being written is never cut short by it (his checklist 459)
-	public static TimeSpan SaveWait { get; set; } = TimeSpan.FromSeconds(90);
+	public static TimeSpan SaveWait { get; set; } = TimeSpan.FromMinutes(3);
 
 	// why a save did not happen, in the player's words: a mod that blocks saving is the usual reason
 	public static string SaveNotMade(string a_name, bool a_forced) =>

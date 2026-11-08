@@ -225,10 +225,11 @@ public static class StepKit
 				dst += " " + DateTime.Now.ToString("HHmmss", InvariantCulture);
 			}
 			Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
-			// on record for an undo; Replaced, because a step that fails has always kept this folder's own way back
-			a_ctx.Journal.Parked.Add(new ParkRecord { Mod = a_label, From = a_path, To = dst, Replaced = true });
-			a_ctx.Journal.Save();
 			Files.MoveDirectory(a_path, dst);
+			// on record for an undo only once it is all in the backup: an undo must never take what a failed move left here for the
+			// run's output. Replaced, because a step that fails has always kept this folder's own way back
+			a_ctx.Journal.Parked.Add(new ParkRecord { Mod = a_label, From = a_path, To = dst, Replaced = true, IsFolder = true });
+			a_ctx.Journal.Save();
 			a_ctx.Log.Detail($"old {a_label} moved to the backup ({Files.CountFiles(dst)} file(s))");
 		}
 		Directory.CreateDirectory(a_path);

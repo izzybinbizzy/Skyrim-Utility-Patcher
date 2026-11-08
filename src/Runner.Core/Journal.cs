@@ -40,11 +40,15 @@ public sealed class StepRecord
 public sealed class ParkRecord
 {
 	public string Step { get; set; } = "";
+	// the mod; for a tool's own folder (IsFolder) only a label, which may read like some mod's name and is never taken for one
 	public string Mod { get; set; } = "";
 	public string From { get; set; } = "";
 	public string To { get; set; } = "";
 	public bool Replaced { get; set; }
 	public bool PutBack { get; set; }
+	public bool IsFolder { get; set; }
+	// an undo has moved what stood at From aside: pressed again after a failure, it never takes what it put back there for the run's
+	public bool SetAside { get; set; }
 }
 
 // a file outside the mods that a step changes for its run (a tool's settings, DynDOLOD's preset, NGIO's flag): its old bytes
@@ -82,6 +86,8 @@ public sealed class Journal
 	public List<string> Retire { get; set; } = [];
 	public List<string> Added { get; set; } = [];
 	public List<ParkRecord> Parked { get; set; } = [];
+	[JsonIgnore]
+	public IEnumerable<string> ParkedMods => Parked.Where(p => !p.IsFolder).Select(p => p.Mod);
 	public List<KeptFile> Kept { get; set; } = [];
 	// the marker left where the player stood before the clean save's teleport (the save to play takes them back to it)
 	public string? ReturnMarker { get; set; }

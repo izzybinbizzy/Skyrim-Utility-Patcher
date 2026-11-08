@@ -283,7 +283,7 @@ public static class Cli
 		return 0;
 	}
 
-	// the setup's last run undone: undo --setup <file>
+	// the setup's last run that left anything undone: undo --setup <file>
 	static int UndoCmd(string[] a_args)
 	{
 		if (Opt(a_args, "--setup") is not { } s) {
@@ -291,9 +291,9 @@ public static class Cli
 			return 3;
 		}
 		var setup = Path.GetFullPath(s);
-		var j = Journal.All(AppPaths.Runs).Where(j => !j.Undone && string.Equals(j.SetupFile, setup, StringComparison.OrdinalIgnoreCase)).OrderByDescending(j => j.Started).FirstOrDefault();
+		var j = Journal.All(AppPaths.Runs).Where(j => !j.Undone && (j.Unfinished || RunUndo.LeftSomething(j)) && string.Equals(j.SetupFile, setup, StringComparison.OrdinalIgnoreCase)).OrderByDescending(j => j.Started).FirstOrDefault();
 		if (j == null) {
-			Console.WriteLine("nothing to undo: this setup has no run");
+			Console.WriteLine("nothing to undo: this setup has no run that changed anything");
 			return 0;
 		}
 		var r = Runner.Undo(j);
