@@ -4726,6 +4726,41 @@ public static class Program
 		Equal("Starten", ToolRunner.App.WindowWords.Read("{ \"Start\": \"Starten\", }", out _)?["Start"], "a file a person wrote reads");
 	}
 
+	// his checklist 477: a question and its answer as files; no answer is said in time and leaves nothing behind
+	static void T_TheCompanionAnswersOrIsPassedOver()
+	{
+		using var f = new FakeMo2();
+		var mo2 = Mo2Instance.Load(f.Exe, f.Instance);
+		var folder = Path.Combine(Path.GetDirectoryName(f.Exe)!, "plugins", "data", "SkyrimUtilityPatcher");
+		Check(!Companion.Ask(mo2, "ping", TimeSpan.FromMilliseconds(150), CancellationToken.None), "nobody there: no answer");
+		Equal(0, Directory.GetFiles(folder).Length, "and nothing left behind");
+		using var stop = new CancellationTokenSource();
+		var heard = new List<string>();
+		var answering = Task.Run(() => {
+			while (!stop.IsCancellationRequested) {
+				foreach (var ask in Directory.GetFiles(folder, "ask *.txt")) {
+					heard.Add(File.ReadAllText(ask));
+					var id = Path.GetFileNameWithoutExtension(ask)["ask ".Length..];
+					File.Delete(ask);
+					File.WriteAllText(Path.Combine(folder, $"done {id}.txt"), "ok");
+				}
+				Thread.Sleep(10);
+			}
+		});
+		Check(Companion.Ask(mo2, "refresh", TimeSpan.FromSeconds(20), CancellationToken.None), "it answers");
+		stop.Cancel();
+		answering.Wait();
+		Equal("refresh", heard.Single(), "what was asked");
+		Equal(0, Directory.GetFiles(folder).Length, "and nothing left behind");
+		var entry = Mo2MenuEntry.Text(@"D:\Tools\Skyrim Utility Patcher.exe");
+		Check(entry.Contains("onNextRefresh", StringComparison.Ordinal) && entry.Contains("refresh(False)", StringComparison.Ordinal), "the plugin reads the lists back in, without saving its own over them");
+		Check(!Mo2MenuEntry.Present(mo2), "no entry yet");
+		Mo2MenuEntry.Add(mo2, @"D:\Tools\Skyrim Utility Patcher.exe");
+		Check(Mo2MenuEntry.Present(mo2), "the entry is there");
+		var control = new Mo2Control(mo2, "Test", RunLog.Null);
+		Check(!control.HeldOpen, "Mod Organizer is not held open unless asked");
+	}
+
 	static void T_EveryToolStepHasItsHelpPage()
 	{
 		foreach (var s in StepCatalog.All.Where(s => s.Key is not ("shaders" or "xlodgen"))) {

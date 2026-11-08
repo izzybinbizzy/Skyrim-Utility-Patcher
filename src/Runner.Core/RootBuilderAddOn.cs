@@ -20,6 +20,39 @@ public static class Mo2MenuEntry
 	public static bool IsCurrent(Mo2Instance a_mo2, string a_program) => File.Exists(There(a_mo2)) && File.ReadAllText(There(a_mo2)) == Text(a_program);
 
 	public static void Add(Mo2Instance a_mo2, string a_program) => Files.WriteAtomic(There(a_mo2), Text(a_program));
+
+	public static bool Present(Mo2Instance a_mo2) => File.Exists(There(a_mo2));
+}
+
+// His checklist 477: a run closes and starts Mod Organizer about 13 times (about 6 minutes). With this option on it stays open: the order files are written
+// while it is open and read back in by the plugin above before each tool. A file for each question and each answer, in the plugin's own data folder.
+public static class Companion
+{
+	static string Folder(Mo2Instance a_mo2) => Path.Combine(Path.GetDirectoryName(a_mo2.Exe)!, "plugins", "data", "SkyrimUtilityPatcher");
+
+	// true = answered; false = no answer within a_wait, and nothing is left behind
+	public static bool Ask(Mo2Instance a_mo2, string a_what, TimeSpan a_wait, CancellationToken a_ct)
+	{
+		var folder = Folder(a_mo2);
+		var id = Guid.NewGuid().ToString("N");
+		var ask = Path.Combine(folder, $"ask {id}.txt");
+		var done = Path.Combine(folder, $"done {id}.txt");
+		Files.WriteAtomic(ask, a_what);
+		try {
+			var sw = System.Diagnostics.Stopwatch.StartNew();
+			while (sw.Elapsed < a_wait) {
+				if (File.Exists(done)) {
+					return true;
+				}
+				a_ct.WaitHandle.WaitOne(100);
+				a_ct.ThrowIfCancellationRequested();
+			}
+			return false;
+		} finally {
+			Files.TryDelete(ask);
+			Files.TryDelete(done);
+		}
+	}
 }
 
 // His checklist 492: our own add-on for Root Builder setups, Root Builder Profiles (izzydoingit), offered from Settings where Root Builder

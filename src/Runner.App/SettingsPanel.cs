@@ -323,6 +323,9 @@ public static class SettingsPanel
 		// his checklist 464
 		work["copySaves"] ??= true;
 		Field(stack, apply, "Copy your saves into the run's backup before the first step that loads a save", work, "copySaves", JsonValueKind.True);
+		// his checklist 477
+		work["keepMo2Open"] ??= false;
+		Field(stack, apply, "Keep Mod Organizer open during a run, for fewer restarts (needs the entry in Mod Organizer's Tools menu; it closes as usual when that does not answer)", work, "keepMo2Open", JsonValueKind.True);
 		// his checklist 460
 		work["quietGame"] ??= false;
 		Field(stack, apply, "Run the game steps in a small, muted window, so you can keep using the PC (your game settings go back after each step)", work, "quietGame", JsonValueKind.True);

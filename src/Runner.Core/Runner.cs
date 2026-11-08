@@ -141,8 +141,13 @@ public static class Runner
 		log.Mirror(Path.Combine(runs, "current log.txt"));
 		using var cts = new CancellationTokenSource();
 		var commands = new Commands(journal, cts.Cancel);
-		var profile = new Profile(mo2, setup.Profile, () => new Mo2Control(mo2, setup.Profile, RunLog.Null).Running);
-		var control = new Mo2Control(mo2, setup.Profile, log) { LowerPriority = Setup.Bool(setup.Root, "lowerPriority") == true };
+		Mo2Control? forThisRun = null;
+		var profile = new Profile(mo2, setup.Profile, () => forThisRun?.HeldOpen != true && new Mo2Control(mo2, setup.Profile, RunLog.Null).Running);
+		var control = new Mo2Control(mo2, setup.Profile, log) {
+			LowerPriority = Setup.Bool(setup.Root, "lowerPriority") == true,
+			CompanionOn = Setup.Bool(setup.Root, "keepMo2Open") == true && Mo2MenuEntry.Present(mo2),
+		};
+		forThisRun = control;
 		var ctx = new RunContext {
 			Setup = setup, Mo2 = mo2, Profile = profile, Control = control, Log = log, Journal = journal, Cancel = cts.Token,
 			BackupFolder = journal.BackupDir, Guide = a_guide?.Invoke(journal) ?? new FileGuide(journal, commands.TakeContinue, commands.ClearContinue),
@@ -714,6 +719,8 @@ public static class Runner
 
 	public static void PutBack(RunContext a_ctx, Dictionary<string, byte[]>? a_snap)
 	{
+		// the run is over: Mod Organizer closes as after any run
+		a_ctx.Control.CompanionOn = false;
 		a_ctx.Control.Close();
 		// what the player changed in Mod Organizer while the run went on (a mod ticked, unticked or installed) is kept, never
 		// undone by the put-back - except on the mods this run owns (its outputs and the mods it replaces), which it decides

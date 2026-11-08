@@ -111,7 +111,22 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 	// this program started from Mod Organizer's Tools menu (his checklist 468) is its child, and never a program the run waits for
 	public static bool IsThisProgram(string a_image) => Journal.IsRunnerName(Path.GetFileNameWithoutExtension(a_image));
 
-	public bool Running => IsRunning();
+	public bool Running => IsRunning() && !HeldOpen;
+
+	// his checklist 477: the option to keep Mod Organizer open during a run. HeldOpen: it stays open, and the order files may be written; what is written is
+	// read back in before anything else starts or it closes, or it would write its old lists over them
+	public bool CompanionOn { get; set; }
+	public bool HeldOpen { get; private set; }
+	public static TimeSpan CompanionPing { get; set; } = TimeSpan.FromSeconds(5);
+	public static TimeSpan CompanionRefresh { get; set; } = TimeSpan.FromMinutes(3);
+
+	void ReadBackIn(CancellationToken a_ct)
+	{
+		if (!Companion.Ask(Mo2, "refresh", CompanionRefresh, a_ct)) {
+			throw new StepFailedException($"Mod Organizer's companion did not read the lists back in within {CompanionRefresh.TotalMinutes:0} minutes - put your profile back, then switch off \"Keep Mod Organizer open\" in Settings");
+		}
+		HeldOpen = false;
+	}
 
 	public List<string> DownloadsInProgress() => Downloads(Mo2.DownloadsDir).Active;
 
@@ -234,6 +249,13 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 
 	public void Start(CancellationToken a_ct)
 	{
+		if (HeldOpen) {
+			if (IsRunning()) {
+				ReadBackIn(a_ct);
+			} else {
+				HeldOpen = false;
+			}
+		}
 		if (!Running) {
 			WaitForLeftovers(a_ct);
 			_log.Detail($"starting Mod Organizer (profile {ProfileName})");
@@ -428,6 +450,7 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 	public void Close(TimeSpan? a_timeout = null, CancellationToken a_ct = default)
 	{
 		if (!IsRunning()) {
+			HeldOpen = false;
 			return;
 		}
 		if (RunningProbe == null && Unreadable().Count > 0) {
@@ -467,6 +490,17 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 		// is in front and touched in the last PlayerQuiet, the close waits for the player to stop (never shuts a window under them)
 		if (RunningProbe == null) {
 			WaitWhilePlayerUses(a_ct);
+		}
+		if (CompanionOn && RunningProbe == null) {
+			if (HeldOpen || Companion.Ask(Mo2, "ping", CompanionPing, a_ct)) {
+				HeldOpen = true;
+				return;
+			}
+			_log.Warn("Mod Organizer's companion does not answer, so Mod Organizer closes between the steps as usual (add the Tools menu entry in Settings, and start Mod Organizer once)");
+			CompanionOn = false;
+		}
+		if (HeldOpen) {
+			ReadBackIn(a_ct);
 		}
 		// his checklist 443: Mod Organizer closed before Root Builder's clear would leave its files in the game folder
 		if (RunningProbe == null && Mo2.RootBuilderBuilds && !WaitForClear(Mo2.RootBuilderDeployed, a_ct)) {
