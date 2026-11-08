@@ -529,6 +529,7 @@ public static class Runner
 	{
 		var r = a_ctx.Journal.Step(a_s.Key)!;
 		var step = StepRegistry.For(a_s.Key);
+		a_ctx.OutputUntouched = false;
 		a_ctx.Log.Say("");
 		a_ctx.Log.Say($"=== {StepCatalog.Name(a_s.Key)} ===");
 		a_ctx.Log.Simple($"{a_ctx.Journal.Steps.IndexOf(r) + 1}/{a_ctx.Journal.Steps.Count} {StepCatalog.Name(a_s.Key)} started");
@@ -580,7 +581,7 @@ public static class Runner
 			MoveNewOverwrite(a_ctx, overwriteBefore);
 			return false;
 		}
-		foreach (var m in new[] { new StepSettings(a_s.Settings).OutputMod }.OfType<string>().Concat(a_ctx.PendingEnable)) {
+		foreach (var m in new[] { a_ctx.OutputUntouched ? null : new StepSettings(a_s.Settings).OutputMod }.OfType<string>().Concat(a_ctx.PendingEnable)) {
 			StepKit.MarkReplaced(a_ctx, m);
 			if (!a_ctx.Journal.Built.Contains(m)) {
 				a_ctx.Journal.Built.Add(m);

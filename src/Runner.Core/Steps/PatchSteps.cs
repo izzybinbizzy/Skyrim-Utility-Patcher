@@ -666,6 +666,8 @@ public sealed class GuidedToolStep(string a_key, string a_tool, string a_ask, st
 		// a tool that writes where the player told it to (EasyNPC's own folder) promises nothing here, and its output mod is not called rebuilt
 		if (AddOnStep.Collect(a_ctx, Key, a_s.OutputMod!, a_s.Str("makes") ?? a_makes, before, a_writesElsewhere)) {
 			a_ctx.SetAfter(a_s.OutputMod!);
+		} else {
+			a_ctx.OutputUntouched = true;
 		}
 	}
 }

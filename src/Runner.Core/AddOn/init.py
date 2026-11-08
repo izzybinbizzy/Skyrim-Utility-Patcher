@@ -51,7 +51,7 @@ class RootBuilderProfiles(mobase.IPluginTool):
         return self.description()
 
     def version(self):
-        return mobase.VersionInfo(1, 4, 0)
+        return mobase.VersionInfo(1, 4, 1)
 
     def icon(self):
         try:

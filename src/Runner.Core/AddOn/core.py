@@ -217,7 +217,8 @@ class Core:
 
     def finish_reset(self):
         state = self.load_state() or {}
-        if not state.get("reset snapshot"):
+        # Root Builder's clear needs its snapshot while a build is deployed
+        if not state.get("reset snapshot") or self.busy_reason():
             return
         stamp = time.strftime("%Y-%m-%d %H-%M-%S")
         try:

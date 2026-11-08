@@ -1666,6 +1666,37 @@ public static class Program
 		Check(!made.Steps.Any(s => s.Key is "easynpc" or "upf"), "and none for what the list does not hold");
 	}
 
+	// a guided tool that wrote elsewhere leaves its output mod out of the run: not rebuilt, not set aside by Undo
+	static void T_AnOutputNothingWroteStaysThePlayers()
+	{
+		using var f = new FakeMo2();
+		StepRegistry.Replace(new FakeStep("easynpc", (ctx, s) => ctx.OutputUntouched = true));
+		f.WriteSetup(("easynpc", new JsonObject { ["output_mod"] = "Output A" }));
+		Equal(RunState.Finished, Runner.Run(new RunRequest(f.SetupFile, f.Data)).State, "the run finished");
+		var j = Journal.All(Runner.RunsDir(f.Data)).First();
+		Check(!j.Built.Contains("Output A"), "not called built");
+		Check(ProfileOf(f).IsOn("Output A"), "as it was before the run");
+		Check(!RunUndo.LeftSomething(j), "and nothing for Undo to take");
+		Check(File.Exists(Path.Combine(f.Mods, "Output A", "OutA.esp")), "its files where they were");
+	}
+
+	// a file put back is as it was, its time too: in overwrite a new time would read as the step's own file
+	static void T_AFilePutBackKeepsItsTime()
+	{
+		using var f = new FakeMo2();
+		f.WriteSetup(("acmos", []));
+		var ctx = StepContext(f, "acmos");
+		var file = Path.Combine(f.Overwrite, "kept.ini");
+		File.WriteAllText(file, "before");
+		var then = new DateTime(2020, 1, 2, 3, 4, 5, DateTimeKind.Utc);
+		File.SetLastWriteTimeUtc(file, then);
+		StepKit.KeepFile(ctx, file);
+		File.WriteAllText(file, "changed");
+		Equal(0, StepKit.PutFilesBack(ctx, file).Count, "put back");
+		Equal("before", File.ReadAllText(file), "its words");
+		Equal(then, File.GetLastWriteTimeUtc(file), "and its time");
+	}
+
 	// a program anyone can be running counts as the tool only when it is Mod Organizer's; a script's own program is the command interpreter
 	static void T_ASharedProgramCountsOnlyWhenItIsMo2s()
 	{
