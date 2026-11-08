@@ -95,6 +95,16 @@ public static class StepKit
 		return a_profile.States().TryGetValue(mod, out var state) && state == '-' ? mod : null;
 	}
 
+	// a name no other park in this backup has
+	static string FreeFolder(string a_dir)
+	{
+		var dst = a_dir;
+		for (var i = 2; Directory.Exists(dst) || File.Exists(dst); ++i) {
+			dst = $"{a_dir} {i}";
+		}
+		return dst;
+	}
+
 	// a generated-output mod's files moved into the run's backup (the folder and its meta.ini stay), recorded so a step that
 	// does not finish gets them back
 	public static int ParkMod(RunContext a_ctx, string a_step, string a_mod)
@@ -104,10 +114,7 @@ public static class StepKit
 			Directory.CreateDirectory(d);
 			return 0;
 		}
-		var dst = Path.Combine(a_ctx.BackupFolder, "outputs", a_mod);
-		if (Directory.Exists(dst) && Directory.EnumerateFileSystemEntries(dst).Any()) {
-			dst += " " + DateTime.Now.ToString("HHmmss", InvariantCulture);
-		}
+		var dst = FreeFolder(Path.Combine(a_ctx.BackupFolder, "outputs", a_mod));
 		Directory.CreateDirectory(dst);
 		// recorded BEFORE the first move: a move that fails half way still has its record, so the put-back finds what moved
 		a_ctx.Journal.Parked.Add(new ParkRecord { Step = a_step, Mod = a_mod, From = d, To = dst });
@@ -179,6 +186,7 @@ public static class StepKit
 		}
 		foreach (var k in a_ctx.Journal.Kept.Where(k => !k.Done && a_paths.Contains(k.Path, StringComparer.OrdinalIgnoreCase))) {
 			k.Done = true;
+			k.Settled = true;
 		}
 		a_ctx.Journal.Save();
 	}
@@ -220,10 +228,7 @@ public static class StepKit
 	public static void ParkDir(RunContext a_ctx, string a_path, string a_label)
 	{
 		if (Directory.Exists(a_path) && Directory.EnumerateFileSystemEntries(a_path).Any()) {
-			var dst = Path.Combine(a_ctx.BackupFolder, "outputs", a_label);
-			if (Directory.Exists(dst)) {
-				dst += " " + DateTime.Now.ToString("HHmmss", InvariantCulture);
-			}
+			var dst = FreeFolder(Path.Combine(a_ctx.BackupFolder, "outputs", a_label));
 			Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
 			// on record BEFORE the move, as ParkMod, so what a move that fails half way took comes back; until Moved, an undo takes what
 			// stands here for what that move left, never for the run's output. Replaced, because a step that fails has always kept
@@ -231,7 +236,14 @@ public static class StepKit
 			var park = new ParkRecord { Mod = a_label, From = a_path, To = dst, Replaced = true, IsFolder = true };
 			a_ctx.Journal.Parked.Add(park);
 			a_ctx.Journal.Save();
-			Files.MoveDirectory(a_path, dst);
+			try {
+				Files.MoveDirectory(a_path, dst);
+			} catch (Exception e) when ((e is IOException or UnauthorizedAccessException) && !Directory.Exists(dst)) {
+				// nothing moved (a move on one drive is all or nothing): nothing to come back
+				a_ctx.Journal.Parked.Remove(park);
+				a_ctx.Journal.Save();
+				throw;
+			}
 			park.Moved = true;
 			a_ctx.Journal.Save();
 			a_ctx.Log.Detail($"old {a_label} moved to the backup ({Files.CountFiles(dst)} file(s))");

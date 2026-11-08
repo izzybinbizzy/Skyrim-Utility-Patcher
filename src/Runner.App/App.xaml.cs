@@ -102,7 +102,9 @@ public partial class App : Application
 		// window's thread (a failure leaves it; it can start nothing that is not there)
 		_ = Task.Run(() => {
 			try {
-				Schedule.RemoveLeftoversOnce(AppPaths.Data);
+				foreach (var left in Schedule.RemoveLeftoversOnce(AppPaths.Data)) {
+					w.Dispatcher.BeginInvoke(() => w.Say("An old timed run's task could not be removed - delete it in Windows' Task Scheduler: " + left));
+				}
 			} catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) {
 			}
 		});

@@ -19,7 +19,7 @@ namespace ToolRunner.App;
 // exit 0 = finished / clean, 1 = failed / refused, 2 = stopped, 3 = bad arguments, 4 = (updates) a tool has a newer version
 public static class Cli
 {
-	public static bool Handles(string[] a_args) => a_args.Length > 0 && a_args[0] is "tools" or "addon-check" or "test-tools" or "run" or "retry" or "queue" or "check" or "preview" or "lod" or "restore" or "stop" or "stop-after" or "import" or "updates" or "changes" or "bugreport" or "share" or "--help" or "-h" or "/?";
+	public static bool Handles(string[] a_args) => a_args.Length > 0 && a_args[0] is "tools" or "addon-check" or "test-tools" or "run" or "retry" or "queue" or "check" or "preview" or "lod" or "restore" or "stop" or "stop-after" or "import" or "updates" or "changes" or "bugreport" or "share" or "undo" or "--help" or "-h" or "/?";
 
 	static string? Opt(string[] a_args, string a_name)
 	{
@@ -32,8 +32,13 @@ public static class Cli
 		ConsoleAttach.ToParent();
 		// runs at a set time are gone: a task an older version left is cleared on the command line too (a player who never
 		// opens the window), before the command itself
+		// (never before a stop: Windows' task list can take half a minute, and a run is waiting on it)
 		try {
-			Schedule.RemoveLeftoversOnce(AppPaths.Data);
+			if (a_args[0] is not ("stop" or "stop-after")) {
+				foreach (var left in Schedule.RemoveLeftoversOnce(AppPaths.Data)) {
+					Console.WriteLine("an old timed run's task could not be removed - delete it in Windows' Task Scheduler: " + left);
+				}
+			}
 		} catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) {
 		}
 		try {
@@ -70,7 +75,7 @@ public static class Cli
 
 	static int Help()
 	{
-		Console.WriteLine("Skyrim Utility Patcher - run | retry | queue | check | preview | lod | restore | stop | stop-after | updates | changes | import | bugreport | share   (see the readme)");
+		Console.WriteLine("Skyrim Utility Patcher - run | retry | queue | check | preview | lod | restore | undo | stop | stop-after | updates | changes | import | bugreport | share | tools | test-tools | addon-check   (see the readme)");
 		return 0;
 	}
 

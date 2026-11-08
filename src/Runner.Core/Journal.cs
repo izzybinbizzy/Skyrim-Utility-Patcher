@@ -60,6 +60,8 @@ public sealed class KeptFile
 	public string Path { get; set; } = "";
 	public string? Backup { get; set; }
 	public bool Done { get; set; }
+	// changed in place for good (no park record covers it): an undo puts this file back on its own
+	public bool Settled { get; set; }
 }
 
 // The run record on disk: everything needed to put the profile back after a crash, a Stop now or a power cut, and what

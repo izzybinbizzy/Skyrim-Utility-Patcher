@@ -33,7 +33,7 @@ public static partial class PluginPlaces
 			}
 			return -1;
 		}
-		// one warning for each plugin in the way, however many rules it breaks
+		// each rule names the first plugin in its way (a list out of order would name hundreds), and no plugin is named twice
 		var named = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 		void Say(string a_plugin, string a_text)
 		{

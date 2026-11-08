@@ -286,6 +286,7 @@ public static class Runner
 			try {
 				foreach (var i in PluginPlaces.Check(profile.ActivePlugins())) {
 					log.Warn(i.Text);
+					log.Simple("Note: " + i.Text);
 				}
 			} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
 				log.Detail("the output plugins' places could not be looked at: " + e.Message);
@@ -496,6 +497,11 @@ public static class Runner
 		var needed = Journal.All(a_runsDir).Where(j => j.Unfinished && !string.IsNullOrWhiteSpace(j.BackupDir)).Select(j => Path.GetFullPath(j.BackupDir)).ToHashSet(StringComparer.OrdinalIgnoreCase);
 		if (a_current != null) {
 			needed.Add(Path.GetFullPath(a_current));
+		}
+		// the run an undo would take back: later runs that left nothing never push its backup out
+		if (Journal.All(a_runsDir).Where(j => !j.Undone && RunUndo.LeftSomething(j) && !string.IsNullOrWhiteSpace(j.BackupDir) && string.Equals(j.SetupFile, a_setup.File, StringComparison.OrdinalIgnoreCase))
+			    .OrderByDescending(j => j.Started).FirstOrDefault() is { } last) {
+			needed.Add(Path.GetFullPath(last.BackupDir));
 		}
 		foreach (var d in BackupDirsOf(a_setup).Skip(a_keep).Where(b => !needed.Contains(b.FullName))) {
 			try {
@@ -889,19 +895,21 @@ public static class Runner
 			if (data != null) {
 				NoteChanges(mo2, data, Mo2Changes.Outside, log);
 			}
-			var theirs = ctx.Profile.ChangedByOthers();
-			foreach (var m in a_j.Added.Concat(a_j.Built).Concat(a_j.Retire).Concat(a_j.ParkedMods)) {
-				theirs.Remove(m);
+			// a zip that does not read has changed nothing and holds nothing up
+			RunUndo.Unpack(a_j.BackupDir);
+			// read once: pressed again, the list may already be the old one and no longer shows them
+			if (a_j.UndoTheirs == null) {
+				var found = ctx.Profile.ChangedByOthers();
+				foreach (var m in a_j.Added.Concat(a_j.Built).Concat(a_j.Retire).Concat(a_j.ParkedMods)) {
+					found.Remove(m);
+				}
+				a_j.UndoMarks = found.Count > 0 ? ctx.Profile.PluginMarks() : [];
+				a_j.UndoTheirs = found;
 			}
-			foreach (var (m, state) in a_j.UndoTheirs ?? []) {
-				theirs.TryAdd(m, state);
-			}
-			var marks = a_j.UndoMarks is { Count: > 0 } kept ? kept : theirs.Count > 0 ? ctx.Profile.PluginMarks() : [];
-			a_j.UndoTheirs = theirs;
-			a_j.UndoMarks = marks;
+			var theirs = a_j.UndoTheirs;
+			var marks = a_j.UndoMarks ?? [];
 			a_j.Undoing = true;
 			a_j.Save();
-			RunUndo.Unpack(a_j.BackupDir);
 			var aside = Path.Combine(a_j.BackupDir, "undone");
 			foreach (var p in a_j.Parked.Where(p => p.Replaced && !p.PutBack).Reverse().ToList()) {
 				if (!p.SetAside && (!p.IsFolder || p.Moved)) {
@@ -916,8 +924,18 @@ public static class Runner
 				a_j.Save();
 				log.Detail($"{p.Mod}: back as it was before this run");
 			}
+			// a mod a step changed in place (ACMOS's roads painted into a terrain LOD no step of this run rebuilt) keeps everything else it holds:
+			// only those files go back. Where a step rebuilt the mod, its park record brought the whole mod back above
+			var parkedMods = a_j.Parked.Where(p => p.Replaced && !p.IsFolder).ToList();
+			var inPlace = a_j.Kept.Where(k => k.Settled && !parkedMods.Any(p => Files.IsUnder(k.Path, p.From))).ToList();
+			foreach (var k in inPlace) {
+				if (k.Backup != null && File.Exists(k.Backup)) {
+					Files.WriteAtomic(k.Path, File.ReadAllBytes(k.Backup));
+					log.Detail($"{Path.GetFileName(k.Path)}: back as it was before this run");
+				}
+			}
 			// only what had no old output: one that had came back above, and pressed again it holds that old output
-			foreach (var m in a_j.Built.Except(a_j.Parked.Where(p => p.Replaced && !p.IsFolder).Select(p => p.Mod), StringComparer.OrdinalIgnoreCase).Where(m => Directory.Exists(mo2.ModDir(m)))) {
+			foreach (var m in a_j.Built.Except(parkedMods.Select(p => p.Mod), StringComparer.OrdinalIgnoreCase).Where(m => Directory.Exists(mo2.ModDir(m)) && !inPlace.Any(k => Files.IsUnder(k.Path, mo2.ModDir(m))))) {
 				RunUndo.SetAside(mo2.ModDir(m), aside, m);
 				log.Detail($"{m}: this run's output set aside");
 			}
@@ -933,17 +951,22 @@ public static class Runner
 			foreach (var a in a_j.Added.ToList()) {
 				ctx.Profile.TakeOutEmptyOutput(a, a_j.BackupDir, log);
 			}
-		} catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException or InvalidOperationException or Mo2BusyException) {
+		} catch (Exception e) {
 			log.Error("undo failed: " + Plain(e));
+			var left = a_j.Undoing ? "it stopped half way, and nothing new starts until it is undone again: what moved is on record, its files are in the run's backup" : "nothing was changed";
+			if (a_j.Undoing) {
+				a_j.State = RunState.Failed;
+				a_j.Verdict = "the undo stopped half way (" + Plain(e) + ") - undo this run again once that is free";
+			}
 			a_j.Save();
-			return new RunOutcome(RunState.Failed, "the run could not be undone whole: " + Plain(e) + " - what moved stays recorded and its files are in the run's backup; undo it again once the file is free", a_j.Folder);
+			return new RunOutcome(RunState.Failed, "the run could not be undone whole: " + Plain(e) + " - " + left, a_j.Folder);
 		}
 		a_j.Undone = true;
 		a_j.Undoing = false;
 		a_j.UndoTheirs = null;
 		a_j.UndoMarks = null;
 		a_j.State = RunState.Restored;
-		a_j.Verdict = "undone - your outputs and your mod and plugin lists are as they were before this run (what you changed since is kept; this run's outputs are in its backup, under \"undone\")";
+		a_j.Verdict = "undone - your outputs and your mod and plugin lists are as they were before this run (the mods you ticked, unticked or installed since stay as you left them; this run's outputs are in its backup, under \"undone\")";
 		a_j.Save();
 		log.Say(a_j.Verdict);
 		if (data != null) {

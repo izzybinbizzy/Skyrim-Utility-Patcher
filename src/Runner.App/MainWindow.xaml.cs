@@ -511,21 +511,22 @@ public partial class MainWindow : Window
 				_vm.Say("Pick a run first.", "warn");
 				return;
 			}
-			try {
-				if (RunUndo.WhyNot(Journal.Load(row.Folder), Engine.Runs()) is { } why) {
-					_vm.Say("It cannot be undone: " + why + ".", "bad");
-					return;
-				}
-			} catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Text.Json.JsonException) {
-				_vm.Say("It cannot be undone: " + e.Message, "bad");
-				return;
-			}
-			if (!Ask.Show(this, "Undo this run?", "Each output goes back to what it was before this run, and your mod and plugin lists too. Mod Organizer closes for it. What you " +
-				"changed in Mod Organizer since is kept, and this run's outputs stay in its backup.", "Undo the run", "Keep it")) {
-				return;
-			}
 			undo.IsEnabled = false;
 			try {
+				try {
+					// it reads every run record: off the window's thread
+					if (await Task.Run(() => RunUndo.WhyNot(Journal.Load(row.Folder), Engine.Runs())).ConfigureAwait(true) is { } why) {
+						_vm.Say("It cannot be undone: " + why + ".", "bad");
+						return;
+					}
+				} catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or System.Text.Json.JsonException) {
+					_vm.Say("It cannot be undone: " + e.Message, "bad");
+					return;
+				}
+				if (!Ask.Show(this, "Undo this run?", "Each output goes back to what it was before this run, and your mod and plugin lists too. Mod Organizer closes for it. The mods you " +
+					"ticked, unticked or installed since stay as you left them; a change of order goes back with the lists. This run's outputs stay in its backup.", "Undo the run", "Keep it")) {
+					return;
+				}
 				await _vm.Undo(row.Folder).ConfigureAwait(true);
 			} finally {
 				undo.IsEnabled = true;

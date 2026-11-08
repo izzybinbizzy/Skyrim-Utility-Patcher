@@ -783,6 +783,7 @@ public static class Program
 		Equal(before, f.Text("loadorder.txt"), "the load order as before");
 		var again = Runner.Undo(Journal.Load(j.Folder));
 		Check(again.Verdict.Contains("undone already", StringComparison.Ordinal), "only once: " + again.Verdict);
+		Check(ToolRunner.App.Cli.Handles(["undo"]), "the command line takes it, and does not open the window instead");
 		Check(LastRuns.Of(Journal.All(Runner.RunsDir(f.Data)), f.SetupFile).Count == 0, "an undone run no longer counts as a step's last run");
 		// an older run cannot be undone past a newer one that changed the same profile or outputs; a later run that changed nothing is in nobody's way
 		Journal J(string a_id, int a_days, string? a_setup = null, string a_profile = "P", string[]? a_built = null, RunState a_state = RunState.Finished) =>
@@ -799,12 +800,23 @@ public static class Program
 		sameFolder.Parked.Add(new ParkRecord { Mod = "tool", From = @"D:\Tools\out", To = "x", Replaced = true, IsFolder = true, Moved = true });
 		older.Parked.Add(new ParkRecord { Mod = "tool", From = "D:/Tools/out/", To = "y", Replaced = true, IsFolder = true, Moved = true });
 		Check(Blocked(sameFolder), "one that moved the same tool folder is");
+		sameFolder.Parked[0].Moved = false;
+		Check(!Blocked(sameFolder), "not one whose move of it never ended");
 		older.Parked.Clear();
 		var typed = J("typed otherwise", 0, "other.json");
 		typed.Mo2Exe = "D:/MO2/ModOrganizer.exe";
 		older.Mo2Exe = @"D:\MO2\ModOrganizer.exe";
 		older.Built = ["Output Y"];
+		typed.Mo2Instance = "D:/MO2/Instance/";
+		older.Mo2Instance = @"D:\MO2\Instance";
 		Check(Blocked(typed), "a Mod Organizer typed another way is the same one");
+		// a portable instance left unset in one setup, named in the other
+		var named = J("named", 0, "other.json");
+		named.Mo2Exe = @"D:\Portable\ModOrganizer.exe";
+		named.Mo2Instance = @"D:\Portable";
+		older.Mo2Exe = @"D:\Portable\ModOrganizer.exe";
+		older.Mo2Instance = null;
+		Check(Blocked(named), "a portable instance named in one setup and not the other is the same one");
 		// a pack that is switched off keeps the folder
 		var dir = Path.Combine(f.Root, "pack test");
 		Directory.CreateDirectory(Path.Combine(dir, RunUndo.OutputsFolder, "Mod"));
@@ -829,6 +841,49 @@ public static class Program
 		Check(File.ReadAllText(Path.Combine(held, RunUndo.OutputsFolder, "Mod", "b.txt")) == "b" && File.ReadAllText(Path.Combine(held, RunUndo.OutputsFolder, "Mod", "a.txt")) == "a", "and the zip brings both back");
 	}
 
+	// the backup an undo needs stays, however few runs are kept; a switched-off pack keeps the folder; a file a step changed in place goes back on its own, and the rest of that mod stays
+	static void T_AnUndoFindsWhatItNeeds()
+	{
+		using var f = new FakeMo2();
+		var built = true;
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => {
+			if (built) {
+				WriteOutput(ctx, "landscapefixer", "Output A", "OutA.esp");
+			}
+		}));
+		var setup = f.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A" }));
+		setup.Root["keepBackups"] = 1;
+		setup.Root["zipBackups"] = false;
+		setup.Save(f.SetupFile);
+		Equal(RunState.Finished, Runner.Run(new RunRequest(f.SetupFile, f.Data)).State, "the run that built");
+		var first = Journal.All(Runner.RunsDir(f.Data)).First();
+		Check(Directory.Exists(Path.Combine(first.BackupDir, RunUndo.OutputsFolder)) && !File.Exists(Path.Combine(first.BackupDir, RunUndo.OutputsZip)), "a pack switched off: the folder stays");
+		built = false;
+		var noOutput = f.WriteSetup(("landscapefixer", new JsonObject()));
+		noOutput.Root["keepBackups"] = 1;
+		noOutput.Save(f.SetupFile);
+		Thread.Sleep(1100);
+		Equal(RunState.Finished, Runner.Run(new RunRequest(f.SetupFile, f.Data)).State, "a run that built nothing");
+		Check(Directory.Exists(first.BackupDir), "the backup an undo needs is not pushed out by it");
+
+		using var g = new FakeMo2();
+		var inMod = Path.Combine(g.Mods, "Output A", "road.dds");
+		File.WriteAllText(inMod, "plain");
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => {
+			StepKit.KeepFile(ctx, inMod);
+			File.WriteAllText(inMod, "painted");
+			StepKit.Settled(ctx, [inMod]);
+			ctx.Journal.Built.Add("Output A");
+			ctx.Journal.Save();
+		}));
+		g.WriteSetup(("landscapefixer", new JsonObject()));
+		Equal(RunState.Finished, Runner.Run(new RunRequest(g.SetupFile, g.Data)).State, "a step that changed a file in place");
+		var r = Runner.Undo(Journal.All(Runner.RunsDir(g.Data)).First());
+		Equal(RunState.Restored, r.State, "undone: " + r.Verdict);
+		Equal("plain", File.ReadAllText(inMod), "that file is back");
+		Check(File.Exists(Path.Combine(g.Mods, "Output A", "OutA.esp")), "and the rest of the mod stays where it was");
+	}
+
 	// an undo cut off half way (a file held open) can be pressed again: what the first press put back stays, what it set aside stays
 	static void T_AnUndoCutOffCanBePressedAgain()
 	{
@@ -846,7 +901,9 @@ public static class Program
 			Equal(RunState.Failed, Runner.Undo(Journal.Load(j.Folder)).State, "the first press stops at the held file");
 		}
 		Equal("old B", File.ReadAllText(Path.Combine(f.Mods, "Output B", "old.txt")), "B is back after the first press");
-		Check(Journal.Load(j.Folder).Unfinished, "a half-undone run counts as not finished");
+		var cut = Journal.Load(j.Folder);
+		Check(cut.Unfinished && cut.State == RunState.Failed && cut.Verdict.Contains("half way", StringComparison.Ordinal), "a half-undone run counts as not finished, and says so");
+		Equal<string?>(null, RunUndo.WhyNot(cut, [cut]), "and it can always be ended");
 		Check(Runner.Run(new RunRequest(f.SetupFile, f.Data)).State != RunState.Finished && Journal.All(Runner.RunsDir(f.Data)).Count() == 1, "so nothing new starts on it");
 		// the window's put-back ends it
 		var second = Runner.Restore(Journal.Load(j.Folder));
@@ -877,6 +934,15 @@ public static class Program
 		var second = Runner.Undo(Journal.Load(j.Folder));
 		Equal(RunState.Restored, second.State, "the second press: " + second.Verdict);
 		Check(!ProfileOf(f).IsOn("Base Mod"), "what the player changed is kept");
+		// a backup that does not read has changed nothing, so nothing is held up
+		using var g = new FakeMo2();
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => WriteOutput(ctx, "landscapefixer", "Output A", "OutA.esp")));
+		g.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A" }));
+		Equal(RunState.Finished, Runner.Run(new RunRequest(g.SetupFile, g.Data)).State, "another run finished");
+		var run = Journal.All(Runner.RunsDir(g.Data)).First();
+		File.WriteAllText(Path.Combine(run.BackupDir, RunUndo.OutputsZip), "not a zip");
+		Equal(RunState.Failed, Runner.Undo(Journal.Load(run.Folder)).State, "the zip does not read");
+		Check(!Journal.Load(run.Folder).Unfinished, "and the profile is not held up by it");
 	}
 
 	// two steps writing one output each keep what they wrote; a tool folder's label never passes for a mod of that name; what a move that
@@ -887,6 +953,7 @@ public static class Program
 		var tool = Path.Combine(f.Root, "tool out");
 		var other = Path.Combine(f.Root, "other tool out");
 		var heldDir = Path.Combine(f.Root, "held tool out");
+		var half = Path.Combine(f.Root, "half tool out");
 		foreach (var d in new[] { tool, other, heldDir }) {
 			Directory.CreateDirectory(d);
 			File.WriteAllText(Path.Combine(d, "tool old.txt"), "old");
@@ -912,9 +979,16 @@ public static class Program
 					StepKit.ParkDir(ctx, heldDir, "held");
 					Check(false, "a held folder does not move");
 				} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
-					Check(ctx.Journal.Parked.Single(p => p.Mod == "held") is { Moved: false }, "a move that failed is on record as not moved");
+					Check(!ctx.Journal.Parked.Any(p => p.Mod == "held"), "a move that moved nothing is not on record");
 				}
 			}
+			// a move across drives that stopped half way: its record, and the two halves
+			Directory.CreateDirectory(half);
+			File.WriteAllText(Path.Combine(half, "rest.txt"), "rest");
+			var moved = Path.Combine(ctx.BackupFolder, "outputs", "half");
+			Directory.CreateDirectory(moved);
+			File.WriteAllText(Path.Combine(moved, "moved.txt"), "moved");
+			ctx.Journal.Parked.Add(new ParkRecord { Mod = "half", From = half, To = moved, Replaced = true, IsFolder = true });
 			ctx.Journal.Save();
 		}));
 		f.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A" }), ("synthesis", new JsonObject()));
@@ -933,7 +1007,8 @@ public static class Program
 		Check(!ProfileOf(f).IsOn("Base Mod"), "the player's change to a mod named like a tool folder's label is kept");
 		Check(File.Exists(Path.Combine(tool, "tool old.txt")) && !File.Exists(Path.Combine(tool, "tool new.txt")), "the tool's folder is as it was");
 		Equal(1, Directory.GetFiles(undone, "tool new.txt", SearchOption.AllDirectories).Length, "what the run left in it is set aside");
-		Check(File.Exists(Path.Combine(heldDir, "tool old.txt")) && Directory.GetFiles(undone, "tool old.txt", SearchOption.AllDirectories).Length == 0, "what the failed move left stays where it is");
+		Check(File.Exists(Path.Combine(heldDir, "tool old.txt")) && Directory.GetFiles(undone, "tool old.txt", SearchOption.AllDirectories).Length == 0, "what a failed move touched stays where it is");
+		Check(File.Exists(Path.Combine(half, "rest.txt")) && File.Exists(Path.Combine(half, "moved.txt")), "the halves of a move that stopped come together again");
 	}
 
 	// ------------------------------------------------------------------ what MO2 changed (his ask 2026-10-27)
@@ -4319,7 +4394,10 @@ public static class Program
 			Equal(1, looks, "the first start looks");
 			Check(!File.Exists(Path.Combine(dir, Schedule.ClearedMarker)), "a pass that was not clean leaves no marker");
 			Schedule.RemoveLeftoversOnce(dir, () => { ++looks; return true; });
-			Equal(2, looks, "so the next start looks again");
+			Equal(1, looks, "but a command is not held up by it again the same day");
+			File.SetLastWriteTimeUtc(Path.Combine(dir, Schedule.TriedMarker), DateTime.UtcNow - Schedule.TryEvery - TimeSpan.FromMinutes(1));
+			Schedule.RemoveLeftoversOnce(dir, () => { ++looks; return true; });
+			Equal(2, looks, "a day later it looks again");
 			Check(File.Exists(Path.Combine(dir, Schedule.ClearedMarker)), "a clean pass leaves it");
 			Schedule.RemoveLeftoversOnce(dir, () => { ++looks; return true; });
 			Equal(2, looks, "and no start looks after that");
