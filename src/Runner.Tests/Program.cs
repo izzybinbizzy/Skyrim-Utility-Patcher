@@ -1026,6 +1026,39 @@ public static class Program
 		Check(p.IsOn("Output A") && p.IsOn("Output B") && p.IsOn("Needs B"), "the profile as it was");
 	}
 
+	// the put-back after a crash keeps what the player changed in Mod Organizer while the run went on and after it was cut off -
+	// the run's last expectation is read back from its folder (CodeRabbit on #24); the run's own switches are still undone
+	static void T_RestoreKeepsThePlayersChanges()
+	{
+		using var f = new FakeMo2();
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => {
+			StepKit.ParkMod(ctx, "landscapefixer", "Output A");
+			// the player unticks a mod of theirs in Mod Organizer while the step works
+			var list = Path.Combine(f.ProfileDir, "modlist.txt");
+			File.WriteAllText(list, File.ReadAllText(list).Replace("+Base Mod", "-Base Mod", StringComparison.Ordinal));
+			ctx.Journal.Pid = 999999;
+			ctx.Journal.Save();
+			throw new CrashForTest();
+		}));
+		f.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A" }));
+		try {
+			RunUntilCrash(f);
+		} catch (CrashForTest) {
+		}
+		var j = Journal.Interrupted(Runner.RunsDir(f.Data));
+		Check(j != null && File.Exists(Path.Combine(j.Folder, Profile.WatchFileName)), "the run kept what it wrote in its folder");
+		// and after the crash, before Restore, the player installs and ticks a new mod
+		f.Mod("Players New");
+		File.WriteAllText(Path.Combine(f.ProfileDir, "modlist.txt"), "+Players New\r\n" + f.Text("modlist.txt"));
+		var r = Runner.Restore(j!);
+		Equal(RunState.Restored, r.State, "restored: " + r.Verdict);
+		var p = ProfileOf(f);
+		Check(!p.IsOn("Base Mod"), "the mod the player unticked during the run stays off");
+		Check(p.IsOn("Players New"), "the mod the player ticked after the crash stays on");
+		Check(p.IsOn("Output A") && p.IsOn("Output B") && p.IsOn("Needs B"), "the run's own switches are undone - the profile as it was");
+		Check(File.Exists(Path.Combine(f.Mods, "Output A", "OutA.esp")), "the parked output is back");
+	}
+
 	// a file a step changed (a tool's settings): put back by the step's failure, and after a crash by Restore
 	static void T_KeptFilesComeBackAfterAFailureAndACrash()
 	{
@@ -1263,6 +1296,9 @@ public static class Program
 		Directory.CreateDirectory(j.Folder);
 		var profile = new Profile(mo2, "Test", () => false);
 		j.SaveSnapshot(profile.Snapshot());
+		// as Runner.Run: the player's changes watched from here, the expectation kept in the run folder
+		profile.OursFile = Path.Combine(j.Folder, Profile.WatchFileName);
+		profile.WatchForOthers();
 		profile.SetMods([], ["Output A", "Output B", "Needs B"]);
 		j.Save();
 		using var log = new RunLog(j.Folder);
@@ -3643,6 +3679,40 @@ public static class Program
 		Check(DevBench.InProfile(p), "(DevBench ticked: the automatic route)");
 		var auto = Refused(() => InGame.Deactivate(ctx, new StepSettings(new JsonObject())));
 		Check(auto.Contains("no save of Björn", StringComparison.Ordinal), "the clean save's own pick keeps to the picked character: " + auto);
+	}
+
+	// the log box: only whole new lines, a letter never cut in two, a big log only its last part, and a replaced log started over
+	// even when the new one has already grown past where the last look stopped (CodeRabbit on #24)
+	static void T_TheLogBoxFollowsAReplacedLog()
+	{
+		var dir = Path.Combine(Path.GetTempPath(), "SUP log tail " + Guid.NewGuid().ToString("N"));
+		Directory.CreateDirectory(dir);
+		var log = Path.Combine(dir, "log.txt");
+		try {
+			var tail = new LogTail();
+			Equal((null, false), tail.Read(null), "no run, nothing to empty");
+			File.WriteAllText(log, "12:00:00  run A begins\n12:00:01  half a li");
+			Equal(("12:00:00  run A begins\n", true), tail.Read(log), "a new log: the box emptied, the whole lines shown");
+			File.AppendAllText(log, "ne - Björn\n");
+			Equal(("12:00:01  half a line - Björn\n", false), tail.Read(log), "the rest of a line once it is whole, its letters too");
+			Equal((null, false), tail.Read(log), "nothing new, nothing shown");
+			File.WriteAllText(log, "13:30:00  run B begins, a much longer first line than run A had\n13:30:01  next\n");
+			Equal(("13:30:00  run B begins, a much longer first line than run A had\n13:30:01  next\n", true), tail.Read(log),
+				"a replaced log that already grew past the old place starts over");
+			File.WriteAllText(log, "1\n");
+			Equal(("1\n", true), tail.Read(log), "a shorter replaced log starts over");
+			tail.Restart();
+			Equal(("1\n", true), tail.Read(log), "asked again (the other kind of log) - from the start");
+			File.WriteAllText(log, string.Concat(Enumerable.Repeat("0123456789abcdef0123456789abcdef0123456789abcdef012345678\n", 5000)));
+			var (big, reset) = tail.Read(log);
+			Check(reset && big != null && big.Length <= LogTail.Window && big.StartsWith("0123", StringComparison.Ordinal) && big.EndsWith('\n'),
+				"a big log: only its last part, from a whole line");
+		} finally {
+			try {
+				Directory.Delete(dir, true);
+			} catch (IOException) {
+			}
+		}
 	}
 
 	static void T_EveryToolStepHasItsHelpPage()
