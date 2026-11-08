@@ -3822,6 +3822,22 @@ public static class Program
 		}
 	}
 
+	// the settings search names the other steps whose settings hold its word - in a setting's name, its label or its value, a list's
+	// items too - never the step already open (CodeRabbit on #24)
+	static void T_TheSettingsSearchNamesOtherSteps()
+	{
+		var steps = new List<JsonObject> {
+			new() { ["step"] = "texgen", ["settings"] = new JsonObject { ["output_mod"] = "TexGen Output" } },
+			new() { ["step"] = "dyndolod", ["settings"] = new JsonObject { ["lodWorlds"] = new JsonArray("Tamriel", "Solstheim") } },
+			new() { ["step"] = "pandora", ["settings"] = new JsonObject() },
+		};
+		Equal("TexGen", string.Join(", ", ToolRunner.App.SettingsPanel.StepsWith(steps, "texgen out", -1)), "a value");
+		Equal("DynDOLOD", string.Join(", ", ToolRunner.App.SettingsPanel.StepsWith(steps, "solstheim", -1)), "a list's item, any case");
+		Equal("TexGen", string.Join(", ", ToolRunner.App.SettingsPanel.StepsWith(steps, "output_mod", -1)), "a setting's own name");
+		Equal("", string.Join(", ", ToolRunner.App.SettingsPanel.StepsWith(steps, "TexGen Output", 0)), "never the step already open");
+		Equal(0, ToolRunner.App.SettingsPanel.StepsWith(steps, " ", -1).Count, "no word, no steps");
+	}
+
 	static void T_EveryToolStepHasItsHelpPage()
 	{
 		foreach (var s in StepCatalog.All.Where(s => s.Key is not ("shaders" or "xlodgen"))) {

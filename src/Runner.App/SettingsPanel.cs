@@ -218,6 +218,9 @@ public static class SettingsPanel
 			return none;
 		}
 		var work = (JsonObject)a_vm.Setup.Root.DeepClone();
+		// the setup's steps, and which of them is open under A STEP (-1 = none) - the search names the other steps that hold its word
+		var steps = (work["steps"] as JsonArray)?.OfType<JsonObject>().ToList() ?? [];
+		var shown = -1;
 		HasChanges = false;
 		var stack = new StackPanel();
 		var errors = new TextBlock { Foreground = Brushes2.Get("Bad"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 0) };
@@ -232,7 +235,7 @@ public static class SettingsPanel
 		var findHint = new TextBlock { Text = "Find a setting - type a word (Ctrl+F)", Style = (Style)a_w.FindResource("MutedText"), Margin = new Thickness(0, 0, 0, 6) };
 		find.TextChanged += (_, _) => {
 			var hits = Filter(stack, find.Text.Trim());
-			findHint.Text = find.Text.Trim() == "" ? "Find a setting - type a word (Ctrl+F)" : hits == 0 ? "No setting has that word." : $"{hits} setting(s) found.";
+			findHint.Text = FindHint(hits, find.Text.Trim(), steps, shown);
 		};
 		s_find = find;
 		var top = new StackPanel();
@@ -439,12 +442,10 @@ public static class SettingsPanel
 		stack.Children.Add(updRows);
 
 		Head("A STEP");
-		var steps = (work["steps"] as JsonArray)?.OfType<JsonObject>().ToList() ?? [];
 		var pick = new ComboBox { ItemsSource = steps.Select(s => StepCatalog.Name(Setup.Str(s, "step") ?? "")).ToList(), Margin = new Thickness(0, 0, 0, 8) };
 		System.Windows.Automation.AutomationProperties.SetName(pick, "Step to edit");
 		var stepHost = new StackPanel();
 		var stepApply = new List<Func<string?>>();
-		var shown = -1;
 		pick.SelectionChanged += (_, _) => {
 			// the step on screen keeps its fields until every value reads (a wrong one stays where it can be fixed)
 			var wrong = stepApply.Select(f => f()).OfType<string>().ToList();
@@ -461,7 +462,7 @@ public static class SettingsPanel
 			pick.Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background, () => {
 				if (find.Text.Trim() is { Length: > 0 } q) {
 					var hits = Filter(stack, q);
-					findHint.Text = hits == 0 ? "No setting has that word." : $"{hits} setting(s) found.";
+					findHint.Text = FindHint(hits, q, steps, shown);
 				}
 			});
 			stepHost.Children.Clear();
@@ -604,6 +605,35 @@ public static class SettingsPanel
 
 	const string HeadTag = "head";
 	static TextBox? s_find;
+
+	// the search's line under its box: how many settings on screen hold the word, and the other steps whose settings hold it (a
+	// step's own settings are on screen only while it is open under A STEP)
+	static string FindHint(int a_hits, string a_q, IReadOnlyList<JsonObject> a_steps, int a_open)
+	{
+		if (a_q == "") {
+			return "Find a setting - type a word (Ctrl+F)";
+		}
+		var others = StepsWith(a_steps, a_q, a_open);
+		return (a_hits == 0 ? "No setting here has that word." : $"{a_hits} setting(s) found.") +
+			(others.Count == 0 ? "" : $" Also in the settings of: {string.Join(", ", others)} (pick it under A STEP).");
+	}
+
+	// the steps (all but a_skip) whose settings hold a_q - in a setting's name, its label or its value
+	public static List<string> StepsWith(IReadOnlyList<JsonObject> a_steps, string a_q, int a_skip)
+	{
+		bool Has(string? a_t) => (a_t ?? "").Contains(a_q, StringComparison.OrdinalIgnoreCase);
+		bool Holds(JsonNode? a_v) => a_v switch {
+			JsonValue v => v.TryGetValue<string>(out var s) && Has(s),
+			JsonArray a => a.Any(Holds),
+			_ => false,
+		};
+		if (a_q.Trim() == "") {
+			return [];
+		}
+		return a_steps.Select((s, i) => (s, i)).Where(x => x.i != a_skip && x.s["settings"] is JsonObject o &&
+				o.Any(p => Has(p.Key) || Has(Label(p.Key)) || Holds(p.Value)))
+			.Select(x => StepCatalog.Name(Setup.Str(x.s, "step") ?? "")).Distinct(StringComparer.Ordinal).ToList();
+	}
 
 	// the window's Ctrl+F while Settings is open
 	public static void FocusFind()
