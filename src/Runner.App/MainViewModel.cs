@@ -86,6 +86,9 @@ public sealed partial class MainViewModel : Observable
 	public Cmd RestoreCommand => field ??= new(() => _ = RunRestore());
 	public Cmd CheckCommand => field ??= new(() => _ = RunCheck());
 	public Cmd RetryCommand => field ??= new(() => _ = RunRetry());
+	public Cmd CancelPowerCommand => field ??= new(CancelPower);
+	// the PC about to sleep or shut down after a run ("" = nothing pending): the banner with its Cancel button
+	public string PowerText { get; set => Set(ref field, value); } = "";
 	Task RunRestore() => Restore();
 	Task RunCheck() => Check();
 
@@ -225,11 +228,11 @@ public sealed partial class MainViewModel : Observable
 		}
 		_polling = true;
 		try {
-			var (mo2, game, runs, queue) = await Task.Run(() => {
+			var (mo2, game, runs, queue, power) = await Task.Run(() => {
 				var runs = Engine.Runs();
-				return (Procs.Running("ModOrganizer.exe"), Mo2Control.GameImages.Any(Procs.Running), runs, QueueLook(runs));
+				return (Procs.Running("ModOrganizer.exe"), Mo2Control.GameImages.Any(Procs.Running), runs, QueueLook(runs), PowerAfter.Look(AppPaths.Data));
 			});
-			Poll(mo2, game, runs, queue);
+			Poll(mo2, game, runs, queue, power);
 		} catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception or InvalidOperationException) {
 			// a file or process that changed mid-read: the next tick reads it again
 		} finally {
@@ -240,7 +243,7 @@ public sealed partial class MainViewModel : Observable
 	public void Poll()
 	{
 		var runs = Engine.Runs();
-		Poll(Procs.Running("ModOrganizer.exe"), Mo2Control.GameImages.Any(Procs.Running), runs, QueueLook(runs));
+		Poll(Procs.Running("ModOrganizer.exe"), Mo2Control.GameImages.Any(Procs.Running), runs, QueueLook(runs), PowerAfter.Look(AppPaths.Data));
 	}
 
 	// the queue going (its line for the window), else the last queue's summary while nothing has started since it ended
@@ -266,10 +269,17 @@ public sealed partial class MainViewModel : Observable
 		return new QueueSeen(null, "");
 	}
 
-	void Poll(bool a_mo2, bool a_game, List<Journal> a_runs, QueueSeen a_queue)
+	void Poll(bool a_mo2, bool a_game, List<Journal> a_runs, QueueSeen a_queue, PowerAfter.Pending? a_power)
 	{
 		Mo2Open = a_mo2;
 		GameRunning = a_game;
+		var power = a_power;
+		var newPower = power == null ? "" :
+			$"The PC will {(power.Action == nameof(PowerAfter.Kind.Sleep) ? "go to sleep" : "shut down")} in {Math.Max(0, (int)(power.At - DateTime.Now).TotalSeconds)} s, as this setup asks after a run.";
+		if (newPower != "" && PowerText == "") {
+			Alert?.Invoke("The PC is about to " + (power!.Action == nameof(PowerAfter.Kind.Sleep) ? "sleep" : "shut down"), newPower);
+		}
+		PowerText = newPower;
 		var runs = a_runs;
 		FollowStart(runs);
 		var active = Engine.Active(runs);
@@ -341,6 +351,11 @@ public sealed partial class MainViewModel : Observable
 		}
 		if (Waiting != "" && Waiting != _lastWaiting) {
 			Alert?.Invoke("Your turn in the game", Waiting);
+			_remindedAt = DateTime.Now;
+		} else if (Waiting != "" && ReminderDue(ReminderMinutes(_run), _remindedAt, DateTime.Now)) {
+			// his checklist 463: the same step still waits - said again, every so many minutes as the setup asks
+			Alert?.Invoke("Still your turn in the game", Waiting);
+			_remindedAt = DateTime.Now;
 		}
 		_lastWaiting = Waiting;
 		_lastState = _run.State;
@@ -355,6 +370,39 @@ public sealed partial class MainViewModel : Observable
 	public static System.Windows.Shell.TaskbarItemProgressState TaskbarFor(bool a_running, bool a_waiting, bool a_needsLook) =>
 		a_running ? (a_waiting ? System.Windows.Shell.TaskbarItemProgressState.Paused : System.Windows.Shell.TaskbarItemProgressState.Normal) :
 		a_needsLook ? System.Windows.Shell.TaskbarItemProgressState.Error : System.Windows.Shell.TaskbarItemProgressState.None;
+	DateTime _remindedAt;
+	(string File, double Minutes)? _reminder;
+
+	// the waiting run's own setup says how often (read once per setup file, not the setup picked in the window)
+	double ReminderMinutes(Journal a_run)
+	{
+		if (_reminder is not { } r || !string.Equals(r.File, a_run.SetupFile, StringComparison.OrdinalIgnoreCase)) {
+			double min = 0;
+			try {
+				min = Setup.Num(Setup.Load(a_run.SetupFile).Root, "guidedReminderMin") ?? 0;
+			} catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException or System.Text.Json.JsonException) {
+			}
+			_reminder = r = (a_run.SetupFile, min);
+		}
+		return r.Minutes;
+	}
+
+	// a reminder is due once every a_everyMin minutes (0 or less = never)
+	public static bool ReminderDue(double a_everyMin, DateTime a_last, DateTime a_now) => a_everyMin > 0 && a_now - a_last >= TimeSpan.FromMinutes(a_everyMin);
+
+	void CancelPower()
+	{
+		try {
+			if (PowerAfter.Look(AppPaths.Data) == null) {
+				Say("Too late to cancel - Windows was already asked.", "warn");
+				return;
+			}
+			PowerAfter.Cancel(AppPaths.Data);
+			Say("Cancelled - the PC stays on.", "good");
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+			Say("Could not cancel: " + e.Message, "bad");
+		}
+	}
 
 	// the watched run's newest record (the cache re-reads it only when its file changed)
 	static Journal Fresh(List<Journal> a_runs, Journal a_j) =>

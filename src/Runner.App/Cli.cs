@@ -115,6 +115,11 @@ public static class Cli
 		foreach (var l in QueueRun.Summary(items)) {
 			Console.WriteLine(l);
 		}
+		// after a queue: the power setting of the last setup that ran, judged on the whole queue (one not finished = not finished)
+		if (items.LastOrDefault(i => i.Outcome is { Folder: not null }) is { } lastRan) {
+			var bad = items.Select(i => i.Outcome).FirstOrDefault(o => o != null && o.State != RunState.Finished);
+			PowerAfterRun(lastRan.SetupFile, bad?.State ?? RunState.Finished);
+		}
 		// the first that did not finish names the queue's outcome
 		return items.Select(i => i.Outcome).FirstOrDefault(o => o != null && o.State != RunState.Finished) is { } bad ? (bad.State == RunState.Stopped ? 2 : 1) : 0;
 	}
@@ -123,6 +128,10 @@ public static class Cli
 	{
 		var outcome = Runner.Run(a_req);
 		Console.WriteLine(outcome.Verdict);
+		// a run that was refused (nothing changed) never shuts the PC down
+		if (outcome.Folder != null) {
+			PowerAfterRun(a_req.SetupFile, outcome.State);
+		}
 		if (outcome.Folder == null) {
 			WriteRefusal(outcome.Verdict);
 		}
@@ -140,6 +149,31 @@ public static class Cli
 			Directory.CreateDirectory(AppPaths.Runs);
 			Files.WriteAtomic(Engine.RefusalFile, a_why);
 		} catch (IOException) {
+		}
+	}
+
+	// the setup's "after the run" power setting, with its minute of notice; a setup that does not read is left alone
+	static void PowerAfterRun(string a_setupFile, RunState a_state)
+	{
+		try {
+			var s = Setup.Load(a_setupFile);
+			var what = PowerAfter.Decide(PowerAfter.Read(s), PowerAfter.OnlyFinished(s), a_state);
+			if (what != PowerAfter.Kind.None) {
+				// the run lock through the notice: no run can start and then be cut off by the sleep or shut-down
+				using var hold = Runner.HoldIfFree();
+				if (hold == null) {
+					Console.WriteLine("not sleeping or shutting down: another run started");
+					return;
+				}
+				var logDir = Path.Combine(AppPaths.Runs, "after run power");
+				Directory.CreateDirectory(logDir);
+				using var log = new RunLog(logDir);
+				Console.WriteLine($"the PC will {(what == PowerAfter.Kind.Sleep ? "go to sleep" : "shut down")} in {PowerAfter.Notice.TotalSeconds:0} s - cancel in the window, or with: stop");
+				PowerAfter.Carry(what, AppPaths.Data, log);
+			}
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException or System.Text.Json.JsonException or
+		                            System.ComponentModel.Win32Exception or InvalidOperationException) {
+			Console.WriteLine("the after-run power setting was not read: " + e.Message);
 		}
 	}
 
@@ -261,6 +295,11 @@ public static class Cli
 
 	static int Stop(string a_what)
 	{
+		// a sleep or shut-down on its notice is cancelled too
+		if (PowerAfter.Look(AppPaths.Data) != null) {
+			PowerAfter.Cancel(AppPaths.Data);
+			Console.WriteLine("the sleep / shut-down after the run is cancelled");
+		}
 		var j = Engine.Active();
 		if (j == null) {
 			Console.WriteLine("no run is going");
