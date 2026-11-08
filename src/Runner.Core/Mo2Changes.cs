@@ -26,7 +26,7 @@ public static class Mo2Changes
 	}
 
 	public const string Outside = "outside the runner";
-	const int KeepRows = 10_000;
+	public const int KeepRows = 10_000;
 	static readonly StringComparer Names = StringComparer.OrdinalIgnoreCase;
 
 	// one folder per MO2 instance (two setups of one instance share it): its folder name and a short hash of its ini's path
@@ -245,14 +245,51 @@ public static class Mo2Changes
 	{
 		try {
 			// the baseline read inside the handler too: an unreadable last look means "not known", never an error
-			var last = ReadLook(Path.Combine(Dir(a_dataDir, a_mo2), "last look.json"));
-			var file = Path.Combine(a_mo2.ProfileDir(a_profile), "modlist.txt");
-			if (last == null || !last.Profiles.TryGetValue(a_profile, out var before) || !File.Exists(file)) {
-				return null;
-			}
-			return Compare(before, Pane(Files.DecodeText(ReadWhole(file, a_profile)).Split('\n')));
+			return PendingAgainst(ReadLook(Path.Combine(Dir(a_dataDir, a_mo2), "last look.json")), a_mo2, a_profile);
 		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
 			return null;
+		}
+	}
+
+	static List<(string Mod, string What)>? PendingAgainst(Look? a_last, Mo2Instance a_mo2, string a_profile)
+	{
+		var file = Path.Combine(a_mo2.ProfileDir(a_profile), "modlist.txt");
+		if (a_last == null || !a_last.Profiles.TryGetValue(a_profile, out var before) || !File.Exists(file)) {
+			return null;
+		}
+		return Compare(before, Pane(Files.DecodeText(ReadWhole(file, a_profile)).Split('\n')));
+	}
+
+	// the kept rows, what is not kept yet in one profile, and since when Mod Organizer is watched - read together under the looks'
+	// gate (two separate reads with a look between them would count its changes twice, or not at all). Read only. A look cut off
+	// after keeping its rows and before becoming the last one is the baseline, as the next look will settle it
+	public static (List<Change> Rows, List<(string Mod, string What)>? Pending, DateTime? WatchedSince) Snapshot(Mo2Instance a_mo2, string a_dataDir, string a_profile)
+	{
+		var dir = Dir(a_dataDir, a_mo2);
+		if (!Directory.Exists(dir)) {
+			return ([], null, null);
+		}
+		try {
+			using var gate = Gate.Take(dir);
+			// a kept file that does not read is no history at all: not known
+			var file = Path.Combine(dir, "changes.json");
+			if (File.Exists(file) && !Parses(file)) {
+				return ([], null, null);
+			}
+			var rows = Read(dir);
+			var next = ReadLook(Path.Combine(dir, "next look.json"));
+			var last = next != null && rows.Any(r => r.When == next.Taken) ? next : ReadLook(Path.Combine(dir, "last look.json"));
+			// one that was set aside (unreadable) started the kept history over: it is whole only since then
+			var since = last?.Since;
+			foreach (var aside in Directory.GetFiles(dir, "changes unreadable *.json")) {
+				if (DateTime.TryParseExact(Path.GetFileNameWithoutExtension(aside)["changes unreadable ".Length..], "yyyy-MM-dd HH-mm-ss", InvariantCulture,
+					    System.Globalization.DateTimeStyles.AssumeLocal, out var at) && (since == null || at > since)) {
+					since = at;
+				}
+			}
+			return (rows, PendingAgainst(last, a_mo2, a_profile), since);
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+			return ([], null, null);
 		}
 	}
 
@@ -280,6 +317,16 @@ public static class Mo2Changes
 			return ParseRows(Files.ReadSharedText(file));
 		} catch (Exception e) when (e is JsonException or InvalidOperationException or FormatException) {
 			return [];
+		}
+	}
+
+	static bool Parses(string a_file)
+	{
+		try {
+			ParseRows(Files.ReadSharedText(a_file));
+			return true;
+		} catch (Exception e) when (e is JsonException or InvalidOperationException or FormatException) {
+			return false;
 		}
 	}
 

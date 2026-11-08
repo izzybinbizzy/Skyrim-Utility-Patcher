@@ -42,6 +42,13 @@ public static class DataRemoval
 		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
 			refused ??= "the Setups folder could not be listed: " + e.Message;
 		}
+		// a setup deleted since still has its run records, and each names its own backup folder - taken only when that folder is
+		// named the way the runner names a run backup, so a record that points anywhere else removes nothing
+		try {
+			remove.AddRange(Journal.All(Runner.RunsDir(a_dataDir)).Select(RunBackup).OfType<string>());
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+			refused ??= "the run records could not be listed: " + e.Message;
+		}
 		// its work folder in ProgramData (FasterNGIO's wrapper), under the new and the old name
 		foreach (var work in WorkRoots.Where(Directory.Exists)) {
 			remove.Add(work);
@@ -54,7 +61,9 @@ public static class DataRemoval
 				remove.Add(a_dataDir);
 			}
 		}
-		return new Plan(remove.Distinct(StringComparer.OrdinalIgnoreCase).ToList(), kept, refused, a_dataDir);
+		// one spelling per folder (a setup's own listing and a run record may write the same one differently)
+		return new Plan(remove.Select(p => Path.TrimEndingDirectorySeparator(Path.GetFullPath(p))).Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
+			kept, refused, a_dataDir);
 	}
 
 	// the offline tests point this elsewhere (the real ProgramData folders are never touched by a test)
@@ -66,13 +75,26 @@ public static class DataRemoval
 		return BackupsOf(a_backupDir, a_setupName, ref ignored);
 	}
 
+	static string? RunBackup(Journal a_j)
+	{
+		if (string.IsNullOrWhiteSpace(a_j.BackupDir) || string.IsNullOrWhiteSpace(a_j.SetupName)) {
+			return null;
+		}
+		// named like a run backup AND holding the copy of the run's profile every run backup starts with
+		var dir = Path.TrimEndingDirectorySeparator(Path.GetFullPath(a_j.BackupDir));
+		return RunBackupName(a_j.SetupName).IsMatch(Path.GetFileName(dir)) && !string.IsNullOrWhiteSpace(a_j.Profile) &&
+		       Directory.Exists(Path.Combine(dir, "profile " + a_j.Profile)) ? dir : null;
+	}
+
+	static Regex RunBackupName(string a_setupName) => new(@"^\d{4}-\d\d-\d\d \d\d-\d\d-\d\d " + Regex.Escape(a_setupName) + "$");
+
 	// a backup folder that cannot be listed sets a_problem (the removal is then refused, never silently incomplete)
 	static List<string> BackupsOf(string a_backupDir, string a_setupName, ref string? a_problem)
 	{
 		if (a_backupDir == "" || !Directory.Exists(a_backupDir)) {
 			return [];
 		}
-		var own = new Regex(@"^\d{4}-\d\d-\d\d \d\d-\d\d-\d\d " + Regex.Escape(a_setupName) + "$");
+		var own = RunBackupName(a_setupName);
 		try {
 			return Directory.GetDirectories(a_backupDir).Where(d => own.IsMatch(Path.GetFileName(d))).ToList();
 		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {

@@ -1026,6 +1026,39 @@ public static class Program
 		Check(p.IsOn("Output A") && p.IsOn("Output B") && p.IsOn("Needs B"), "the profile as it was");
 	}
 
+	// the put-back after a crash keeps what the player changed in Mod Organizer while the run went on and after it was cut off -
+	// the run's last expectation is read back from its folder (CodeRabbit on #24); the run's own switches are still undone
+	static void T_RestoreKeepsThePlayersChanges()
+	{
+		using var f = new FakeMo2();
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => {
+			StepKit.ParkMod(ctx, "landscapefixer", "Output A");
+			// the player unticks a mod of theirs in Mod Organizer while the step works
+			var list = Path.Combine(f.ProfileDir, "modlist.txt");
+			File.WriteAllText(list, File.ReadAllText(list).Replace("+Base Mod", "-Base Mod", StringComparison.Ordinal));
+			ctx.Journal.Pid = 999999;
+			ctx.Journal.Save();
+			throw new CrashForTest();
+		}));
+		f.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A" }));
+		try {
+			RunUntilCrash(f);
+		} catch (CrashForTest) {
+		}
+		var j = Journal.Interrupted(Runner.RunsDir(f.Data));
+		Check(j != null && File.Exists(Path.Combine(j.Folder, Profile.WatchFileName)), "the run kept what it wrote in its folder");
+		// and after the crash, before Restore, the player installs and ticks a new mod
+		f.Mod("Players New");
+		File.WriteAllText(Path.Combine(f.ProfileDir, "modlist.txt"), "+Players New\r\n" + f.Text("modlist.txt"));
+		var r = Runner.Restore(j!);
+		Equal(RunState.Restored, r.State, "restored: " + r.Verdict);
+		var p = ProfileOf(f);
+		Check(!p.IsOn("Base Mod"), "the mod the player unticked during the run stays off");
+		Check(p.IsOn("Players New"), "the mod the player ticked after the crash stays on");
+		Check(p.IsOn("Output A") && p.IsOn("Output B") && p.IsOn("Needs B"), "the run's own switches are undone - the profile as it was");
+		Check(File.Exists(Path.Combine(f.Mods, "Output A", "OutA.esp")), "the parked output is back");
+	}
+
 	// a file a step changed (a tool's settings): put back by the step's failure, and after a crash by Restore
 	static void T_KeptFilesComeBackAfterAFailureAndACrash()
 	{
@@ -1263,6 +1296,9 @@ public static class Program
 		Directory.CreateDirectory(j.Folder);
 		var profile = new Profile(mo2, "Test", () => false);
 		j.SaveSnapshot(profile.Snapshot());
+		// as Runner.Run: the player's changes watched from here, the expectation kept in the run folder
+		profile.OursFile = Path.Combine(j.Folder, Profile.WatchFileName);
+		profile.WatchForOthers();
 		profile.SetMods([], ["Output A", "Output B", "Needs B"]);
 		j.Save();
 		using var log = new RunLog(j.Folder);
@@ -2842,6 +2878,24 @@ public static class Program
 		Check(!Directory.Exists(Path.Combine(f.Mods, "Empty Out")), "its folder left the mods folder");
 		Check(File.Exists(Path.Combine(park, "empty outputs", "Empty Out", "meta.ini")), "its folder is in the run's backup, never erased");
 		Check(!p.Added.Contains("Empty Out") && p.Added.Contains("Full Out"), "it is no longer kept as an added mod");
+		// a folder that cannot move (a file of it held open) keeps its line too - never a folder Mod Organizer would list as new;
+		// and a take-out cut off after its folder moved finishes by taking out the line that was left (CodeRabbit on #24)
+		p.EnsureMod("Held Out");
+		using (new FileStream(Path.Combine(f.Mods, "Held Out", "meta.ini"), FileMode.Open, FileAccess.Read, FileShare.Read)) {
+			var held = false;
+			try {
+				p.TakeOutEmptyOutput("Held Out", park);
+			} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+				held = true;
+			}
+			Check(held, "a folder that cannot move says so");
+		}
+		Check(Directory.Exists(Path.Combine(f.Mods, "Held Out")) && f.Text("modlist.txt").Contains("-Held Out", StringComparison.Ordinal),
+			"the held folder and its line are as they were");
+		Directory.CreateDirectory(Path.Combine(park, "empty outputs"));
+		Directory.Move(Path.Combine(f.Mods, "Held Out"), Path.Combine(park, "empty outputs", "Held Out"));
+		Check(p.TakeOutEmptyOutput("Held Out", park), "the line a cut-off take-out left is taken out");
+		Check(!f.Text("modlist.txt").Contains("Held Out", StringComparison.Ordinal), "no line of a folder that is gone");
 	}
 
 	// the run never closes Mod Organizer while the player is working in it: in front AND touched within the quiet time
@@ -3007,13 +3061,31 @@ public static class Program
 			Row(7, Mo2Changes.Outside, "Looked At", "ticked", "Test"),
 			Row(8, Mo2Changes.Outside, "Looked At", "unticked", "Test"),
 		};
-		var changes = LastRuns.ChangesSince(rows, [("New Mod", "removed (was under Misc)")], "Test", since, m => m == "DynDOLOD Output")!;
+		var watched = since.AddDays(-1);
+		var changes = LastRuns.ChangesSince(rows, [("New Mod", "removed (was under Misc)")], "Test", since, watched, m => m == "DynDOLOD Output")!;
 		Equal("Grass Mod,Tree Mod,New Mod", string.Join(",", changes.Select(c => c.Mod)),
 			"only changes made outside the runner, in this profile (any case), after it finished, not the setup's own mods, not one undone again - then the ones not kept yet");
-		Equal("Looked At ticked", string.Join(",", LastRuns.ChangesSince(rows.Take(8), [], "Test", since, _ => false)!.Where(c => c.Mod == "Looked At").Select(c => c.Mod + " " + c.What)),
+		Equal("Looked At ticked", string.Join(",", LastRuns.ChangesSince(rows.Take(8), [], "Test", since, watched, _ => false)!.Where(c => c.Mod == "Looked At").Select(c => c.Mod + " " + c.What)),
 			"a tick not undone still counts");
 		Equal("1 added, 1 moved, 1 removed", LastRuns.Counted(changes), "counted by kind");
-		Equal<IReadOnlyList<(string, string)>?>(null, LastRuns.ChangesSince(rows, null, "Test", since, _ => false), "a mod list that could not be read now: not known, never \"current\"");
+		Equal<IReadOnlyList<(string, string)>?>(null, LastRuns.ChangesSince(rows, null, "Test", since, watched, _ => false), "a mod list that could not be read now: not known, never \"current\"");
+		// the history's edges (CodeRabbit on #24): watched only since after it finished, or the kept rows cut short after it
+		// finished - not known; a mod removed and installed again is a new copy (it counts), one installed and removed again is not
+		Equal<IReadOnlyList<(string, string)>?>(null, LastRuns.ChangesSince(rows, [], "Test", since, since.AddMinutes(1), _ => false),
+			"Mod Organizer watched only since after it finished: not known");
+		Equal<IReadOnlyList<(string, string)>?>(null, LastRuns.ChangesSince(rows, [], "Test", since, null, _ => false), "never watched: not known");
+		var full = Enumerable.Range(0, Mo2Changes.KeepRows).Select(i => Row(10 + i, Mo2Changes.Outside, "Busy Mod", i % 2 == 0 ? "ticked" : "unticked", "Test")).ToList();
+		Equal<IReadOnlyList<(string, string)>?>(null, LastRuns.ChangesSince(full, [], "Test", since, watched, _ => false), "the kept rows cut short after it finished: not known");
+		Equal(0, LastRuns.ChangesSince(full, [], "Test", since.AddSeconds(19 * 60 + 30), watched, _ => false)!.Count,
+			"kept rows that still reach back past it are judged (an even run of ticks and unticks: back as it was)");
+		var installs = new[] {
+			Row(9, Mo2Changes.Outside, "Reinstalled", "removed (was under Misc)", "Test"),
+			Row(10, Mo2Changes.Outside, "Reinstalled", "added (ticked, under Misc)", "Test"),
+			Row(11, Mo2Changes.Outside, "Tried Out", "added (ticked, under Misc)", "Test"),
+			Row(12, Mo2Changes.Outside, "Tried Out", "removed (was under Misc)", "Test"),
+		};
+		Equal("Reinstalled,Reinstalled", string.Join(",", LastRuns.ChangesSince(installs, [], "Test", since, watched, _ => false)!.Select(c => c.Mod)),
+			"removed and installed again counts (its files may differ); installed and removed again does not");
 		var t = since.AddHours(-1);
 		var done = new LastRuns.Ran(t, "run", "DynDOLOD", StepState.Done, t, t.AddMinutes(24), "");
 		var stale = new LastRuns.Section("dyndolod", done, done, changes);
@@ -3022,6 +3094,12 @@ public static class Program
 		Check(card.Contains("Out of date: 3 changes in the profile Test since it finished (1 added, 1 moved, 1 removed), e.g. Grass Mod added", StringComparison.Ordinal) &&
 		      card.Contains("Run it again", StringComparison.Ordinal) && !card.Contains("What it did", StringComparison.Ordinal), "the card says what changed: " + card);
 		Check(LastRuns.Line(stale with { ChangedSince = null }).EndsWith("changes since: not known", StringComparison.Ordinal), "unknown is said as unknown");
+		// its last finished run built into another mod than the setup names now: out of date, whatever changed
+		var moved = new LastRuns.Section("dyndolod", done with { Output = "Old Output" }, done with { Output = "Old Output" }, [], "New Output");
+		Check(moved.OutOfDate && !moved.Current && moved.BuiltElsewhere == "Old Output", "built into another mod than the setup names: out of date");
+		Check(LastRuns.Line(moved).EndsWith("it built into Old Output then; the setup now names New Output", StringComparison.Ordinal), "the line says where: " + LastRuns.Line(moved));
+		Check(string.Join("\n", LastRuns.Detail(moved, "Test", [])).Contains("Run it again to build there", StringComparison.Ordinal), "the card says what to do");
+		Check(new LastRuns.Section("dyndolod", done, done, [], "New Output").Current, "a run from before outputs were recorded is judged by its changes only");
 	}
 
 	static void T_LastRunsReadTheStepsOwnLinesOfItsLog()
@@ -3077,6 +3155,13 @@ public static class Program
 		var never = LastRuns.Build(setup, mo2, Journal.All(Runner.RunsDir(f.Data)), f.Data);
 		Equal<IReadOnlyList<(string, string)>?>(null, never.Single(s => s.Key == "texgen").ChangedSince, "Mod Organizer never looked at: not known");
 		Mo2Changes.Record(mo2, f.Data, Mo2Changes.Outside);
+		Equal<IReadOnlyList<(string, string)>?>(null, LastRuns.Build(setup, mo2, Journal.All(Runner.RunsDir(f.Data)), f.Data).Single(s => s.Key == "texgen").ChangedSince,
+			"watched only since after it finished: not known (what changed before the first look is not on record)");
+		// its next run finishes while Mod Organizer is watched
+		var t2 = DateTime.Now;
+		j.Started = t2;
+		j.Steps = [Ran("texgen", StepState.Done, t2, 0)];
+		j.Save();
 		var looked = LastRuns.Build(setup, mo2, Journal.All(Runner.RunsDir(f.Data)), f.Data);
 		var texgen = looked.Single(s => s.Key == "texgen");
 		Check(texgen.Current, "nothing changed since the look: current");
@@ -3090,6 +3175,23 @@ public static class Program
 		Mo2Changes.Record(mo2, f.Data, Mo2Changes.Outside);
 		var kept = LastRuns.Build(setup, mo2, Journal.All(Runner.RunsDir(f.Data)), f.Data).Single(s => s.Key == "texgen");
 		Equal("Base Mod unticked", string.Join(",", kept.ChangedSince!.Select(c => c.Mod + " " + c.What)), "once kept, it still counts (once)");
+		j.Steps[0].Output = "Old Output";
+		j.Save();
+		var elsewhere = LastRuns.Build(setup, mo2, Journal.All(Runner.RunsDir(f.Data)), f.Data).Single(s => s.Key == "texgen");
+		Check(elsewhere.BuiltElsewhere == "Old Output" && elsewhere.OutputNow == "Output A" && elsewhere.OutOfDate, "the output its run recorded against the setup's now");
+		j.Steps[0].Output = null;
+		j.Save();
+		// a kept history that does not read, or one set aside and started over since the step finished: not known
+		var changesDir = Mo2Changes.Dir(f.Data, mo2);
+		var changes = Path.Combine(changesDir, "changes.json");
+		var good = File.ReadAllText(changes);
+		File.WriteAllText(changes, "{ not json");
+		Equal<IReadOnlyList<(string, string)>?>(null, LastRuns.Build(setup, mo2, Journal.All(Runner.RunsDir(f.Data)), f.Data).Single(s => s.Key == "texgen").ChangedSince,
+			"an unreadable history: not known");
+		File.WriteAllText(changes, good);
+		File.WriteAllText(Path.Combine(changesDir, $"changes unreadable {DateTime.Now.AddMinutes(1):yyyy-MM-dd HH-mm-ss}.json"), "x");
+		Equal<IReadOnlyList<(string, string)>?>(null, LastRuns.Build(setup, mo2, Journal.All(Runner.RunsDir(f.Data)), f.Data).Single(s => s.Key == "texgen").ChangedSince,
+			"a history started over after the step finished: not known");
 		Equal(before.Replace("+Base Mod", "-Base Mod", StringComparison.Ordinal).Replace("+Output A", "-Output A", StringComparison.Ordinal), File.ReadAllText(list),
 			"the profile is only read");
 		var logs = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
@@ -3311,8 +3413,25 @@ public static class Program
 	{
 		Check(DataRemoval.Make(f.Data, true).Remove.Contains(work, StringComparer.OrdinalIgnoreCase), "its ProgramData work folder goes too");
 		Check(!DataRemoval.Make(f.Data, true).Remove.Any(p => p.EndsWith("not there", StringComparison.Ordinal)), "a work folder that does not exist is not listed");
+		// a setup deleted since: its run record still names its backup, which goes too - a record pointing at a folder not named
+		// like a run backup removes nothing (CodeRabbit on #24)
+		var goneBackup = Path.Combine(setup.BackupDir, "2026-10-30 19-00-00 Gone Setup");
+		Directory.CreateDirectory(Path.Combine(goneBackup, "profile Test"));
+		// named like a run backup but holding no copy of a profile: not one, never taken
+		var lookalike = Path.Combine(f.Root, "2026-10-30 20-00-00 Lookalike");
+		Directory.CreateDirectory(lookalike);
+		foreach (var (id, name, backup) in new[] { ("2026-10-30 19-00-00 Gone Setup", "Gone Setup", goneBackup), ("2026-10-30 19-30-00 Odd", "Odd", stray),
+			         ("2026-10-30 20-00-00 Lookalike", "Lookalike", lookalike) }) {
+			var done = new Journal { Id = id, Folder = Path.Combine(Runner.RunsDir(f.Data), id), SetupFile = Path.Combine(setupsDir, name + ".json"), SetupName = name,
+				Profile = "Test", BackupDir = backup, Started = DateTime.Now, State = RunState.Finished, Pid = 0 };
+			Directory.CreateDirectory(done.Folder);
+			done.Save();
+		}
 		var all = DataRemoval.Make(f.Data, false);
 		Equal<string?>(null, all.Refused, "nothing refused");
+		Check(all.Remove.Contains(goneBackup, StringComparer.OrdinalIgnoreCase), "a deleted setup's run backup goes, found through its run record");
+		Check(!all.Remove.Contains(lookalike, StringComparer.OrdinalIgnoreCase), "a folder a record names that holds no profile copy stays");
+		Equal(all.Remove.Count, all.Remove.Distinct(StringComparer.OrdinalIgnoreCase).Count(), "each folder listed once");
 		Check(all.Remove.Contains(own, StringComparer.OrdinalIgnoreCase), "this setup's run backup goes");
 		Check(!all.Remove.Contains(other, StringComparer.OrdinalIgnoreCase) && !all.Remove.Contains(stray, StringComparer.OrdinalIgnoreCase), "another setup's backup and a stray folder stay");
 		Check(all.Remove.Any(p => Files.SamePath(p, f.Data)), "the data folder goes whole");
@@ -3643,6 +3762,99 @@ public static class Program
 		Check(DevBench.InProfile(p), "(DevBench ticked: the automatic route)");
 		var auto = Refused(() => InGame.Deactivate(ctx, new StepSettings(new JsonObject())));
 		Check(auto.Contains("no save of Björn", StringComparison.Ordinal), "the clean save's own pick keeps to the picked character: " + auto);
+	}
+
+	// the log box: only whole new lines, a letter never cut in two, a big log only its last part, and a replaced log started over
+	// even when the new one has already grown past where the last look stopped (CodeRabbit on #24)
+	static void T_TheLogBoxFollowsAReplacedLog()
+	{
+		var dir = Path.Combine(Path.GetTempPath(), "SUP log tail " + Guid.NewGuid().ToString("N"));
+		Directory.CreateDirectory(dir);
+		var log = Path.Combine(dir, "log.txt");
+		try {
+			var tail = new LogTail();
+			Equal((null, false), tail.Read(null), "no run, nothing to empty");
+			File.WriteAllText(log, "12:00:00  run A begins\n12:00:01  half a li");
+			Equal(("12:00:00  run A begins\n", true), tail.Read(log), "a new log: the box emptied, the whole lines shown");
+			File.AppendAllText(log, "ne - Björn\n");
+			Equal(("12:00:01  half a line - Björn\n", false), tail.Read(log), "the rest of a line once it is whole, its letters too");
+			Equal((null, false), tail.Read(log), "nothing new, nothing shown");
+			File.WriteAllText(log, "13:30:00  run B begins, a much longer first line than run A had\n13:30:01  next\n");
+			Equal(("13:30:00  run B begins, a much longer first line than run A had\n13:30:01  next\n", true), tail.Read(log),
+				"a replaced log that already grew past the old place starts over");
+			File.WriteAllText(log, "1\n");
+			Equal(("1\n", true), tail.Read(log), "a shorter replaced log starts over");
+			tail.Restart();
+			Equal(("1\n", true), tail.Read(log), "asked again (the other kind of log) - from the start");
+			File.WriteAllText(log, string.Concat(Enumerable.Repeat("0123456789abcdef0123456789abcdef0123456789abcdef012345678\n", 5000)));
+			var (big, reset) = tail.Read(log);
+			Check(reset && big != null && big.Length <= LogTail.Window && big.StartsWith("0123", StringComparison.Ordinal) && big.EndsWith('\n'),
+				"a big log: only its last part, from a whole line");
+		} finally {
+			try {
+				Directory.Delete(dir, true);
+			} catch (IOException) {
+			}
+		}
+	}
+
+	// the run's command watcher let go of while its look is still going (a Stop's OnStop ending a slow tool): Dispose returns after
+	// its wait, the look finishes later and sets the wait's event on the timer's thread - which must still be there (a released
+	// event would throw on that thread and end the program), and the look arms no new look (CodeRabbit on #24)
+	static void T_TheCommandWatcherLetsGoWhileALookIsHeld()
+	{
+		var dir = Path.Combine(Path.GetTempPath(), "SUP commands " + Guid.NewGuid().ToString("N"));
+		var keep = Commands.DisposeWait;
+		Commands.DisposeWait = TimeSpan.FromMilliseconds(200);
+		using var entered = new ManualResetEventSlim();
+		using var release = new ManualResetEventSlim();
+		using var finished = new ManualResetEventSlim();
+		var looks = 0;
+		try {
+			Directory.CreateDirectory(dir);
+			using var c = new Commands(new Journal { Folder = dir }, () => { }) {
+				OnStop = () => {
+					Interlocked.Increment(ref looks);
+					entered.Set();
+					release.Wait(TimeSpan.FromSeconds(10));
+					finished.Set();
+				},
+			};
+			Commands.Send(dir, "stop");
+			c.Start();
+			Check(entered.Wait(TimeSpan.FromSeconds(5)), "the look began (the stop seen)");
+			var sw = Stopwatch.StartNew();
+			c.Dispose();
+			Check(sw.Elapsed < TimeSpan.FromSeconds(3), $"Dispose returned after its wait, not the look's end ({sw.ElapsedMilliseconds} ms)");
+			release.Set();
+			Check(finished.Wait(TimeSpan.FromSeconds(5)), "the held look finished");
+			// the timer sets the event right after the callback returns - give it time, then the program must still be here
+			Thread.Sleep(1500);
+			Check(c.Stopped, "the stop was taken");
+			Equal(1, Volatile.Read(ref looks), "no new look after Dispose");
+		} finally {
+			Commands.DisposeWait = keep;
+			try {
+				Directory.Delete(dir, true);
+			} catch (IOException) {
+			}
+		}
+	}
+
+	// the settings search names the other steps whose settings hold its word - in a setting's name, its label or its value, a list's
+	// items too - never the step already open (CodeRabbit on #24)
+	static void T_TheSettingsSearchNamesOtherSteps()
+	{
+		var steps = new List<JsonObject> {
+			new() { ["step"] = "texgen", ["settings"] = new JsonObject { ["output_mod"] = "TexGen Output" } },
+			new() { ["step"] = "dyndolod", ["settings"] = new JsonObject { ["lodWorlds"] = new JsonArray("Tamriel", "Solstheim") } },
+			new() { ["step"] = "pandora", ["settings"] = new JsonObject() },
+		};
+		Equal("TexGen", string.Join(", ", ToolRunner.App.SettingsPanel.StepsWith(steps, "texgen out", -1)), "a value");
+		Equal("DynDOLOD", string.Join(", ", ToolRunner.App.SettingsPanel.StepsWith(steps, "solstheim", -1)), "a list's item, any case");
+		Equal("TexGen", string.Join(", ", ToolRunner.App.SettingsPanel.StepsWith(steps, "output_mod", -1)), "a setting's own name");
+		Equal("", string.Join(", ", ToolRunner.App.SettingsPanel.StepsWith(steps, "TexGen Output", 0)), "never the step already open");
+		Equal(0, ToolRunner.App.SettingsPanel.StepsWith(steps, " ", -1).Count, "no word, no steps");
 	}
 
 	static void T_EveryToolStepHasItsHelpPage()

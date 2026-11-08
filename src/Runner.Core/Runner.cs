@@ -133,7 +133,7 @@ public static class Runner
 			Mo2Exe = setup.Mo2Exe, Mo2Instance = setup.Mo2Instance, BackupDir = Path.Combine(setup.BackupDir, id), Pid = Environment.ProcessId,
 			PidStarted = Process.GetCurrentProcess().StartTime.ToUniversalTime(),
 			Started = DateTime.Now, State = RunState.Running,
-			Steps = todo.Select(s => new StepRecord { Key = s.Key, Name = StepCatalog.Name(s.Key), State = StepState.Pending }).ToList(),
+			Steps = todo.Select(s => new StepRecord { Key = s.Key, Name = StepCatalog.Name(s.Key), State = StepState.Pending, Output = new StepSettings(s.Settings).OutputMod }).ToList(),
 		};
 		Directory.CreateDirectory(journal.Folder);
 		journal.Save();
@@ -195,6 +195,7 @@ public static class Runner
 			}
 			journal.Added = [.. profile.Added];
 			snap0 = profile.Snapshot();
+			profile.OursFile = Path.Combine(journal.Folder, Profile.WatchFileName);
 			profile.WatchForOthers();
 			journal.SaveSnapshot(snap0);
 			journal.Save();
@@ -777,6 +778,12 @@ public static class Runner
 			Cancel = CancellationToken.None, BackupFolder = a_j.BackupDir,
 		};
 		log.Say("RESTORE: putting the profile back after the run that did not finish");
+		// what the cut-off run last wrote: anything else in the mod list now - changed during the run or since - is the player's,
+		// kept by the put-back as at the end of a run (an older run left no such file: nothing is kept, as before)
+		ctx.Profile.OursFile = Path.Combine(a_j.Folder, Profile.WatchFileName);
+		if (ctx.Profile.LoadOurs()) {
+			log.Detail("the run's own switches read back - your own changes in Mod Organizer are kept");
+		}
 		// the run folder is <data>\Runs\<run>. What changed since the last look (the cut-off run's own changes, and anything
 		// done after it) is noted first under a neutral name, so the put-back's look holds only the put-back
 		var data = Path.GetDirectoryName(Path.GetDirectoryName(Path.GetFullPath(a_j.Folder)));
@@ -993,6 +1000,9 @@ public sealed class Commands(Journal a_journal, Action a_cancel) : IDisposable
 		}
 	}
 
+	// how long Dispose waits for a look still going (the offline tests shorten it)
+	public static TimeSpan DisposeWait { get; set; } = TimeSpan.FromSeconds(10);
+
 	public bool TakeContinue() => _continue;
 
 	public void ClearContinue() => _continue = false;
@@ -1012,11 +1022,11 @@ public sealed class Commands(Journal a_journal, Action a_cancel) : IDisposable
 			return;
 		}
 		// a look still going finishes before the run lets go of what it uses. The event is released only once the timer has set it:
-		// a look still going after 10 s sets it later, and a released event there would throw on a timer thread and end the program
+		// a look still going after the wait sets it later, and a released event there would throw on a timer thread and end the program
 #pragma warning disable CA2000
 		var done = new ManualResetEvent(false);
 #pragma warning restore CA2000
-		if (!t.Dispose(done) || done.WaitOne(TimeSpan.FromSeconds(10))) {
+		if (!t.Dispose(done) || done.WaitOne(DisposeWait)) {
 			done.Dispose();
 		}
 	}

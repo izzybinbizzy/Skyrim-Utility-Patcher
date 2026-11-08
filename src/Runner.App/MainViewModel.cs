@@ -110,7 +110,7 @@ public sealed partial class MainViewModel : Observable
 	public string EstimateText { get; set => Set(ref field, value); } = "";
 	public bool StopAfterAsked { get; set => Set(ref field, value); }
 	// the LOG box shows the detailed log (every line) when ticked, else the simple step-by-step one
-	public bool DetailedLog { get; set { if (Set(ref field, value)) { _logPath = null; TailLog(); } } }
+	public bool DetailedLog { get; set { if (Set(ref field, value)) { _logTail.Restart(); TailLog(); } } }
 	// the step the setup's last run stopped at ("" = nothing to run again): the "Run again from ..." button
 	public string RetryFrom { get; set { if (Set(ref field, value)) OnPropertyChanged(nameof(RetryText)); } } = "";
 	public string RetryText => RetryFrom == "" ? "" : "Run _again from " + StepCatalog.Name(RetryFrom);
@@ -174,8 +174,7 @@ public sealed partial class MainViewModel : Observable
 	Journal? _run;
 	RunState? _lastState;
 	string _lastWaiting = "";
-	string? _logPath;
-	long _logPos;
+	readonly LogTail _logTail = new();
 	Dictionary<string, TimeSpan> _usual = [];
 
 	public MainViewModel()
@@ -553,41 +552,12 @@ public sealed partial class MainViewModel : Observable
 
 	void TailLog()
 	{
-		var path = _run == null ? null : LogFile(_run.Folder, DetailedLog);
-		if (path != _logPath) {
-			_logPath = path;
-			_logPos = 0;
+		var (text, reset) = _logTail.Read(_run == null ? null : LogFile(_run.Folder, DetailedLog));
+		if (reset) {
 			LogChanged?.Invoke("", true);
 		}
-		if (path == null || !File.Exists(path)) {
-			return;
-		}
-		try {
-			using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-			if (fs.Length < _logPos) {
-				// the file was replaced: read it again from the start
-				_logPos = 0;
-				LogChanged?.Invoke("", true);
-			}
-			if (fs.Length == _logPos) {
-				return;
-			}
-			// a big old log: only its last 150 KB, from the first whole line in them - read from one byte before, so a window that
-			// starts right at a line's start keeps that line (the byte before it is its newline)
-			var skipped = fs.Length - 150_000 > _logPos;
-			var readFrom = skipped ? fs.Length - 150_000 - 1 : _logPos;
-			fs.Seek(readFrom, SeekOrigin.Begin);
-			var bytes = new byte[fs.Length - readFrom];
-			fs.ReadExactly(bytes);
-			var from = skipped ? Array.IndexOf(bytes, (byte)'\n') + 1 : 0;
-			// a line still being written (no newline yet) waits for the next look, so a UTF-8 letter is never cut in two
-			var end = Array.LastIndexOf(bytes, (byte)'\n') + 1;
-			if (end == 0 || end <= from) {
-				return;
-			}
-			_logPos = readFrom + end;
-			LogChanged?.Invoke(System.Text.Encoding.UTF8.GetString(bytes, from, end - from), false);
-		} catch (IOException) {
+		if (text != null) {
+			LogChanged?.Invoke(text, false);
 		}
 	}
 
@@ -713,6 +683,9 @@ public sealed partial class MainViewModel : Observable
 	}
 
 	DateTime? _startAsked;
+
+	// a start was asked and the engine has neither made its run record nor refused yet (it checks every tool first)
+	public bool Starting => _startAsked != null;
 
 	// after Start: the run's own record appears (it started), or the engine's refusal (shown with its reason), or nothing
 	void FollowStart(List<Journal> a_runs)

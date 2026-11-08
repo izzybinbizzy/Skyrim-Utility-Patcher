@@ -67,7 +67,49 @@ public sealed class Profile(Mo2Instance a_mo2, string a_name, Func<bool> a_mo2Ru
 	// was changed by the player (a mod ticked, unticked or installed in Mod Organizer while the run went on) - kept, never undone
 	Dictionary<string, char>? _ours;
 
-	public void WatchForOthers() => _ours = States();
+	// the expectation kept in the run folder too, so the put-back after a crash still tells the player's changes from the run's
+	// own (null = memory only)
+	public const string WatchFileName = "player watch.json";
+	public string? OursFile { get; set; }
+
+	public void WatchForOthers()
+	{
+		_ours = States();
+		SaveOurs();
+	}
+
+	// the expectation a cut-off run left in its folder (false = none that reads - an older run's: nothing counts as the player's)
+	public bool LoadOurs()
+	{
+		try {
+			if (OursFile == null || !File.Exists(OursFile)) {
+				return false;
+			}
+			var read = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, char>>(Files.ReadShared(OursFile));
+			if (read == null) {
+				return false;
+			}
+			_ours = new Dictionary<string, char>(StringComparer.OrdinalIgnoreCase);
+			foreach (var (m, c) in read) {
+				_ours[m] = c;
+			}
+			return true;
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Text.Json.JsonException) {
+			return false;
+		}
+	}
+
+	// a lost write only costs the crash case its knowledge of the player's changes, never the run
+	void SaveOurs()
+	{
+		if (OursFile == null || _ours == null) {
+			return;
+		}
+		try {
+			Files.WriteAtomic(OursFile, System.Text.Json.JsonSerializer.Serialize(_ours));
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+		}
+	}
 
 	// a step's own switch-and-put-back (Toggle) leaves the expectation as it was before it, so neither its switches nor its
 	// put-back read as the player's
@@ -77,6 +119,7 @@ public sealed class Profile(Mo2Instance a_mo2, string a_name, Func<bool> a_mo2Ru
 	{
 		if (a_was != null) {
 			_ours = a_was;
+			SaveOurs();
 		}
 	}
 
@@ -145,6 +188,7 @@ public sealed class Profile(Mo2Instance a_mo2, string a_name, Func<bool> a_mo2Ru
 				a_log?.Detail($"{(en.Contains(n) ? "ON " : "OFF")} {n}");
 				Ours(n, en.Contains(n) ? '+' : '-');
 			}
+			SaveOurs();
 		}
 		return changed;
 	}
@@ -167,6 +211,7 @@ public sealed class Profile(Mo2Instance a_mo2, string a_name, Func<bool> a_mo2Ru
 			Files.WriteAtomic(ModList, string.Join(nl, lines));
 			a_log?.Detail($"{a_mod} added to the mod list (unticked)");
 			Ours(a_mod, '-');
+			SaveOurs();
 		}
 		Added.Add(a_mod);
 	}
@@ -182,20 +227,27 @@ public sealed class Profile(Mo2Instance a_mo2, string a_name, Func<bool> a_mo2Ru
 	public bool TakeOutEmptyOutput(string a_mod, string a_parkIn, RunLog? a_log = null)
 	{
 		var d = Mo2.ModDir(a_mod);
-		if (!IsEmptyOutput(d)) {
+		var to = Path.Combine(a_parkIn, "empty outputs", a_mod);
+		var empty = IsEmptyOutput(d);
+		// an earlier take-out cut off after its folder moved and before its line went: only the line is left to take out
+		var lineLeft = !Directory.Exists(d) && File.Exists(Path.Combine(to, "meta.ini"));
+		if (!empty && !lineLeft) {
 			return false;
 		}
 		MustBeClosed("the mod list");
+		if (empty) {
+			// the folder first: one that cannot move (a file of it held open) leaves the folder and its line as they were
+			Directory.CreateDirectory(Path.GetDirectoryName(to)!);
+			Files.MoveDirectory(d, to);
+		}
 		var (lines, nl) = ReadLines(ModList);
 		var n = lines.RemoveAll(l => l.Length > 1 && l[0] is '+' or '-' or '*' && l[1..].Equals(a_mod, StringComparison.OrdinalIgnoreCase));
 		if (n > 0) {
 			Files.WriteAtomic(ModList, string.Join(nl, lines));
 		}
-		var to = Path.Combine(a_parkIn, "empty outputs", a_mod);
-		Directory.CreateDirectory(Path.GetDirectoryName(to)!);
-		Files.MoveDirectory(d, to);
 		Added.Remove(a_mod);
 		_ours?.Remove(a_mod);
+		SaveOurs();
 		a_log?.Detail($"{a_mod}: nothing was built into it - taken out of the mod list (its empty folder is in the run's backup)");
 		return true;
 	}
