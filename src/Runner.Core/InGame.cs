@@ -48,7 +48,7 @@ public static partial class InGame
 	// the PID of a Skyrim that did not run when this was asked (the one a launch is about to start)
 	public static Func<int> FreshGamePid()
 	{
-		var old = Procs.ByImage(GameImage).Select(p => p.Id).ToHashSet();
+		var old = Procs.Pids(GameImage).ToHashSet();
 		return () => {
 			var ps = Procs.ByImage(GameImage);
 			var id = ps.Select(p => p.Id).FirstOrDefault(i => !old.Contains(i));

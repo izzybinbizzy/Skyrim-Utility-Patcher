@@ -140,7 +140,7 @@ public static class Runner
 		using var log = new RunLog(journal.Folder);
 		log.Mirror(Path.Combine(runs, "current log.txt"));
 		using var cts = new CancellationTokenSource();
-		var commands = new Commands(journal, cts);
+		var commands = new Commands(journal, cts.Cancel);
 		var profile = new Profile(mo2, setup.Profile, () => new Mo2Control(mo2, setup.Profile, RunLog.Null).Running);
 		var control = new Mo2Control(mo2, setup.Profile, log) { LowerPriority = Setup.Bool(setup.Root, "lowerPriority") == true };
 		var ctx = new RunContext {
@@ -406,8 +406,39 @@ public static class Runner
 		}
 	}
 
-	static void PruneBackupsUnguarded(RunContext a_ctx) =>
+	static void PruneBackupsUnguarded(RunContext a_ctx)
+	{
 		PruneBackupsOf(a_ctx.Setup, Path.GetDirectoryName(a_ctx.Journal.Folder)!, a_ctx.BackupFolder, Setup.Int(a_ctx.Setup.Root, "keepBackups") ?? 5, a_ctx.Log);
+		PruneRunRecords(Path.GetDirectoryName(a_ctx.Journal.Folder)!, a_ctx.Journal.SetupFile, a_ctx.Journal.Folder, RunsKept, a_ctx.Log);
+	}
+
+	// the run records a setup keeps (History shows as many): the window looks at every record once a second, and a program used
+	// daily for a year would otherwise keep hundreds of folders and logs it never shows
+	public const int RunsKept = 100;
+
+	// all but the newest a_keep run records of this setup removed - never the running one, never one that did not finish (its
+	// put-back still needs it); returns the folders removed
+	public static List<string> PruneRunRecords(string a_runsDir, string a_setupFile, string? a_current, int a_keep, RunLog a_log)
+	{
+		var removed = new List<string>();
+		var mine = Journal.All(a_runsDir).Where(j => string.Equals(j.SetupFile, a_setupFile, StringComparison.OrdinalIgnoreCase)).ToList();
+		foreach (var j in mine.Skip(a_keep).Where(j => !j.Unfinished && (a_current == null || !Files.SamePath(j.Folder, a_current)))) {
+			try {
+				var d = new DirectoryInfo(j.Folder);
+				foreach (var f in d.EnumerateFiles("*", SearchOption.AllDirectories).Where(f => f.IsReadOnly)) {
+					f.IsReadOnly = false;
+				}
+				d.Delete(true);
+				removed.Add(j.Folder);
+			} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+				a_log.Warn($"an old run record could not be removed ({e.Message}): {j.Folder}");
+			}
+		}
+		if (removed.Count > 0) {
+			a_log.Detail($"{removed.Count} old run record(s) removed (the newest {a_keep} of this setup are kept)");
+		}
+		return removed;
+	}
 
 	// this setup's own run backups (by the run-folder name the runner gives them), newest first, with their size in bytes
 	public static List<(DirectoryInfo Dir, long Bytes)> BackupsOf(Setup a_setup)
@@ -859,11 +890,16 @@ public static class Runner
 
 // The window talks to a running run through files in its folder: "stop" (stop now, safely), "stop after" (after the running
 // step) and "continue" (the player did a guided in-game part).
-public sealed class Commands(Journal a_journal, CancellationTokenSource a_cts) : IDisposable
+// a_cancel cancels the run (the run owns its cancellation source; this only asks it). One look at a time: the next is set only
+// once the last has finished, and Dispose waits for a look still going - so a Stop can never reach a cancellation source the run
+// already let go (a throw there, on a timer thread, would end the whole program)
+public sealed class Commands(Journal a_journal, Action a_cancel) : IDisposable
 {
 	readonly Journal _j = a_journal;
-	readonly CancellationTokenSource _cts = a_cts;
+	readonly Action _cancel = a_cancel;
+	readonly Lock _gate = new();
 	Timer? _timer;
+	bool _disposed;
 	volatile bool _continue;
 
 	public bool Stopped { get; private set; }
@@ -880,13 +916,24 @@ public sealed class Commands(Journal a_journal, CancellationTokenSource a_cts) :
 		Files.WriteAtomic(Path.Combine(Dir(a_runFolder), a_command + ".txt"), DateTime.Now.ToString("O"));
 	}
 
-	public void Start() => _timer = new Timer(_ => Poll(), null, 500, 500);
+	public void Start()
+	{
+		lock (_gate) {
+			_timer ??= new Timer(_ => Poll(), null, 500, Timeout.Infinite);
+		}
+	}
 
 	void Poll()
 	{
 		try {
 			PollOnce();
-		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException or ObjectDisposedException) {
+		} finally {
+			lock (_gate) {
+				if (!_disposed) {
+					_timer?.Change(500, Timeout.Infinite);
+				}
+			}
 		}
 	}
 
@@ -898,7 +945,7 @@ public sealed class Commands(Journal a_journal, CancellationTokenSource a_cts) :
 		}
 		if (File.Exists(Path.Combine(d, "stop.txt")) && !Stopped) {
 			Stopped = true;
-			_cts.Cancel();
+			_cancel();
 			try {
 				OnStop?.Invoke();
 			} catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception or IOException) {
@@ -918,5 +965,24 @@ public sealed class Commands(Journal a_journal, CancellationTokenSource a_cts) :
 
 	public void ClearContinue() => _continue = false;
 
-	public void Dispose() => _timer?.Dispose();
+	public void Dispose()
+	{
+		Timer? t;
+		lock (_gate) {
+			if (_disposed) {
+				return;
+			}
+			_disposed = true;
+			t = _timer;
+			_timer = null;
+		}
+		if (t == null) {
+			return;
+		}
+		// a look still going finishes before the run lets go of what it uses
+		using var done = new ManualResetEvent(false);
+		if (t.Dispose(done)) {
+			done.WaitOne(TimeSpan.FromSeconds(10));
+		}
+	}
 }

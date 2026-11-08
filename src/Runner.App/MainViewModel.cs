@@ -795,6 +795,8 @@ public sealed partial class MainViewModel : Observable
 		if (Engine.Active() is { } j) {
 			Commands.Send(j.Folder, "stop after");
 			Say("It will stop when this step is done, and put your profile back.", "warn");
+		} else {
+			Say("No run is going.", "");
 		}
 	}
 
@@ -803,6 +805,8 @@ public sealed partial class MainViewModel : Observable
 		if (Engine.Active() is { } j) {
 			Commands.Send(j.Folder, "stop");
 			Say("Stopping now: the tool is closed and your profile put back.", "warn");
+		} else {
+			Say("No run is going.", "");
 		}
 	}
 
@@ -811,6 +815,8 @@ public sealed partial class MainViewModel : Observable
 		if (Engine.Active() is { } j) {
 			Commands.Send(j.Folder, "continue");
 			Waiting = "";
+		} else {
+			Say("No run is waiting for you.", "");
 		}
 	}
 

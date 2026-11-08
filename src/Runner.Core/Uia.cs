@@ -194,6 +194,12 @@ public static class Uia
 		var outList = new List<Box>();
 		foreach (var h in Native.TopWindowsOf(a_pids)) {
 			var cls = Native.ClassName(h);
+			// only a window that can be a box, or hold one, becomes a UI Automation element: Windows' dialogs and message boxes, and Qt
+			// windows (a Qt box shows inside its window's tree). .NET's UI Automation client keeps every element it ever made (measured
+			// 2026-11-07: about 1 KB a call, growing without end, when every window of a tool was read every two seconds)
+			if (!(cls is "#32770" or "QMessageBox" || cls.Contains("MessageBox", StringComparison.OrdinalIgnoreCase) || cls.StartsWith("Qt", StringComparison.Ordinal))) {
+				continue;
+			}
 			var e = FromHandle(h);
 			if (e == null) {
 				continue;

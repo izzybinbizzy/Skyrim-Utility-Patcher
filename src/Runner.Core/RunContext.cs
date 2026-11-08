@@ -163,6 +163,9 @@ public static class Waits
 	// the offline tests only: a short idle limit
 	public static TimeSpan? IdleForTests { get; set; }
 
+	// how often a tool's whole window text is read for the idle rule (the tests shorten it with their idle limit)
+	public static TimeSpan ProgressEvery { get; set; } = TimeSpan.FromSeconds(30);
+
 	// a_progress: for a tool driven through its window - what its window says; a change counts as work, and so does CPU its CHILD
 	// processes use (a long patcher shows nothing new for minutes - the fourth review, M2), never the window process's own (a
 	// window drawing itself uses CPU while the tool does nothing - Synthesis sat 4 min on its main screen, 2026-10-27)
@@ -177,6 +180,10 @@ public static class Waits
 		IReadOnlyDictionary<int, TimeSpan> lastChildren = new Dictionary<int, TimeSpan>();
 		var lastBusy = sw.Elapsed;
 		var lastSample = TimeSpan.FromSeconds(-10);
+		// a window's whole text is read at most every ProgressEvery: each read makes the tool walk its own window for UI Automation
+		// (work in the tool's process), and .NET's client keeps a little of every element it made; the idle rule needs minutes,
+		// not seconds
+		var lastProgress = TimeSpan.FromSeconds(-1000);
 		while (true) {
 			a_ctx.Cancel.ThrowIfCancellationRequested();
 			if (a_poll() == Poll.Done) {
@@ -195,7 +202,14 @@ public static class Waits
 				}
 				if (alive) {
 					// a window whose text cannot be read (empty) is judged by the tool's CPU, so a working tool is never called idle
-					var seen = a_progress?.Invoke();
+					string? seen = null;
+					// at least three reads inside the idle limit, so a window that changes is never taken for an idle one
+					if (a_progress != null && sw.Elapsed - lastProgress >= TimeSpan.FromTicks(Math.Min(ProgressEvery.Ticks, idleLimit.Ticks / 3))) {
+						lastProgress = sw.Elapsed;
+						seen = a_progress();
+					} else if (a_progress != null) {
+						seen = lastSeen;
+					}
 					if (!string.IsNullOrEmpty(seen)) {
 						if (seen != lastSeen) {
 							lastSeen = seen;

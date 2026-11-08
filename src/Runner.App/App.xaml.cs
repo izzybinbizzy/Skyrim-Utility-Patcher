@@ -56,6 +56,12 @@ public partial class App : Application
 				LogCrash(ex);
 			}
 		};
+		// a background task that failed with nobody waiting on it (a start, a check, a look at Mod Organizer) is written down too,
+		// instead of vanishing without a trace
+		TaskScheduler.UnobservedTaskException += (_, e) => {
+			LogCrash(e.Exception);
+			e.SetObserved();
+		};
 		var args = a_e.Args;
 		if (Cli.Handles(args)) {
 			Shutdown(Cli.Execute(args));

@@ -106,7 +106,7 @@ public abstract class LauncherStep : IStep
 		var names = StartButtonNames(exeDir != null && TranslationFolder != null ? Path.Combine(exeDir, TranslationFolder) : null, StartNames).ToArray();
 		using (new Toggle(a_ctx, [mod, .. a_s.List("enable_during")], a_s.List("disable_during"), name, a_ctx.Cancel)) {
 			try {
-				var proc = a_ctx.Control.RunExecutable(a_s.Req("executable"), image, a_s.Str("args"), a_ctx.Cancel);
+				using var proc = a_ctx.Control.RunExecutable(a_s.Req("executable"), image, a_s.Str("args"), a_ctx.Cancel);
 				var w = StepKit.WaitWindow(a_ctx, image, t => Regex.IsMatch(t, TitleRx), TimeSpan.FromMinutes(3), name + "'s window");
 				// its button, once its window has finished laying itself out (usable, on screen)
 				System.Windows.Automation.AutomationElement? go = null;
@@ -247,7 +247,7 @@ public sealed class PgPatcherStep : IStep
 			}
 			using (new Toggle(a_ctx, [], [mod, .. a_s.List("disable_during")], "PGPatcher", a_ctx.Cancel)) {
 				try {
-					var proc = a_ctx.Control.RunExecutable(a_s.Req("executable"), image, a_s.Str("args") ?? "--autostart", a_ctx.Cancel);
+					using var proc = a_ctx.Control.RunExecutable(a_s.Req("executable"), image, a_s.Str("args") ?? "--autostart", a_ctx.Cancel);
 					var esp = Path.Combine(a_ctx.Mo2.ModDir(mod), "PGPatcher.esp");
 					a_ctx.Activity(Key, "PGPatcher is patching");
 					Waits.Tool(a_ctx, Key, proc, a_s.Deadline(60), () => {
@@ -320,7 +320,7 @@ public sealed class SynthesisStep : IStep
 				var logs = Path.Combine(Path.GetDirectoryName(exePath)!, "logs");
 				string? runLog = null;
 				UseMo2Game(a_ctx, exePath);
-				var proc = a_ctx.Control.RunExecutable(a_s.Req("executable"), image, null, a_ctx.Cancel);
+				using var proc = a_ctx.Control.RunExecutable(a_s.Req("executable"), image, null, a_ctx.Cancel);
 				System.Windows.Automation.AutomationElement Win() => Window(a_ctx, image, TimeSpan.FromMinutes(10));
 				Press(a_ctx, Win, proc);
 				a_ctx.Activity(Key, "Synthesis is running its patchers");
@@ -531,7 +531,7 @@ public sealed class WryeBashStep : IStep
 		var patch = a_s.Str("patch") ?? "Bashed Patch, 0.esp";
 		var t0 = DateTime.UtcNow;
 		try {
-			a_ctx.Control.RunExecutable(a_s.Req("executable"), image, null, a_ctx.Cancel);
+			a_ctx.Control.RunExecutable(a_s.Req("executable"), image, null, a_ctx.Cancel).Dispose();
 			a_ctx.Guide.Ask(Key, $"In Wrye Bash: right-click \"{patch}\" in the Mods tab, Rebuild Patch, build it with your options, then close Wrye Bash and press Done.", a_ctx.Cancel);
 			var sw = System.Diagnostics.Stopwatch.StartNew();
 			while (Procs.Running(image)) {
@@ -610,7 +610,7 @@ public sealed class PandoraStep : IStep
 			Files.WriteAtomic(settings, conf.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
 			using (new Toggle(a_ctx, a_s.List("enable_during"), a_s.List("disable_during"), "Pandora", a_ctx.Cancel)) {
 				try {
-					var proc = a_ctx.Control.RunExecutable(a_s.Req("executable"), image, a_s.Str("args") ?? "--auto_run --auto_close", a_ctx.Cancel);
+					using var proc = a_ctx.Control.RunExecutable(a_s.Req("executable"), image, a_s.Str("args") ?? "--auto_run --auto_close", a_ctx.Cancel);
 					a_ctx.Activity(Key, "Pandora is building behaviour files");
 					Waits.Tool(a_ctx, Key, proc, a_s.Deadline(20), () => {
 						foreach (var box in Uia.Boxes(StepKit.PidsOf(image)())) {

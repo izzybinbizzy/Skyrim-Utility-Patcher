@@ -43,13 +43,19 @@ public static class BugReport
 		return a_text;
 	}
 
+	// only the last MaxBytes are read off the disk (a log of many gigabytes never comes into memory whole)
 	static string ReadTail(string a_path)
 	{
-		var bytes = Files.ReadShared(a_path);
-		if (bytes.Length <= MaxBytes) {
-			return Files.DecodeText(bytes);
+		using var fs = new FileStream(a_path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+		if (fs.Length <= MaxBytes) {
+			var all = new byte[fs.Length];
+			fs.ReadExactly(all);
+			return Files.DecodeText(all);
 		}
-		var tail = Encoding.UTF8.GetString(bytes, bytes.Length - MaxBytes, MaxBytes);
+		fs.Seek(-MaxBytes, SeekOrigin.End);
+		var bytes = new byte[MaxBytes];
+		fs.ReadExactly(bytes);
+		var tail = Encoding.UTF8.GetString(bytes);
 		return "(only the last part of this file is here)\n" + tail[(tail.IndexOf('\n') + 1)..];
 	}
 

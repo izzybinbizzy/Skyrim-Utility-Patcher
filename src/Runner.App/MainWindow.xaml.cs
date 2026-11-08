@@ -9,6 +9,8 @@ using System.Windows.Threading;
 
 namespace ToolRunner.App;
 
+// a WPF window ends with OnClosed, never Dispose: the notification-area icon it owns is released there (Tray.Dispose)
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1001", Justification = "released in OnClosed, the window's own end")]
 public partial class MainWindow : Window
 {
 	readonly MainViewModel _vm = new();
@@ -22,6 +24,7 @@ public partial class MainWindow : Window
 	public MainWindow()
 	{
 		InitializeComponent();
+		FitTheScreen();
 		DataContext = _vm;
 		_vm.Alert += Notify;
 		_vm.ConfirmRun = a_text => Ask.Show(this, "What this run will do", a_text, "Start the run", "Not now");
@@ -70,6 +73,20 @@ public partial class MainWindow : Window
 			A11y.Say(this, _vm.Interrupted, true);
 			break;
 		}
+	}
+
+	// a small screen or a big Windows scaling (a 1280 x 720 laptop at 150 % leaves about 850 x 480): the window's limits and size
+	// shrink to the screen's usable area, so it always fits and can be moved
+	void FitTheScreen()
+	{
+		var area = SystemParameters.WorkArea;
+		if (area.Width <= 0 || area.Height <= 0) {
+			return;
+		}
+		MinWidth = Math.Min(MinWidth, area.Width);
+		MinHeight = Math.Min(MinHeight, area.Height);
+		Width = Math.Min(Width, area.Width);
+		Height = Math.Min(Height, area.Height);
 	}
 
 	void OnKeys(object a_s, KeyEventArgs a_e)
@@ -180,15 +197,22 @@ public partial class MainWindow : Window
 	}
 
 	// the log grows by appending (re-setting a long text every second re-lays the whole box); kept under 200,000 characters
+	// the box's length, counted as text is added: reading LogBox.Text to measure it copies the whole box (up to 400 KB, a fresh
+	// large-object allocation) every second of a run
+	int _logChars;
+
 	void OnLog(string a_add, bool a_reset)
 	{
 		if (a_reset) {
 			LogBox.Clear();
+			_logChars = 0;
 		}
 		if (a_add.Length > 0) {
 			LogBox.AppendText(a_add);
-			if (LogBox.Text.Length > 200_000) {
+			_logChars += a_add.Length;
+			if (_logChars > 200_000) {
 				LogBox.Text = LogBox.Text[^150_000..];
+				_logChars = 150_000;
 			}
 		}
 		if (Follow.IsChecked == true) {
@@ -313,7 +337,7 @@ public partial class MainWindow : Window
 	}
 
 	// the history drawer's two views: the past runs and their logs, and what Mod Organizer changed
-	FrameworkElement WithSwitch(FrameworkElement a_body, string a_which)
+	DockPanel WithSwitch(FrameworkElement a_body, string a_which)
 	{
 		var bar = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 12) };
 		foreach (var (key, text, tip) in new[] { ("history", "Past runs", "Ctrl+H"), ("changes", "What MO2 changed", "Ctrl+M") }) {
@@ -404,7 +428,7 @@ public partial class MainWindow : Window
 		return dock;
 	}
 
-	FrameworkElement HistoryPanel()
+	Grid HistoryPanel()
 	{
 		var grid = new Grid();
 		grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(2, GridUnitType.Star) });
@@ -565,6 +589,8 @@ public partial class MainWindow : Window
 		base.OnSourceInitialized(a_e);
 		var helper = new WindowInteropHelper(this);
 		_tray = new Tray(helper.Handle);
+		// a process that ends without closing the window (a crash, Windows logging off) takes its icon with it
+		AppDomain.CurrentDomain.ProcessExit += (_, _) => _tray?.Dispose();
 		HwndSource.FromHwnd(helper.Handle)?.AddHook((nint _, int a_msg, nint _, nint _, ref bool _) => {
 			if ((uint)a_msg == Tray.TaskbarCreated) {
 				_tray?.Readd();

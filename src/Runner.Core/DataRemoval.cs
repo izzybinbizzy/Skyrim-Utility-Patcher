@@ -32,6 +32,10 @@ public static partial class DataRemoval
 				remove.AddRange(BackupsOf(s.BackupDir, s.Name));
 			}
 		}
+		// its work folder in ProgramData (FasterNGIO's wrapper), under the new and the old name
+		foreach (var work in WorkRoots.Where(Directory.Exists)) {
+			remove.Add(work);
+		}
 		if (Directory.Exists(a_dataDir)) {
 			if (a_keepSetups && Directory.Exists(setups)) {
 				kept.Add(setups);
@@ -42,6 +46,9 @@ public static partial class DataRemoval
 		}
 		return new Plan(remove.Distinct(StringComparer.OrdinalIgnoreCase).ToList(), kept, refused);
 	}
+
+	// the offline tests point this elsewhere (the real ProgramData folders are never touched by a test)
+	public static IEnumerable<string> WorkRoots { get; set; } = [Brand.WorkRoot, Brand.OldWorkRoot];
 
 	public static List<string> BackupsOf(string a_backupDir, string a_setupName)
 	{

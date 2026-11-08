@@ -76,7 +76,7 @@ public sealed class GrassStep : IStep
 		}
 		// no space and no quote in the wrapper's path: MO2 passes it through cmd /c (the user's temp folder holds the user name,
 		// which often has a space - ProgramData does not)
-		var work = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "MO2ToolRunner", "fasterngio");
+		var work = Path.Combine(Brand.WorkRoot, "fasterngio");
 		if (work.IndexOfAny([' ', '"', '&', '^']) >= 0) {
 			throw new StepFailedException("FasterNGIO's wrapper needs a folder path without spaces - this PC's ProgramData has one: " + work);
 		}

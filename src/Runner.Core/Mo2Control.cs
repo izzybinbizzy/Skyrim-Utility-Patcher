@@ -21,7 +21,9 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 	public static int StartDetached(string a_commandLine, string a_cwd)
 	{
 		using var cls = new ManagementClass(@"root\cimv2", "Win32_Process", null);
-		using var startup = new ManagementClass(@"root\cimv2", "Win32_ProcessStartup", null).CreateInstance();
+		// both WMI objects released at once (each holds a COM reference into the WMI service until it is disposed)
+		using var startupClass = new ManagementClass(@"root\cimv2", "Win32_ProcessStartup", null);
+		using var startup = startupClass.CreateInstance();
 		// SW_SHOWNOACTIVATE: the window shows, but never takes the front from what the player is doing
 		startup["ShowWindow"] = (ushort)4;
 		using var inParams = cls.GetMethodParameters("Create");
@@ -131,8 +133,10 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 		return (active, stale);
 	}
 
-	// a pair compared once per (size, write time) of both files - Close() polls the downloads while it waits
+	// a pair compared once per (size, write time) of both files - Close() polls the downloads while it waits. Held to a few hundred
+	// answers (every new size or time of a download is a new key: a program open for weeks must not keep them all)
 	static readonly System.Collections.Concurrent.ConcurrentDictionary<(string, long, DateTime, DateTime), bool> s_same = new();
+	const int SameKept = 256;
 
 	static bool SameBytes(string a_a, string a_b)
 	{
@@ -140,6 +144,9 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 			FileInfo fa = new(a_a), fb = new(a_b);
 			if (fa.Length != fb.Length) {
 				return false;
+			}
+			if (s_same.Count > SameKept) {
+				s_same.Clear();
 			}
 			return s_same.GetOrAdd((a_a.ToLowerInvariant(), fa.Length, fa.LastWriteTimeUtc, fb.LastWriteTimeUtc), _ => {
 				using var x = File.OpenRead(a_a);
@@ -524,7 +531,7 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 	public Process RunExecutable(string a_title, string a_image, string? a_args, CancellationToken a_ct, TimeSpan? a_startTimeout = null)
 	{
 		Start(a_ct);
-		var old = Procs.ByImage(a_image).Select(p => p.Id).ToHashSet();
+		var old = Procs.Pids(a_image).ToHashSet();
 		if (old.Count > 0) {
 			throw new StepFailedException($"{a_image} is already running (process {string.Join(", ", old)}) - close it first");
 		}
@@ -599,9 +606,14 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 			if (!File.Exists(a_file)) {
 				return [];
 			}
-			var bytes = Files.ReadShared(a_file);
-			var from = a_from <= bytes.Length ? (int)a_from : 0;
-			var text = System.Text.Encoding.UTF8.GetString(bytes, from, bytes.Length - from);
+			// only the part written since the request is read (a long session's log can be large), and at most its last 1 MB
+			using var fs = new FileStream(a_file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+			var from = a_from <= fs.Length ? a_from : 0;
+			from = Math.Max(from, fs.Length - 1024 * 1024);
+			fs.Seek(from, SeekOrigin.Begin);
+			var bytes = new byte[fs.Length - from];
+			fs.ReadExactly(bytes);
+			var text = System.Text.Encoding.UTF8.GetString(bytes);
 			var stem = Path.GetFileNameWithoutExtension(a_image);
 			return text.Split('\n').Select(l => l.TrimEnd('\r').Trim()).Where(l => l != "" &&
 				(l.Contains(a_title, StringComparison.OrdinalIgnoreCase) || l.Contains(stem, StringComparison.OrdinalIgnoreCase) ||
@@ -729,7 +741,7 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 	public int? RunInside(string a_program, string a_args, string a_image, CancellationToken a_ct)
 	{
 		Start(a_ct);
-		var old = Procs.ByImage(a_image).Select(p => p.Id).ToHashSet();
+		var old = Procs.Pids(a_image).ToHashSet();
 		var cmd = $"{Quote(Mo2.Exe)}{Instance} -p {Quote(ProfileName)} run {Quote(a_program)} -a {Quote(a_args)}";
 		var pid = LaunchTool(cmd, () => FreshPid(a_image, old), TimeSpan.FromMinutes(1), a_ct);
 		if (pid is { } p) {

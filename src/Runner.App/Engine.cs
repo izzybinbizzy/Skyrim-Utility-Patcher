@@ -121,7 +121,10 @@ public static partial class ConsoleAttach
 	public static void ToParent()
 	{
 		if (AttachConsole(-1)) {
+			// the console owns this writer for the rest of the program's life (a command ends the process right after)
+#pragma warning disable CA2000
 			var o = new StreamWriter(Console.OpenStandardOutput()) { AutoFlush = true };
+#pragma warning restore CA2000
 			Console.SetOut(o);
 			Console.SetError(o);
 		}

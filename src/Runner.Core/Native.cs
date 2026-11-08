@@ -229,13 +229,26 @@ public static partial class Native
 // process helpers: find by image name, CPU of a whole tree, kill a tree by PID (never by name or window title)
 public static class Procs
 {
+	// the caller owns (and disposes) every Process returned; for ids only, Pids releases them itself
 	public static List<Process> ByImage(string a_image)
 	{
 		var name = Path.GetFileNameWithoutExtension(a_image);
 		return Process.GetProcessesByName(name).ToList();
 	}
 
-	public static bool Running(string a_image) => ByImage(a_image).Count > 0;
+	// the ids of the processes of an image, every Process object released at once (the window asks this every second and a step
+	// every two: undisposed, each look left objects for the finalizer to clear)
+	public static List<int> Pids(string a_image)
+	{
+		var ps = ByImage(a_image);
+		try {
+			return ps.Select(p => p.Id).ToList();
+		} finally {
+			ps.ForEach(p => p.Dispose());
+		}
+	}
+
+	public static bool Running(string a_image) => Pids(a_image).Count > 0;
 
 	public static string? ExePath(Process a_p)
 	{

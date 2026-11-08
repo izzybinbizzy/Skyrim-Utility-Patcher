@@ -33,6 +33,7 @@ public static class Program
 		SystemChecks.Mo2Paths = () => [];
 		SystemChecks.RestartPending = () => false;
 		SystemChecks.Battery = () => null;
+		SystemChecks.MemoryProbe = () => (32, 16);
 		SystemChecks.ControlledFolderAccess = () => false;
 		SystemChecks.CloudFolders = () => [];
 		SystemChecks.ProgramFolders = () => [];
@@ -3242,6 +3243,22 @@ public static class Program
 			Directory.CreateDirectory(d);
 		}
 		Check(Files.SamePath(setupsDir, Path.Combine(f.Data, "Setups")), "the fake setup lives in the data folder's Setups");
+		// its ProgramData work folder (FasterNGIO's wrapper) - a stand-in, the real one is never touched by a test
+		var keepRoots = DataRemoval.WorkRoots;
+		var work = Path.Combine(f.Root, "ProgramData SkyrimUtilityPatcher");
+		Directory.CreateDirectory(work);
+		DataRemoval.WorkRoots = [work, Path.Combine(f.Root, "not there")];
+		try {
+			CleanRemovalPlans(f, setup, setupsDir, own, other, stray, work);
+		} finally {
+			DataRemoval.WorkRoots = keepRoots;
+		}
+	}
+
+	static void CleanRemovalPlans(FakeMo2 f, Setup setup, string setupsDir, string own, string other, string stray, string work)
+	{
+		Check(DataRemoval.Make(f.Data, true).Remove.Contains(work, StringComparer.OrdinalIgnoreCase), "its ProgramData work folder goes too");
+		Check(!DataRemoval.Make(f.Data, true).Remove.Any(p => p.EndsWith("not there", StringComparison.Ordinal)), "a work folder that does not exist is not listed");
 		var all = DataRemoval.Make(f.Data, false);
 		Equal<string?>(null, all.Refused, "nothing refused");
 		Check(all.Remove.Contains(own, StringComparer.OrdinalIgnoreCase), "this setup's run backup goes");
@@ -3397,5 +3414,170 @@ public static class Program
 		var replaced = f.WriteSetup(("dyndolod", new JsonObject { ["output_mod"] = "DynDOLOD Output", ["replaces"] = new JsonArray("Old DynDOLOD") }));
 		Equal(0, Duplicates.Check(replaced, mo2, states, "dyndolod").Count(), "a replaced mod is not named");
 		Equal<string?>(null, Duplicates.Holds(Path.Combine(f.Mods, "Old DynDOLOD"), "pandora"), "a step with no own file is never guessed");
+	}
+
+	// the window knows a run is alive by its engine's process name: since the rename of 2026-11-03 it knew only the old names, so
+	// every real run read as dead - Stop now, Stop after, a guided step's Done and the close guard did nothing (his finds of
+	// 2026-11-04). The tests' own process matched, which hid it: here the real names are asked, and the program's name is held
+	// to its exe's name so a future rename cannot split them again
+	static void T_TheEngineIsKnownByItsRealName()
+	{
+		foreach (var n in new[] { "Skyrim Utility Patcher", "skyrim utility patcher", "MO2 Tool Runner", "Patcher Unification Project", "Runner.Tests" }) {
+			Check(Journal.IsRunnerName(n), $"\"{n}\" is the program");
+		}
+		foreach (var n in new[] { "ModOrganizer", "Skyrim Utility Patcher Helper", "SkyrimSE", "" }) {
+			Check(!Journal.IsRunnerName(n), $"\"{n}\" is not the program");
+		}
+		Equal(Brand.Name, typeof(ToolRunner.App.App).Assembly.GetName().Name, "the program's name is its exe's name");
+		Check(Journal.IsRunner(Environment.ProcessId), "this process (the tests) counts as the program");
+	}
+
+	// a setup keeps its newest 100 run records; an unfinished one and the running one are never removed, another setup's never
+	static void T_OldRunRecordsAreTrimmed()
+	{
+		using var f = new FakeMo2();
+		var runs = Runner.RunsDir(f.Data);
+		Journal Make(int a_day, int a_minute, string a_setup, RunState a_state)
+		{
+			var id = $"2026-{1 + a_day / 28:00}-{1 + a_day % 28:00} 10-{a_minute:00}-00 x";
+			var j = new Journal { Id = id, Folder = Path.Combine(runs, id), SetupFile = a_setup, SetupName = "x", Started = DateTime.Now, State = a_state };
+			Directory.CreateDirectory(j.Folder);
+			j.Save();
+			return j;
+		}
+		var oldestUnfinished = Make(0, 0, f.SetupFile, RunState.Running);
+		for (var i = 1; i <= 104; ++i) {
+			Make(i, 0, f.SetupFile, RunState.Finished);
+		}
+		var other = Make(0, 30, @"C:\Other.json", RunState.Finished);
+		var removed = Runner.PruneRunRecords(runs, f.SetupFile, null, 100, RunLog.Null);
+		Equal(4, removed.Count, "105 records of this setup, 100 kept, the unfinished one kept too");
+		Check(Directory.Exists(oldestUnfinished.Folder), "the run that did not finish stays (its put-back needs it)");
+		Check(Directory.Exists(other.Folder), "another setup's record stays");
+		Equal(101, Journal.All(runs).Count(j => j.SetupFile == f.SetupFile), "100 + the unfinished one");
+	}
+
+	// a PC low on memory is told before a run, never stopped (the LOD tools may still manage)
+	static void T_LowMemoryIsToldNotBlocked()
+	{
+		var small = SystemChecks.Memory((6, 3)).ToList();
+		Check(small.Count == 1 && !small[0].Blocking && small[0].Text.Contains("6 GB", StringComparison.Ordinal), "a 6 GB PC is told: " + string.Join(" | ", small.Select(i => i.Text)));
+		var busy = SystemChecks.Memory((32, 1.5)).ToList();
+		Check(busy.Count == 1 && !busy[0].Blocking && busy[0].Text.Contains("free", StringComparison.Ordinal), "little free memory is told");
+		Equal(0, SystemChecks.Memory((32, 16)).Count(), "a roomy PC hears nothing");
+		Equal(0, SystemChecks.Memory(null).Count(), "no reading, no note");
+		Check(SystemChecks.MemoryProbe() is { } m && m.Total > 0, "the stand-in reads (the real probe is Windows' own)");
+	}
+
+	[System.Runtime.InteropServices.DllImport("user32.dll")]
+	static extern uint GetGuiResources(nint a_process, uint a_flags);
+
+	// what this process holds: the managed bytes that survive a full, compacting collection (GC.GetTotalMemory read negative on .NET
+	// 10 here - the collector's own record of what it kept is used instead), kernel handles, GDI and USER objects
+	static (long Managed, int Handles, uint Gdi, uint User) Held()
+	{
+		GC.Collect(2, GCCollectionMode.Forced, true, true);
+		GC.WaitForPendingFinalizers();
+		GC.Collect(2, GCCollectionMode.Forced, true, true);
+		var kept = GC.GetGCMemoryInfo(GCKind.FullBlocking).PromotedBytes;
+		using var me = System.Diagnostics.Process.GetCurrentProcess();
+		me.Refresh();
+		return (kept, me.HandleCount, GetGuiResources(me.Handle, 0), GetGuiResources(me.Handle, 1));
+	}
+
+	// the memory audit of 2026-11-07: every hot path a long run and the open window loop over (the process looks, the window and
+	// box reads through UI Automation, the run records, a process tree's CPU, the run's command watcher) run thousands of times;
+	// what the process holds afterwards must come back to where it started - a leak of a handle, a GDI / USER object or managed
+	// memory shows here as growth that a collection does not take back. Set SUP_SOAK=<rounds> for a longer soak.
+	static void T_HotPathsLeakNothing()
+	{
+		var rounds = int.TryParse(Environment.GetEnvironmentVariable("SUP_SOAK"), out var r) && r > 0 ? r : 600;
+		using var f = new FakeMo2();
+		var runs = Runner.RunsDir(f.Data);
+		for (var i = 0; i < 40; ++i) {
+			var id = $"2026-11-{1 + i % 28:00} 1{i % 10}-00-00 soak";
+			var j = new Journal { Id = id, Folder = Path.Combine(runs, id), SetupFile = f.SetupFile, SetupName = "soak", Started = DateTime.Now, State = RunState.Finished,
+				Steps = [new StepRecord { Key = "dyndolod", State = StepState.Done }] };
+			Directory.CreateDirectory(j.Folder);
+			j.Save();
+		}
+		var cache = new JournalCache(runs);
+		var explorer = Procs.Pids("explorer.exe");
+		var me = Environment.ProcessId;
+		// each hot path on its own, so a growth names its path
+		var parts = new (string Name, int Every, Action Run)[] {
+			("process looks", 1, () => {
+				_ = Procs.Running("ModOrganizer.exe");
+				_ = Mo2Control.GameImages.Any(Procs.Running);
+				_ = Procs.Pids("explorer.exe");
+				_ = StepKit.PidsOf("svchost.exe")();
+			}),
+			("run records", 1, () => _ = cache.Read()),
+			("process tree CPU", 1, () => {
+				_ = Procs.TreeCpu(me);
+				_ = Procs.StartTime(me);
+				_ = Journal.IsRunner(me);
+			}),
+			("window list", 1, () => _ = Native.TopWindowsOf(explorer)),
+			("UI Automation boxes", 1, () => _ = Uia.Boxes(explorer)),
+		};
+		// every path warmed up first: UI Automation's first use starts its own threads and connections (about 100 handles, once)
+		foreach (var (_, every, run) in parts) {
+			for (var i = 0; i < 100; i += every) {
+				run();
+			}
+		}
+		var grew = new List<string>();
+		var before = Held();
+		foreach (var (name, every, run) in parts) {
+			var p0 = Held();
+			var marks = new List<string>();
+			for (var i = 1; i <= rounds; i += every) {
+				run();
+				if (i % (rounds / 3) == 0) {
+					var m = Held();
+					marks.Add($"{m.Managed / 1024} KB / {m.Handles} handles at {i}");
+				}
+			}
+			var p1 = Held();
+			Console.WriteLine($"      {name}: {rounds / every} calls, managed {p0.Managed / 1024} -> {p1.Managed / 1024} KB, handles {p0.Handles} -> {p1.Handles}  ({string.Join(", ", marks)})");
+			// a growth is a leak when it goes on to the end: a cache fills and stops, so the last third must not grow like the first
+			if (p1.Managed - p0.Managed > 1024 * 1024 || p1.Handles - p0.Handles > 20) {
+				grew.Add($"{name} grew {(p1.Managed - p0.Managed) / 1024} KB and {p1.Handles - p0.Handles} handles");
+			}
+		}
+		// the run's command watcher made and let go of, as every run does
+		for (var i = 0; i < 50; ++i) {
+			using var c = new Commands(new Journal { Folder = f.Data }, () => { });
+			c.Start();
+		}
+		var after = Held();
+		// for the record (not judged - it is .NET's own client; measured after the judged part, since its first use starts its own
+		// threads): what UI Automation elements cost when made and dropped - the reason Uia.Boxes makes one only for a window that can
+		// be a box, and the reason a whole window's text is read seldom
+		var windows = Native.TopWindowsOf(explorer);
+		if (windows.Count > 0) {
+			_ = Uia.FromHandle(windows[0]);
+			var u0 = Held();
+			for (var i = 0; i < 300; ++i) {
+				_ = Uia.FromHandle(windows[i % windows.Count]);
+			}
+			var u1 = Held();
+			var tray = windows.Select(Uia.FromHandle).OfType<System.Windows.Automation.AutomationElement>().OrderByDescending(e => Uia.All(e).Count).First();
+			var n = Uia.All(tray).Count;
+			var t0 = Held();
+			for (var i = 0; i < 30; ++i) {
+				_ = Uia.TextOf(tray, int.MaxValue);
+			}
+			var t1 = Held();
+			Console.WriteLine($"      (.NET's UI Automation client: 300 elements made and dropped kept {(u1.Managed - u0.Managed) / 1024} KB; a window's whole text " +
+				$"({n} elements) read 30 times kept {(t1.Managed - t0.Managed) / 1024} KB)");
+		}
+		Console.WriteLine($"      soak of {rounds} rounds: managed {before.Managed} -> {after.Managed} bytes, handles {before.Handles} -> {after.Handles}, " +
+			$"GDI {before.Gdi} -> {after.Gdi}, USER {before.User} -> {after.User}");
+		Check(grew.Count == 0, "no hot path keeps memory or handles: " + string.Join("; ", grew));
+		Check(after.Handles - before.Handles < 40, $"kernel handles come back (grew {after.Handles - before.Handles})");
+		Check(after.Gdi <= before.Gdi + 5, $"GDI objects come back (grew {(int)after.Gdi - (int)before.Gdi})");
+		Check(after.User <= before.User + 5, $"USER objects come back (grew {(int)after.User - (int)before.User})");
 	}
 }

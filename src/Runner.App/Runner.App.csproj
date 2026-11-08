@@ -7,9 +7,11 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <!-- WPF0001: the Fluent theme's ThemeMode is marked experimental -->
-    <NoWarn>$(NoWarn);WPF0001</NoWarn>
+    <!-- WPF0001: the Fluent theme's ThemeMode is marked experimental. The others are naming / style rules the engine project
+         leaves out too (its a_ parameter names, a WPF override's parameter names), never a resource or correctness rule -->
+    <NoWarn>$(NoWarn);WPF0001;CA1707;CA1401;CA1720;CA1861;CA1869;CA1822;CA1725</NoWarn>
     <AssemblyName>Skyrim Utility Patcher</AssemblyName>
     <RootNamespace>ToolRunner.App</RootNamespace>
     <ApplicationIcon>Icon.ico</ApplicationIcon>
