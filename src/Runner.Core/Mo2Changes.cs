@@ -271,10 +271,23 @@ public static class Mo2Changes
 		}
 		try {
 			using var gate = Gate.Take(dir);
+			// a kept file that does not read is no history at all: not known
+			var file = Path.Combine(dir, "changes.json");
+			if (File.Exists(file) && !Parses(file)) {
+				return ([], null, null);
+			}
 			var rows = Read(dir);
 			var next = ReadLook(Path.Combine(dir, "next look.json"));
 			var last = next != null && rows.Any(r => r.When == next.Taken) ? next : ReadLook(Path.Combine(dir, "last look.json"));
-			return (rows, PendingAgainst(last, a_mo2, a_profile), last?.Since);
+			// one that was set aside (unreadable) started the kept history over: it is whole only since then
+			var since = last?.Since;
+			foreach (var aside in Directory.GetFiles(dir, "changes unreadable *.json")) {
+				if (DateTime.TryParseExact(Path.GetFileNameWithoutExtension(aside)["changes unreadable ".Length..], "yyyy-MM-dd HH-mm-ss", InvariantCulture,
+					    System.Globalization.DateTimeStyles.AssumeLocal, out var at) && (since == null || at > since)) {
+					since = at;
+				}
+			}
+			return (rows, PendingAgainst(last, a_mo2, a_profile), since);
 		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
 			return ([], null, null);
 		}
@@ -304,6 +317,16 @@ public static class Mo2Changes
 			return ParseRows(Files.ReadSharedText(file));
 		} catch (Exception e) when (e is JsonException or InvalidOperationException or FormatException) {
 			return [];
+		}
+	}
+
+	static bool Parses(string a_file)
+	{
+		try {
+			ParseRows(Files.ReadSharedText(a_file));
+			return true;
+		} catch (Exception e) when (e is JsonException or InvalidOperationException or FormatException) {
+			return false;
 		}
 	}
 

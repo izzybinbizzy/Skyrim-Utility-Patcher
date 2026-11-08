@@ -61,7 +61,9 @@ public static class DataRemoval
 				remove.Add(a_dataDir);
 			}
 		}
-		return new Plan(remove.Distinct(StringComparer.OrdinalIgnoreCase).ToList(), kept, refused, a_dataDir);
+		// one spelling per folder (a setup's own listing and a run record may write the same one differently)
+		return new Plan(remove.Select(p => Path.TrimEndingDirectorySeparator(Path.GetFullPath(p))).Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
+			kept, refused, a_dataDir);
 	}
 
 	// the offline tests point this elsewhere (the real ProgramData folders are never touched by a test)
@@ -78,8 +80,10 @@ public static class DataRemoval
 		if (string.IsNullOrWhiteSpace(a_j.BackupDir) || string.IsNullOrWhiteSpace(a_j.SetupName)) {
 			return null;
 		}
+		// named like a run backup AND holding the copy of the run's profile every run backup starts with
 		var dir = Path.TrimEndingDirectorySeparator(Path.GetFullPath(a_j.BackupDir));
-		return RunBackupName(a_j.SetupName).IsMatch(Path.GetFileName(dir)) && Directory.Exists(dir) ? dir : null;
+		return RunBackupName(a_j.SetupName).IsMatch(Path.GetFileName(dir)) && !string.IsNullOrWhiteSpace(a_j.Profile) &&
+		       Directory.Exists(Path.Combine(dir, "profile " + a_j.Profile)) ? dir : null;
 	}
 
 	static Regex RunBackupName(string a_setupName) => new(@"^\d{4}-\d\d-\d\d \d\d-\d\d-\d\d " + Regex.Escape(a_setupName) + "$");

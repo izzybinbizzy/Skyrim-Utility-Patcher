@@ -3179,6 +3179,19 @@ public static class Program
 		j.Save();
 		var elsewhere = LastRuns.Build(setup, mo2, Journal.All(Runner.RunsDir(f.Data)), f.Data).Single(s => s.Key == "texgen");
 		Check(elsewhere.BuiltElsewhere == "Old Output" && elsewhere.OutputNow == "Output A" && elsewhere.OutOfDate, "the output its run recorded against the setup's now");
+		j.Steps[0].Output = null;
+		j.Save();
+		// a kept history that does not read, or one set aside and started over since the step finished: not known
+		var changesDir = Mo2Changes.Dir(f.Data, mo2);
+		var changes = Path.Combine(changesDir, "changes.json");
+		var good = File.ReadAllText(changes);
+		File.WriteAllText(changes, "{ not json");
+		Equal<IReadOnlyList<(string, string)>?>(null, LastRuns.Build(setup, mo2, Journal.All(Runner.RunsDir(f.Data)), f.Data).Single(s => s.Key == "texgen").ChangedSince,
+			"an unreadable history: not known");
+		File.WriteAllText(changes, good);
+		File.WriteAllText(Path.Combine(changesDir, $"changes unreadable {DateTime.Now.AddMinutes(1):yyyy-MM-dd HH-mm-ss}.json"), "x");
+		Equal<IReadOnlyList<(string, string)>?>(null, LastRuns.Build(setup, mo2, Journal.All(Runner.RunsDir(f.Data)), f.Data).Single(s => s.Key == "texgen").ChangedSince,
+			"a history started over after the step finished: not known");
 		Equal(before.Replace("+Base Mod", "-Base Mod", StringComparison.Ordinal).Replace("+Output A", "-Output A", StringComparison.Ordinal), File.ReadAllText(list),
 			"the profile is only read");
 		var logs = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
@@ -3403,16 +3416,22 @@ public static class Program
 		// a setup deleted since: its run record still names its backup, which goes too - a record pointing at a folder not named
 		// like a run backup removes nothing (CodeRabbit on #24)
 		var goneBackup = Path.Combine(setup.BackupDir, "2026-10-30 19-00-00 Gone Setup");
-		Directory.CreateDirectory(goneBackup);
-		foreach (var (id, name, backup) in new[] { ("2026-10-30 19-00-00 Gone Setup", "Gone Setup", goneBackup), ("2026-10-30 19-30-00 Odd", "Odd", stray) }) {
+		Directory.CreateDirectory(Path.Combine(goneBackup, "profile Test"));
+		// named like a run backup but holding no copy of a profile: not one, never taken
+		var lookalike = Path.Combine(f.Root, "2026-10-30 20-00-00 Lookalike");
+		Directory.CreateDirectory(lookalike);
+		foreach (var (id, name, backup) in new[] { ("2026-10-30 19-00-00 Gone Setup", "Gone Setup", goneBackup), ("2026-10-30 19-30-00 Odd", "Odd", stray),
+			         ("2026-10-30 20-00-00 Lookalike", "Lookalike", lookalike) }) {
 			var done = new Journal { Id = id, Folder = Path.Combine(Runner.RunsDir(f.Data), id), SetupFile = Path.Combine(setupsDir, name + ".json"), SetupName = name,
-				BackupDir = backup, Started = DateTime.Now, State = RunState.Finished, Pid = 0 };
+				Profile = "Test", BackupDir = backup, Started = DateTime.Now, State = RunState.Finished, Pid = 0 };
 			Directory.CreateDirectory(done.Folder);
 			done.Save();
 		}
 		var all = DataRemoval.Make(f.Data, false);
 		Equal<string?>(null, all.Refused, "nothing refused");
 		Check(all.Remove.Contains(goneBackup, StringComparer.OrdinalIgnoreCase), "a deleted setup's run backup goes, found through its run record");
+		Check(!all.Remove.Contains(lookalike, StringComparer.OrdinalIgnoreCase), "a folder a record names that holds no profile copy stays");
+		Equal(all.Remove.Count, all.Remove.Distinct(StringComparer.OrdinalIgnoreCase).Count(), "each folder listed once");
 		Check(all.Remove.Contains(own, StringComparer.OrdinalIgnoreCase), "this setup's run backup goes");
 		Check(!all.Remove.Contains(other, StringComparer.OrdinalIgnoreCase) && !all.Remove.Contains(stray, StringComparer.OrdinalIgnoreCase), "another setup's backup and a stray folder stay");
 		Check(all.Remove.Any(p => Files.SamePath(p, f.Data)), "the data folder goes whole");
