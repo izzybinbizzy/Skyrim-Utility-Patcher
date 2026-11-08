@@ -795,6 +795,16 @@ public static class Program
 		Check(Blocked(J("other setup", 0, "other.json")), "so is another setup's run on the same profile");
 		Check(Blocked(J("other profile", 0, "other.json", "Q")), "or on another profile with one of the same outputs");
 		Check(!Blocked(J("elsewhere", 0, "other.json", "Q", ["Output Z"])), "another setup's run elsewhere is not");
+		var sameFolder = J("same folder", 0, "other.json", "Q", ["Output Z"]);
+		sameFolder.Parked.Add(new ParkRecord { Mod = "tool", From = @"D:\Tools\out", To = "x", Replaced = true, IsFolder = true, Moved = true });
+		older.Parked.Add(new ParkRecord { Mod = "tool", From = "D:/Tools/out/", To = "y", Replaced = true, IsFolder = true, Moved = true });
+		Check(Blocked(sameFolder), "one that moved the same tool folder is");
+		older.Parked.Clear();
+		var typed = J("typed otherwise", 0, "other.json");
+		typed.Mo2Exe = "D:/MO2/ModOrganizer.exe";
+		older.Mo2Exe = @"D:\MO2\ModOrganizer.exe";
+		older.Built = ["Output Y"];
+		Check(Blocked(typed), "a Mod Organizer typed another way is the same one");
 		// a pack that is switched off keeps the folder
 		var dir = Path.Combine(f.Root, "pack test");
 		Directory.CreateDirectory(Path.Combine(dir, RunUndo.OutputsFolder, "Mod"));
@@ -836,16 +846,41 @@ public static class Program
 			Equal(RunState.Failed, Runner.Undo(Journal.Load(j.Folder)).State, "the first press stops at the held file");
 		}
 		Equal("old B", File.ReadAllText(Path.Combine(f.Mods, "Output B", "old.txt")), "B is back after the first press");
-		var second = Runner.Undo(Journal.Load(j.Folder));
+		Check(Journal.Load(j.Folder).Unfinished, "a half-undone run counts as not finished");
+		Check(Runner.Run(new RunRequest(f.SetupFile, f.Data)).State != RunState.Finished && Journal.All(Runner.RunsDir(f.Data)).Count() == 1, "so nothing new starts on it");
+		// the window's put-back ends it
+		var second = Runner.Restore(Journal.Load(j.Folder));
 		Equal(RunState.Restored, second.State, "the second press: " + second.Verdict);
+		Check(second.Verdict.StartsWith("undone", StringComparison.Ordinal) && !Journal.Load(j.Folder).Unfinished, "it is undone, and over");
 		Equal("old B", File.ReadAllText(Path.Combine(f.Mods, "Output B", "old.txt")), "B's old output is not taken for the run's");
 		Check(!File.Exists(Path.Combine(f.Mods, "Output B", "new.txt")) && File.Exists(Path.Combine(undone, "Output B", "new.txt")), "B's new output stays set aside");
 		Equal("old A", File.ReadAllText(Path.Combine(f.Mods, "Output A", "old.txt")), "A is back after the second");
 		Check(!File.Exists(Path.Combine(f.Mods, "Output A", "new.txt")) && Directory.GetFiles(undone, "new.txt", SearchOption.AllDirectories).Length == 2, "and its new output set aside too");
 	}
 
-	// two steps writing one output each keep what they wrote; a tool folder's label never passes for a mod of that name; a tool folder whose
-	// move failed is not on record
+	// an undo cut off once the old mod list is back: the list no longer shows what the player changed, the run's record does
+	static void T_AnUndoCutOffKeepsThePlayersChange()
+	{
+		using var f = new FakeMo2();
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => WriteOutput(ctx, "landscapefixer", "Output A", "OutA.esp")));
+		f.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A" }));
+		Equal(RunState.Finished, Runner.Run(new RunRequest(f.SetupFile, f.Data)).State, "the run finished");
+		var j = Journal.All(Runner.RunsDir(f.Data)).First();
+		var list = Path.Combine(f.ProfileDir, "modlist.txt");
+		File.WriteAllText(list, File.ReadAllText(list).Replace("+Base Mod", "-Base Mod", StringComparison.Ordinal));
+		var plugins = Path.Combine(f.ProfileDir, "plugins.txt");
+		File.WriteAllText(plugins, File.ReadAllText(plugins).Replace("*BaseMod.esp", "BaseMod.esp", StringComparison.Ordinal));
+		// the mod list is written back before the plugin list, which is held open here
+		using (new FileStream(plugins, FileMode.Open, FileAccess.Read, FileShare.Read)) {
+			Equal(RunState.Failed, Runner.Undo(Journal.Load(j.Folder)).State, "the first press stops at the plugin list");
+		}
+		var second = Runner.Undo(Journal.Load(j.Folder));
+		Equal(RunState.Restored, second.State, "the second press: " + second.Verdict);
+		Check(!ProfileOf(f).IsOn("Base Mod"), "what the player changed is kept");
+	}
+
+	// two steps writing one output each keep what they wrote; a tool folder's label never passes for a mod of that name; what a move that
+	// failed left in a tool folder is never taken for the run's
 	static void T_AnUndoKeepsEveryOutputAside()
 	{
 		using var f = new FakeMo2();
@@ -877,7 +912,7 @@ public static class Program
 					StepKit.ParkDir(ctx, heldDir, "held");
 					Check(false, "a held folder does not move");
 				} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
-					Check(!ctx.Journal.Parked.Any(p => p.Mod == "held"), "a move that failed is not on record");
+					Check(ctx.Journal.Parked.Single(p => p.Mod == "held") is { Moved: false }, "a move that failed is on record as not moved");
 				}
 			}
 			ctx.Journal.Save();
@@ -898,6 +933,7 @@ public static class Program
 		Check(!ProfileOf(f).IsOn("Base Mod"), "the player's change to a mod named like a tool folder's label is kept");
 		Check(File.Exists(Path.Combine(tool, "tool old.txt")) && !File.Exists(Path.Combine(tool, "tool new.txt")), "the tool's folder is as it was");
 		Equal(1, Directory.GetFiles(undone, "tool new.txt", SearchOption.AllDirectories).Length, "what the run left in it is set aside");
+		Check(File.Exists(Path.Combine(heldDir, "tool old.txt")) && Directory.GetFiles(undone, "tool old.txt", SearchOption.AllDirectories).Length == 0, "what the failed move left stays where it is");
 	}
 
 	// ------------------------------------------------------------------ what MO2 changed (his ask 2026-10-27)
@@ -4210,6 +4246,11 @@ public static class Program
 			var turns = System.Diagnostics.Stopwatch.StartNew();
 			InGame.WaitUntilFree(() => ++turn % 2 == 0 ? S(a_menu: true) : S(a_mounted: true), Dismount, RunLog.Null, CancellationToken.None);
 			Check(turns.Elapsed >= InGame.TeleportWait * 2, "only the wait's own end stops holds that take turns");
+			// a form that begins just before that end still gets its own time
+			InGame.TeleportWait = InGame.TeleportShortWait = TimeSpan.FromMilliseconds(500);
+			var flip = 0;
+			var late = System.Diagnostics.Stopwatch.StartNew();
+			Equal<string?>(null, InGame.WaitUntilFree(() => late.ElapsedMilliseconds < 900 ? (++flip % 2 == 0 ? S(a_menu: true) : S(a_controlsOff: true)) : late.ElapsedMilliseconds < 1200 ? S(a_beast: true) : S(), Dismount, RunLog.Null, CancellationToken.None), "it ends in time: go on");
 			// each hold has its own limit: a menu after a long form still gets its time
 			InGame.TeleportWait = TimeSpan.FromSeconds(5);
 			InGame.TeleportShortWait = TimeSpan.FromMilliseconds(30);
@@ -4273,9 +4314,10 @@ public static class Program
 		Check(late.Single().Text.Contains("Late Mod.esp", StringComparison.Ordinal) && !late[0].Blocking, "a plugin after DynDOLOD.esp is named, and only warned about");
 		Check(C("PG_1.esp", "Late Mod.esp").Single().Text.Contains("PGPatcher", StringComparison.Ordinal), "a plugin after PG_1.esp");
 		Equal(0, C("PG_1.esp", "PG_2.esp", "DynDOLOD.esp", "Occlusion.esp").Count, "PG plugins and the DynDOLOD outputs after them are fine");
-		Check(C("PG_1.esp", "Bashed Patch, 0.esp").Any(i => i.Text.StartsWith("Bashed Patch", StringComparison.Ordinal)), "the Bashed Patch after one that must load last");
+		Check(C("PG_1.esp", "PG_2.esp", "Bashed Patch, 1.esp").Single().Text.StartsWith("Bashed Patch, 1.esp", StringComparison.Ordinal), "the Bashed Patch, any number of it, after those that must load last: named once");
 		Equal(0, C("Bashed Patch, 0.esp", "Some.esp").Count, "a plugin after the Bashed Patch may say it must load last: not warned");
 		Check(C("DynDOLOD.esm", "Late.esm").Single().Text.Contains("Late.esm", StringComparison.Ordinal), "a master after DynDOLOD.esm");
+		Check(C("DynDOLOD.esm", "Late.esl").Single().Text.Contains("Late.esl", StringComparison.Ordinal), "a light master after it too");
 		Equal(0, C("Early.esm", "DynDOLOD.esm", "Some.esp").Count, "plugins after DynDOLOD.esm are fine");
 	}
 

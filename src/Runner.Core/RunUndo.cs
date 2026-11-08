@@ -87,16 +87,19 @@ public static class RunUndo
 	// did this run leave anything an undo would take back? (one that built nothing and put everything back did not)
 	public static bool LeftSomething(Journal a_j) => a_j.Built.Count > 0 || a_j.Retire.Count > 0 || a_j.Parked.Any(p => p.Replaced && !p.PutBack);
 
-	// a later run still standing that changed what undoing a_j would put back: the same setup's, or another's on the same profile or
-	// with an output of a_j's - undoing a_j would lay its old mod list and outputs over that run
+	// a later run still standing that changed what undoing a_j would put back: the same setup's, one that moved the same output or tool
+	// folder, or another's on the same profile or with an output of a_j's - undoing a_j would lay its old lists and outputs over that run
 	static bool InTheWay(Journal a_later, Journal a_j)
 	{
 		if (a_later.Undone || a_later.Started <= a_j.Started || (!a_later.Unfinished && !LeftSomething(a_later))) {
 			return false;
 		}
 		static bool Same(string? a_a, string? a_b) => string.Equals(a_a, a_b, StringComparison.OrdinalIgnoreCase);
-		return Same(a_later.SetupFile, a_j.SetupFile) || (Same(a_later.Mo2Exe, a_j.Mo2Exe) && Same(a_later.Mo2Instance, a_j.Mo2Instance) &&
-			(Same(a_later.Profile, a_j.Profile) || a_later.Built.Intersect(a_j.Built, StringComparer.OrdinalIgnoreCase).Any()));
+		static bool SamePlace(string a_a, string a_b) => a_a == "" || a_b == "" ? a_a == a_b : Files.SamePath(a_a, a_b);
+		static IEnumerable<ParkRecord> Moved(Journal a_r) => a_r.Parked.Where(p => p.Replaced && !p.PutBack);
+		return Same(a_later.SetupFile, a_j.SetupFile) || Moved(a_later).Any(l => Moved(a_j).Any(p => Files.SamePath(l.From, p.From))) ||
+			(SamePlace(a_later.Mo2Exe, a_j.Mo2Exe) && Same(a_later.Mo2Instance, a_j.Mo2Instance) &&
+			 (Same(a_later.Profile, a_j.Profile) || a_later.Built.Intersect(a_j.Built, StringComparer.OrdinalIgnoreCase).Any()));
 	}
 
 	// why this run cannot be undone now (null = it can): only the last run on its profile and outputs still standing, ended, with its backup there
@@ -105,7 +108,7 @@ public static class RunUndo
 		if (a_j.Undone) {
 			return "this run was undone already";
 		}
-		if (a_j.Unfinished || (a_j.InGameAfter && a_j.OwnerAlive)) {
+		if (!a_j.Undoing && (a_j.Unfinished || (a_j.InGameAfter && a_j.OwnerAlive))) {
 			return "this run did not finish - put your profile back first";
 		}
 		if (!LeftSomething(a_j)) {
@@ -117,7 +120,7 @@ public static class RunUndo
 		if (!Directory.Exists(a_j.SnapshotDir) || !Directory.EnumerateFiles(a_j.SnapshotDir).Any()) {
 			return "this run's copy of your mod and plugin lists is gone";
 		}
-		if (a_j.Parked.Any(p => p.Replaced && !p.PutBack) && !File.Exists(Path.Combine(a_j.BackupDir, OutputsZip)) && a_j.Parked.Any(p => p.Replaced && !p.PutBack && !Directory.Exists(p.To))) {
+		if (!File.Exists(Path.Combine(a_j.BackupDir, OutputsZip)) && a_j.Parked.Any(p => p.Replaced && !p.PutBack && (!p.IsFolder || p.Moved) && !Directory.Exists(p.To))) {
 			return "this run's backup is gone";
 		}
 		return null;

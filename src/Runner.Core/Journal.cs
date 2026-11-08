@@ -49,6 +49,8 @@ public sealed class ParkRecord
 	public bool IsFolder { get; set; }
 	// an undo has moved what stood at From aside: pressed again after a failure, it never takes what it put back there for the run's
 	public bool SetAside { get; set; }
+	// a tool's folder is all in the backup: until then what stands at From is what the move left, never the run's own
+	public bool Moved { get; set; }
 }
 
 // a file outside the mods that a step changes for its run (a tool's settings, DynDOLOD's preset, NGIO's flag): its old bytes
@@ -147,8 +149,13 @@ public sealed class Journal
 	public bool NeedsRestore { get; set; }
 	// the player undid this run (his checklist 454): its outputs are no longer in the profile
 	public bool Undone { get; set; }
+	// an undo began and has not ended: outputs and lists may be half way, so nothing new starts until it is pressed again (or the
+	// window's put-back, which ends it). What the player had changed is kept here - once the old list is back, it no longer shows it
+	public bool Undoing { get; set; }
+	public Dictionary<string, char>? UndoTheirs { get; set; }
+	public Dictionary<string, bool>? UndoMarks { get; set; }
 
-	public bool Unfinished => State == RunState.Running || NeedsRestore;
+	public bool Unfinished => State == RunState.Running || NeedsRestore || Undoing;
 
 	// the save to play is being made: the run's profile is already put back (it is not Unfinished - nothing to restore), but its
 	// game still runs, so the window keeps it as the running run (Stop and the close guard reach it)

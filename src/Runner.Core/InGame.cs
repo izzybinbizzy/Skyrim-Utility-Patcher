@@ -585,12 +585,15 @@ public static partial class InGame
 			}
 			if (said != h.Why) {
 				said = h.Why;
-				since = sw.Elapsed;
+				// each hold has its own limit (a conversation after a long dragon flight still gets its minute); past this point none
+				// starts its time again, so holds that keep taking turns end too
+				if (sw.Elapsed <= TeleportWait * 2) {
+					since = sw.Elapsed;
+				}
 				a_log.Detail($"you are {h.Why} - waiting before the teleport");
 			}
-			// each hold has its own limit (a conversation after a long dragon flight still gets its minute); holds that keep taking turns end too
 			var limit = h.Stop ? TeleportWait : TeleportShortWait;
-			if (sw.Elapsed - since > limit || sw.Elapsed > TeleportWait * 2) {
+			if (sw.Elapsed - since > limit) {
 				if (h.Stop) {
 					return $"your character is {h.Why}, and was still after {limit.TotalMinutes:0.#} minute(s) - load a save where you are not, and run this step again";
 				}

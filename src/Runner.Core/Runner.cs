@@ -768,6 +768,10 @@ public static class Runner
 		if (a_j.OwnerAlive) {
 			return new RunOutcome(a_j.State, "that run is still going", a_j.Folder);
 		}
+		// an undo that did not end: only ending it puts things right
+		if (a_j.Undoing) {
+			return Undo(a_j);
+		}
 		// one put-back at a time, never beside a run
 		using var hold = HoldIfFree();
 		return hold == null ? new RunOutcome(a_j.State, "a run or another put-back is going - try again when it is done", a_j.Folder) : RestoreLocked(a_j);
@@ -880,11 +884,18 @@ public static class Runner
 			foreach (var m in a_j.Added.Concat(a_j.Built).Concat(a_j.Retire).Concat(a_j.ParkedMods)) {
 				theirs.Remove(m);
 			}
-			var marks = theirs.Count > 0 ? ctx.Profile.PluginMarks() : [];
+			foreach (var (m, state) in a_j.UndoTheirs ?? []) {
+				theirs.TryAdd(m, state);
+			}
+			var marks = a_j.UndoMarks is { Count: > 0 } kept ? kept : theirs.Count > 0 ? ctx.Profile.PluginMarks() : [];
+			a_j.UndoTheirs = theirs;
+			a_j.UndoMarks = marks;
+			a_j.Undoing = true;
+			a_j.Save();
 			RunUndo.Unpack(a_j.BackupDir);
 			var aside = Path.Combine(a_j.BackupDir, "undone");
 			foreach (var p in a_j.Parked.Where(p => p.Replaced && !p.PutBack).Reverse().ToList()) {
-				if (!p.SetAside) {
+				if (!p.SetAside && (!p.IsFolder || p.Moved)) {
 					RunUndo.SetAside(p.From, aside, p.Mod);
 					p.SetAside = true;
 					a_j.Save();
@@ -916,9 +927,12 @@ public static class Runner
 		} catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException or InvalidOperationException or Mo2BusyException) {
 			log.Error("undo failed: " + Plain(e));
 			a_j.Save();
-			return new RunOutcome(RunState.Failed, "the run could not be undone whole: " + Plain(e) + " - what moved stays recorded; its files are in the run's backup", a_j.Folder);
+			return new RunOutcome(RunState.Failed, "the run could not be undone whole: " + Plain(e) + " - what moved stays recorded and its files are in the run's backup; undo it again once the file is free", a_j.Folder);
 		}
 		a_j.Undone = true;
+		a_j.Undoing = false;
+		a_j.UndoTheirs = null;
+		a_j.UndoMarks = null;
 		a_j.State = RunState.Restored;
 		a_j.Verdict = "undone - your outputs and your mod and plugin lists are as they were before this run (what you changed since is kept; this run's outputs are in its backup, under \"undone\")";
 		a_j.Save();
