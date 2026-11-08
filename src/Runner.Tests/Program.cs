@@ -3347,8 +3347,19 @@ public static class Program
 	{
 		Check(DataRemoval.Make(f.Data, true).Remove.Contains(work, StringComparer.OrdinalIgnoreCase), "its ProgramData work folder goes too");
 		Check(!DataRemoval.Make(f.Data, true).Remove.Any(p => p.EndsWith("not there", StringComparison.Ordinal)), "a work folder that does not exist is not listed");
+		// a setup deleted since: its run record still names its backup, which goes too - a record pointing at a folder not named
+		// like a run backup removes nothing (CodeRabbit on #24)
+		var goneBackup = Path.Combine(setup.BackupDir, "2026-10-30 19-00-00 Gone Setup");
+		Directory.CreateDirectory(goneBackup);
+		foreach (var (id, name, backup) in new[] { ("2026-10-30 19-00-00 Gone Setup", "Gone Setup", goneBackup), ("2026-10-30 19-30-00 Odd", "Odd", stray) }) {
+			var done = new Journal { Id = id, Folder = Path.Combine(Runner.RunsDir(f.Data), id), SetupFile = Path.Combine(setupsDir, name + ".json"), SetupName = name,
+				BackupDir = backup, Started = DateTime.Now, State = RunState.Finished, Pid = 0 };
+			Directory.CreateDirectory(done.Folder);
+			done.Save();
+		}
 		var all = DataRemoval.Make(f.Data, false);
 		Equal<string?>(null, all.Refused, "nothing refused");
+		Check(all.Remove.Contains(goneBackup, StringComparer.OrdinalIgnoreCase), "a deleted setup's run backup goes, found through its run record");
 		Check(all.Remove.Contains(own, StringComparer.OrdinalIgnoreCase), "this setup's run backup goes");
 		Check(!all.Remove.Contains(other, StringComparer.OrdinalIgnoreCase) && !all.Remove.Contains(stray, StringComparer.OrdinalIgnoreCase), "another setup's backup and a stray folder stay");
 		Check(all.Remove.Any(p => Files.SamePath(p, f.Data)), "the data folder goes whole");
