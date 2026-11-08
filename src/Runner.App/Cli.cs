@@ -115,13 +115,12 @@ public static class Cli
 		foreach (var l in QueueRun.Summary(items)) {
 			Console.WriteLine(l);
 		}
-		// after a queue: the power setting of the last setup that ran, judged on the whole queue (one not finished = not finished)
+		// the first that did not finish names the queue's outcome, and judges the power setting of the last setup that ran
+		var notFinished = items.Select(i => i.Outcome).FirstOrDefault(o => o != null && o.State != RunState.Finished);
 		if (items.LastOrDefault(i => i.Outcome is { Folder: not null }) is { } lastRan) {
-			var bad = items.Select(i => i.Outcome).FirstOrDefault(o => o != null && o.State != RunState.Finished);
-			PowerAfterRun(lastRan.SetupFile, bad?.State ?? RunState.Finished);
+			PowerAfterRun(lastRan.SetupFile, notFinished?.State ?? RunState.Finished);
 		}
-		// the first that did not finish names the queue's outcome
-		return items.Select(i => i.Outcome).FirstOrDefault(o => o != null && o.State != RunState.Finished) is { } bad ? (bad.State == RunState.Stopped ? 2 : 1) : 0;
+		return notFinished == null ? 0 : notFinished.State == RunState.Stopped ? 2 : 1;
 	}
 
 	static int RunOne(RunRequest a_req)

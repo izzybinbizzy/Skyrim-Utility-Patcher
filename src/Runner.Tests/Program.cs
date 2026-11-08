@@ -2906,6 +2906,8 @@ public static class Program
 		Check(at.Contains(@"C:\\Game", StringComparison.Ordinal) && !at.Contains("null", StringComparison.Ordinal), "the folder written, its backslashes escaped");
 		var own = "{ \"DataPathOverride\": \"E:\\\\Mine\" }";
 		Equal(own, SynthesisStep.WithDataFolder(own, @"C:\Other"), "a data folder the player set stays");
+	}
+
 	// ------------------------------------------------------------------ after the run: sleep or shut down (his checklist 461)
 	static void T_PowerAfterDecidesAndCanBeCancelled()
 	{
@@ -2943,6 +2945,8 @@ public static class Program
 		PowerAfter.Cancel(f.Data);
 		Check(PowerAfter.Carry(PowerAfter.Kind.Sleep, f.Data, RunLog.Null, done.Add, _ => { }), "an old cancel is not this one's");
 		Check(!PowerAfter.Carry(PowerAfter.Kind.None, f.Data, RunLog.Null, done.Add, _ => throw new InvalidOperationException("no wait for nothing")), "none does nothing");
+	}
+
 	// ------------------------------------------------------------------ each step's last run (his checklist 450)
 	static StepRecord Ran(string a_key, StepState a_state, DateTime? a_started, int a_minutes = 5, string a_note = "") => new() {
 		Key = a_key, Name = StepCatalog.Name(a_key), State = a_state, Started = a_started, Ended = a_started?.AddMinutes(a_minutes), Note = a_note,
@@ -3086,6 +3090,8 @@ public static class Program
 		going.Save();
 		Equal<IReadOnlyList<(string, string)>?>(null, LastRuns.Build(setup, mo2, Journal.All(Runner.RunsDir(f.Data)), f.Data).Single(s => s.Key == "texgen").ChangedSince,
 			"not known while a run is unfinished");
+	}
+
 	static void T_ToolErrorsSayWhatAKnownErrorMeans()
 	{
 		var mem = ToolErrors.Explain("dyndolod", "DynDOLOD: EOutOfMemory: OUT OF MEMORY while reading textures");
@@ -3116,10 +3122,10 @@ public static class Program
 			var detailed = File.ReadAllText(Path.Combine(dir, "log.txt"));
 			Check(simple.Length == 1 && System.Text.RegularExpressions.Regex.IsMatch(simple[0], @"^\d\d:\d\d  the simple line$"), "the simple log holds only its own line, with the time: " + string.Join(" | ", simple));
 			Check(detailed.Contains("the detailed line", StringComparison.Ordinal) && !detailed.Contains("the simple line", StringComparison.Ordinal), "the detailed log keeps its own lines");
-			Equal(Path.Combine(dir, RunLog.SimpleName), MainViewModel.LogFile(dir, false), "the window shows the simple log by default");
-			Equal(Path.Combine(dir, "log.txt"), MainViewModel.LogFile(dir, true), "and the detailed one when ticked");
+			Equal(Path.Combine(dir, RunLog.SimpleName), ToolRunner.App.MainViewModel.LogFile(dir, false), "the window shows the simple log by default");
+			Equal(Path.Combine(dir, "log.txt"), ToolRunner.App.MainViewModel.LogFile(dir, true), "and the detailed one when ticked");
 			File.Delete(Path.Combine(dir, RunLog.SimpleName));
-			Equal(Path.Combine(dir, "log.txt"), MainViewModel.LogFile(dir, false), "a run older than the simple log shows its detailed log");
+			Equal(Path.Combine(dir, "log.txt"), ToolRunner.App.MainViewModel.LogFile(dir, false), "a run older than the simple log shows its detailed log");
 		} finally {
 			Directory.Delete(dir, true);
 		}
@@ -3128,22 +3134,22 @@ public static class Program
 	static void T_FailedRunsSimpleLogSaysWhatToDo()
 	{
 		using var f = new FakeMo2();
-		StepRegistry.Replace(new FakeStep("snowfixer", (ctx, s) => WriteOutput(ctx, "snowfixer", "Output A", "OutA.esp")));
-		StepRegistry.Replace(new FakeStep("autoblend", (ctx, s) => throw new StepFailedException("Blend.esp requires master Gone.esm")));
-		f.WriteSetup(("snowfixer", new JsonObject { ["output_mod"] = "Output A" }), ("autoblend", []));
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => WriteOutput(ctx, "landscapefixer", "Output A", "OutA.esp")));
+		StepRegistry.Replace(new FakeStep("pgpatcher", (ctx, s) => throw new StepFailedException("PGPatcher.esp requires master Gone.esm")));
+		f.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A" }), ("pgpatcher", []));
 		var r = Runner.Run(new RunRequest(f.SetupFile, f.Data));
 		Equal(RunState.Failed, r.State, "failed");
-		var simple = File.ReadAllLines(Path.Combine(r.Folder, RunLog.SimpleName)).Select(l => l[7..]).ToList();
+		var simple = File.ReadAllLines(Path.Combine(r.Folder!, RunLog.SimpleName)).Select(l => l[7..]).ToList();
 		var all = string.Join(" | ", simple);
 		Check(simple[0].Contains("started: 2 step(s)", StringComparison.Ordinal), "the run's start: " + all);
 		Check(simple.Any(l => l.StartsWith("1/2 ", StringComparison.Ordinal) && l.EndsWith(" started", StringComparison.Ordinal)) &&
-			simple.Any(l => l == "2/2 AutoBlend started"), "each step's start, numbered: " + all);
+			simple.Any(l => l == "2/2 PGPatcher started"), "each step's start, numbered: " + all);
 		Check(simple.Any(l => l.Contains(" finished in ", StringComparison.Ordinal)), "the first step's end: " + all);
-		Check(simple.Any(l => l == "AutoBlend did not finish: A plugin needs a master plugin that is not loaded."), "the failure in plain words: " + all);
+		Check(simple.Any(l => l == "PGPatcher did not finish: A plugin needs a master plugin that is not loaded."), "the failure in plain words: " + all);
 		Check(simple.Any(l => l.StartsWith("What to do: Install and tick the missing master", StringComparison.Ordinal)), "what to do: " + all);
-		Check(simple.Any(l => l == "The tool's own words: Blend.esp requires master Gone.esm"), "the tool's own words: " + all);
-		Check(simple[^1].StartsWith("Failed: stopped at AutoBlend", StringComparison.Ordinal), "the verdict last: " + all);
-		var detailed = File.ReadAllText(Path.Combine(r.Folder, "log.txt"));
+		Check(simple.Any(l => l == "The tool's own words: PGPatcher.esp requires master Gone.esm"), "the tool's own words: " + all);
+		Check(simple[^1].StartsWith("Failed: stopped at PGPatcher", StringComparison.Ordinal), "the verdict last: " + all);
+		var detailed = File.ReadAllText(Path.Combine(r.Folder!, "log.txt"));
 		Check(detailed.Contains("! what it means: A plugin needs a master", StringComparison.Ordinal), "the detailed log says what it means too");
 	}
 }
