@@ -3857,6 +3857,66 @@ public static class Program
 		Equal(0, ToolRunner.App.SettingsPanel.StepsWith(steps, " ", -1).Count, "no word, no steps");
 	}
 
+	// a tool that never appeared keeps Mod Organizer's whole log since the request: every line after the place the request was made,
+	// the whole log when it was started again meanwhile, the last lines only when there are many
+	static void T_AFailedStartKeepsMo2sWholeLog()
+	{
+		var file = Path.Combine(Path.GetTempPath(), "SUP mo2 log " + Guid.NewGuid().ToString("N") + ".log");
+		try {
+			File.WriteAllText(file, "[I] before the request\r\n");
+			var at = new FileInfo(file).Length;
+			File.AppendAllText(file, "[I] RootBuilder: build complete\r\n[E] bridge: MO2 is starting\r\n");
+			Equal("[I] RootBuilder: build complete|[E] bridge: MO2 is starting", string.Join("|", Mo2Control.RawLinesSince(file, at)), "every line since, info lines too");
+			Equal(3, Mo2Control.RawLinesSince(file, at + 10_000).Count, "a log started again meanwhile: the whole of it");
+			Equal("[E] bridge: MO2 is starting", string.Join("|", Mo2Control.RawLinesSince(file, 0, 1)), "only the last lines when there are many");
+			Equal(0, Mo2Control.RawLinesSince(file + ".none", 0).Count, "no log, no lines");
+		} finally {
+			File.Delete(file);
+		}
+	}
+
+	// a tool whose program lives in a mod switched off in the profile (Mod Organizer cannot start it from there - measured on
+	// Landscape Fixer 2026-11-08): that mod is switched on for the tool's run and off again after; one holding a plugin is left to
+	// the player and named; a program outside the mods folder, or in a mod that is on, changes nothing
+	static void T_AToolInASwitchedOffModIsSwitchedOnForItsRun()
+	{
+		using var f = new FakeMo2();
+		f.Mod("Tool Mod");
+		File.WriteAllText(Path.Combine(f.Mods, "Tool Mod", "tool.exe"), "");
+		f.Mod("Plugin Tool", ("PluginTool.esp", false, []));
+		File.WriteAllText(Path.Combine(f.Mods, "Plugin Tool", "tool2.exe"), "");
+		File.WriteAllText(Path.Combine(f.ProfileDir, "modlist.txt"), "-Tool Mod\r\n-Plugin Tool\r\n" + f.Text("modlist.txt"));
+		string Bin(string a_mod, string a_exe) => Path.Combine(f.Mods, a_mod, a_exe).Replace('\\', '/');
+		var ini = Path.Combine(f.Instance, "ModOrganizer.ini");
+		File.WriteAllText(ini, File.ReadAllText(ini).Replace("[customExecutables]\r\nsize=1\r\n", "[customExecutables]\r\nsize=3\r\n" +
+			$"2\\title=Tool\r\n2\\binary={Bin("Tool Mod", "tool.exe")}\r\n2\\arguments=\r\n3\\title=Tool2\r\n3\\binary={Bin("Plugin Tool", "tool2.exe")}\r\n3\\arguments=\r\n",
+			StringComparison.Ordinal));
+		var mo2 = Mo2Instance.Load(f.Exe, f.Instance);
+		var p = ProfileOf(f);
+		Equal("Tool Mod", StepKit.ToolMod(mo2, p, "Tool"), "a program inside a switched-off mod");
+		Equal<string?>(null, StepKit.ToolMod(mo2, p, "SKSE"), "a program outside the mods folder");
+		Equal<string?>(null, StepKit.ToolMod(mo2, p, "No Such Tool"), "an executable Mod Organizer does not have");
+		var setup = f.WriteSetup(("pandora", new JsonObject()));
+		var j = new Journal { Id = "tool mod", Folder = Path.Combine(Runner.RunsDir(f.Data), "0000 tool mod"), SetupFile = setup.File, SetupName = setup.Name, Profile = "Test", Started = DateTime.Now };
+		Directory.CreateDirectory(j.Folder);
+		using var log = new RunLog(j.Folder);
+		var ctx = new RunContext { Setup = setup, Mo2 = mo2, Profile = p, Control = new Mo2Control(mo2, "Test", log), Log = log, Journal = j,
+			Cancel = CancellationToken.None, BackupFolder = Path.Combine(f.Backups, "tool mod") };
+		using (StepKit.ToolModOn(ctx, "Tool")) {
+			Check(p.IsOn("Tool Mod"), "on for the tool's run");
+			Equal<string?>(null, StepKit.ToolMod(mo2, p, "Tool"), "(and then no longer a switched-off mod)");
+		}
+		Check(!p.IsOn("Tool Mod"), "off again after");
+		var refused = "";
+		try {
+			StepKit.ToolModOn(ctx, "Tool2")?.Dispose();
+		} catch (StepFailedException e) {
+			refused = e.Message;
+		}
+		Check(refused.Contains("\"Plugin Tool\"", StringComparison.Ordinal) && !p.IsOn("Plugin Tool"), "a tool mod with a plugin is named and left off: " + refused);
+		Equal<Toggle?>(null, StepKit.ToolModOn(ctx, "SKSE"), "nothing to switch for a program outside the mods folder");
+	}
+
 	static void T_EveryToolStepHasItsHelpPage()
 	{
 		foreach (var s in StepCatalog.All.Where(s => s.Key is not ("shaders" or "xlodgen"))) {

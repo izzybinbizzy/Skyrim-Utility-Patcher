@@ -23,7 +23,7 @@ public sealed class XLodGenStep : IStep
 		var image = a_s.Str("image") ?? "xLODGenx64.exe";
 		StepKit.ParkDir(a_ctx, outDir, "xLODGen output");
 		var deadline = a_s.Deadline(120);
-		using (new Toggle(a_ctx, a_s.List("enable_during"), a_s.List("disable_during"), "xLODGen", a_ctx.Cancel)) {
+		using (new Toggle(a_ctx, [.. a_s.List("enable_during"), .. StepKit.ToolMods(a_ctx, a_s.Req("executable"))], a_s.List("disable_during"), "xLODGen", a_ctx.Cancel)) {
 			try {
 				// xLODGen writes where its -o: says - and that is in Mod Organizer's entry for it, not here: the step puts its own
 				// output folder into the arguments it starts xLODGen with (the trial of 2026-10-27 21:36 wrote into another folder)
@@ -439,7 +439,7 @@ public abstract class DynDolodFamily : IStep
 		var outDir = a_s.Req("output_dir");
 		var image = a_s.Str("image") ?? (Tool + "x64.exe");
 		StepKit.ParkDir(a_ctx, outDir, Tool + " output");
-		using (new Toggle(a_ctx, a_s.List("enable_during"), [.. ExtraOff(a_s), .. a_s.List("disable_during")], Tool, a_ctx.Cancel)) {
+		using (new Toggle(a_ctx, [.. a_s.List("enable_during"), .. StepKit.ToolMods(a_ctx, a_s.Req("executable"))], [.. ExtraOff(a_s), .. a_s.List("disable_during")], Tool, a_ctx.Cancel)) {
 			try {
 				var args = XLodGenStep.WithData(a_s.Str("args") ?? a_ctx.Mo2.Executable(a_s.Req("executable"))?.Arguments ?? "", a_ctx.Mo2.GameDir);
 				using var proc = a_ctx.Control.RunExecutable(a_s.Req("executable"), image, args, a_ctx.Cancel);

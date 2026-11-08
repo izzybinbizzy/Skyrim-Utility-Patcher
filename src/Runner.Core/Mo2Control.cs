@@ -575,9 +575,25 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 		_log.Detail($"running {a_title} through Mod Organizer{(string.IsNullOrEmpty(a_args) ? "" : " with " + a_args)}");
 		var cmd = $"{Quote(Mo2.Exe)}{Instance} -p {Quote(ProfileName)} run -e {Quote(a_title)}" + (string.IsNullOrEmpty(a_args) ? "" : $" -a {Quote(a_args)}");
 		var logAt = LogLength();
-		var pid = LaunchTool(cmd, () => FreshPid(a_image, old), a_startTimeout ?? TimeSpan.FromMinutes(3), a_ct) ?? throw new StepFailedException(
+		var asked = DateTime.Now;
+		// what Mod Organizer starts while the tool is awaited - every process whose parent is one of its own, as it appears (a tool
+		// that starts and ends between two looks is still named); kept with the rest only when the tool never appears
+		var started = new List<string>();
+		var known = new HashSet<int>();
+		int Watch()
+		{
+			try {
+				var mo2 = Pids().ToHashSet();
+				foreach (var (child, parent) in Procs.Snapshot().Where(p => mo2.Contains(p.Parent) && known.Add(p.Pid))) {
+					started.Add($"{DateTime.Now:HH:mm:ss.f}  {Procs.Image(child)} (process {child}, started by {parent})");
+				}
+			} catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) {
+			}
+			return FreshPid(a_image, old);
+		}
+		var pid = LaunchTool(cmd, Watch, a_startTimeout ?? TimeSpan.FromMinutes(3), a_ct) ?? throw new StepFailedException(
 			$"{a_image} did not start within {(a_startTimeout ?? TimeSpan.FromMinutes(3)).TotalMinutes:0} minutes - is MO2's executable \"{a_title}\" right?" +
-			WhatMo2Said(a_title, a_image, logAt));
+			WhatMo2Said(a_title, a_image, logAt) + KeepEvidence(a_title, logAt, asked, started));
 		_log.Detail($"{a_image} started (process {pid})");
 		Ours(pid);
 		return Process.GetProcessById(pid);
@@ -616,6 +632,55 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 	// a tool Mod Organizer was asked to start never appeared: what Mod Organizer shows (any window beside its main one) and what it
 	// wrote in its log since the request, so the failure says why instead of only that (2026-11-07: Landscape Fixer's start went
 	// unanswered, and by the time anyone looked Mod Organizer had rotated its logs away)
+	// a tool that never appeared: everything Mod Organizer did meanwhile, unfiltered, in a file of the run folder - the processes it
+	// started, its whole log since the request, and which processes its virtual folder was put into (the short message keeps only
+	// warnings and errors, which twice left a failed start without a cause)
+	string KeepEvidence(string a_title, long a_logFrom, DateTime a_asked, List<string> a_started)
+	{
+		if (_log.TextPath is not { } logPath || Path.GetDirectoryName(logPath) is not { } folder) {
+			return "";
+		}
+		try {
+			var lines = new List<string> { $"{a_title} was asked for at {a_asked:HH:mm:ss}; it never appeared.", "", "Processes Mod Organizer started meanwhile:" };
+			lines.AddRange(a_started.Count == 0 ? new[] { "  (none seen)" } : a_started.Select(s => "  " + s));
+			lines.AddRange(["", "Mod Organizer's log since the request:"]);
+			lines.AddRange(RawLinesSince(Mo2Log, a_logFrom).Select(s => "  " + s));
+			var logs = Path.GetDirectoryName(Mo2Log)!;
+			var vfs = Directory.Exists(logs)
+				? new DirectoryInfo(logs).EnumerateFiles("usvfs-*.log").Where(f => f.LastWriteTime >= a_asked.AddMinutes(-1)).OrderBy(f => f.LastWriteTime).ToList()
+				: new List<FileInfo>();
+			foreach (var f in vfs) {
+				lines.AddRange(["", $"Its virtual folder ({f.Name}):"]);
+				lines.AddRange(RawLinesSince(f.FullName, 0).Where(l => l.Contains("inject", StringComparison.OrdinalIgnoreCase) ||
+					l.Contains("inithooks called", StringComparison.OrdinalIgnoreCase) || l.Contains("remove from process", StringComparison.OrdinalIgnoreCase)).Select(s => "  " + s));
+			}
+			var file = Path.Combine(folder, $"{a_title} did not start.txt");
+			Files.WriteAtomic(file, string.Join("\r\n", lines) + "\r\n");
+			return $" Everything Mod Organizer did meanwhile is in \"{Path.GetFileName(file)}\" in the run's folder.";
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+			return "";
+		}
+	}
+
+	// every line a log gained after a_from (the whole log when it was started again meanwhile), at most its last a_max
+	public static List<string> RawLinesSince(string a_file, long a_from, int a_max = 400)
+	{
+		try {
+			if (!File.Exists(a_file)) {
+				return [];
+			}
+			using var fs = new FileStream(a_file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+			var from = a_from <= fs.Length ? a_from : 0;
+			from = Math.Max(from, fs.Length - 4_000_000);
+			fs.Seek(from, SeekOrigin.Begin);
+			using var r = new StreamReader(fs);
+			var lines = r.ReadToEnd().Split('\n').Select(l => l.TrimEnd('\r')).Where(l => l != "").ToList();
+			return lines.Count > a_max ? lines[^a_max..] : lines;
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+			return [];
+		}
+	}
+
 	string WhatMo2Said(string a_title, string a_image, long a_logFrom)
 	{
 		var parts = new List<string>();
