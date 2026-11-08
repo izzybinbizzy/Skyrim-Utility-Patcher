@@ -530,11 +530,68 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 		}
 		_log.Detail($"running {a_title} through Mod Organizer{(string.IsNullOrEmpty(a_args) ? "" : " with " + a_args)}");
 		var cmd = $"{Quote(Mo2.Exe)}{Instance} -p {Quote(ProfileName)} run -e {Quote(a_title)}" + (string.IsNullOrEmpty(a_args) ? "" : $" -a {Quote(a_args)}");
+		var logAt = LogLength();
 		var pid = LaunchTool(cmd, () => FreshPid(a_image, old), a_startTimeout ?? TimeSpan.FromMinutes(3), a_ct) ?? throw new StepFailedException(
-			$"{a_image} did not start within {(a_startTimeout ?? TimeSpan.FromMinutes(3)).TotalMinutes:0} minutes - is MO2's executable \"{a_title}\" right?");
+			$"{a_image} did not start within {(a_startTimeout ?? TimeSpan.FromMinutes(3)).TotalMinutes:0} minutes - is MO2's executable \"{a_title}\" right?" +
+			WhatMo2Said(a_title, a_image, logAt));
 		_log.Detail($"{a_image} started (process {pid})");
 		Started.Add(pid);
 		return Process.GetProcessById(pid);
+	}
+
+	// Mod Organizer's own log of this session (beside its ModOrganizer.ini, in "logs")
+	string Mo2Log => Path.Combine(Path.GetDirectoryName(Mo2.IniPath)!, "logs", "mo_interface.log");
+
+	long LogLength()
+	{
+		try {
+			return File.Exists(Mo2Log) ? new FileInfo(Mo2Log).Length : 0;
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+			return 0;
+		}
+	}
+
+	// a tool Mod Organizer was asked to start never appeared: what Mod Organizer shows (any window beside its main one) and what it
+	// wrote in its log since the request, so the failure says why instead of only that (2026-11-07: Landscape Fixer's start went
+	// unanswered, and by the time anyone looked Mod Organizer had rotated its logs away)
+	string WhatMo2Said(string a_title, string a_image, long a_logFrom)
+	{
+		var parts = new List<string>();
+		try {
+			var main = MainWindow();
+			foreach (var h in Native.TopWindowsOf(Pids()).Where(h => h != main)) {
+				var text = Uia.FromHandle(h) is { } e ? Uia.TextOf(e, 300) : "";
+				var title = Native.WindowText(h);
+				if (title != "" || text != "") {
+					parts.Add($"a window \"{title}\"{(text == "" || text == title ? "" : ": " + text)}");
+				}
+			}
+		} catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) {
+		}
+		var lines = LogLinesSince(Mo2Log, a_logFrom, a_title, a_image);
+		return (parts.Count > 0 ? " Mod Organizer shows " + string.Join("; ", parts) + "." : " Mod Organizer shows no box.") +
+			(lines.Count > 0 ? " Its log since the request: " + string.Join(" | ", lines) : "");
+	}
+
+	// the lines a log gained after a_from (the whole log when it was started again meanwhile) that name the tool or are a warning /
+	// error of Mod Organizer's - at most a_max, newest last
+	public static List<string> LogLinesSince(string a_file, long a_from, string a_title, string a_image, int a_max = 6)
+	{
+		try {
+			if (!File.Exists(a_file)) {
+				return [];
+			}
+			var bytes = Files.ReadShared(a_file);
+			var from = a_from <= bytes.Length ? (int)a_from : 0;
+			var text = System.Text.Encoding.UTF8.GetString(bytes, from, bytes.Length - from);
+			var stem = Path.GetFileNameWithoutExtension(a_image);
+			return text.Split('\n').Select(l => l.TrimEnd('\r').Trim()).Where(l => l != "" &&
+				(l.Contains(a_title, StringComparison.OrdinalIgnoreCase) || l.Contains(stem, StringComparison.OrdinalIgnoreCase) ||
+				 System.Text.RegularExpressions.Regex.IsMatch(l, @"\[(E|W)\]|\b(error|warning|failed)\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase)))
+				.TakeLast(a_max).Select(l => l.Length > 240 ? l[..240] + " ..." : l).ToList();
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+			return [];
+		}
 	}
 
 	// hand MO2 one request and wait for the tool's process; a request MO2 lost (its "secondary process" box) is asked again

@@ -173,6 +173,21 @@ public static class Uia
 		return s.Length > a_max ? s[..a_max] : s;
 	}
 
+	// what the text boxes of a window hold (a log box's content is its value, never its name)
+	public static List<string> EditTexts(AutomationElement a_root)
+	{
+		var outList = new List<string>();
+		foreach (var e in All(a_root, ControlType.Edit).Concat(All(a_root, ControlType.Document))) {
+			try {
+				if (e.TryGetCurrentPattern(ValuePattern.Pattern, out var p) && ((ValuePattern)p).Current.Value is { Length: > 0 } v) {
+					outList.Add(v);
+				}
+			} catch (Exception gone) when (Gone(gone) || gone is InvalidOperationException) {
+			}
+		}
+		return outList;
+	}
+
 	// the small boxes a tool shows (Windows' #32770 dialogs and task dialogs, Qt message boxes), with their text and buttons
 	public static List<Box> Boxes(IReadOnlyCollection<int> a_pids)
 	{

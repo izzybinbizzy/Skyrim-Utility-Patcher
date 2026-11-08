@@ -3152,4 +3152,45 @@ public static class Program
 		var detailed = File.ReadAllText(Path.Combine(r.Folder!, "log.txt"));
 		Check(detailed.Contains("! what it means: A plugin needs a master", StringComparison.Ordinal), "the detailed log says what it means too");
 	}
+
+	// ------------------------------------------------------------------ the audit of 2026-11-07
+	// Landscape Fixer's start button is found by its own words in every language it ships (its translation files beside it), so a
+	// player who runs it in German is understood too; a broken file or no folder falls back to the English names
+	static void T_LandscapeFixerKnowsItsButtonInEveryLanguage()
+	{
+		var dir = Path.Combine(Path.GetTempPath(), "SUP translations " + Guid.NewGuid().ToString("N"));
+		Directory.CreateDirectory(dir);
+		try {
+			File.WriteAllText(Path.Combine(dir, "en.json"), "{ \"run\": { \"generate\": \"Generate\" } }");
+			File.WriteAllText(Path.Combine(dir, "de.json"), "{ \"run\": { \"generate\": \"Generieren\" } }");
+			File.WriteAllText(Path.Combine(dir, "xx.json"), "{ not json");
+			File.WriteAllText(Path.Combine(dir, "yy.json"), "{ \"run\": { \"generate\": 5 } }");
+			var names = ToolRunner.Steps.LauncherStep.StartButtonNames(dir, ["Generate", "Start"]);
+			Check(names.Contains("Generieren") && names.Contains("Generate") && names.Contains("Start"), "every language's word: " + string.Join(", ", names));
+			Equal(3, names.Count, "each name once, a broken or odd file left out");
+			Equal("Generate|Start", string.Join("|", ToolRunner.Steps.LauncherStep.StartButtonNames(Path.Combine(dir, "gone"), ["Generate", "Start"])), "no folder: the English names");
+		} finally {
+			Directory.Delete(dir, true);
+		}
+	}
+
+	// a tool Mod Organizer never started: the lines Mod Organizer logged after the request that name the tool, or are its
+	// warnings / errors, go into the failure (never the older part of its log)
+	static void T_Mo2LogLinesSinceTheRequestAreNamed()
+	{
+		var file = Path.Combine(Path.GetTempPath(), "SUP mo2 log " + Guid.NewGuid().ToString("N") + ".log");
+		try {
+			File.WriteAllText(file, "12:00:00.000 [W] an old warning\nLandscapeFixer old line\n");
+			var from = new FileInfo(file).Length;
+			File.AppendAllText(file, "12:01:00.000 [I] loading plugins\n12:01:02.000 [E] failed to spawn \"LandscapeFixer.exe\": access denied\n12:01:03.000 [I] ready\n");
+			var lines = Mo2Control.LogLinesSince(file, from, "LandscapeFixer", "LandscapeFixer.exe");
+			Equal(1, lines.Count, "only the new line that matters: " + string.Join(" | ", lines));
+			Check(lines[0].Contains("access denied", StringComparison.Ordinal), "the reason itself");
+			Equal(2, Mo2Control.LogLinesSince(file, new FileInfo(file).Length + 100, "LandscapeFixer", "LandscapeFixer.exe").Count(l => l.Contains("LandscapeFixer", StringComparison.Ordinal)),
+				"a log started again since the request is read whole");
+			Equal(0, Mo2Control.LogLinesSince(file + ".gone", 0, "x", "x.exe").Count, "no log, no lines");
+		} finally {
+			File.Delete(file);
+		}
+	}
 }

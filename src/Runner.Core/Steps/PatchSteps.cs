@@ -11,7 +11,6 @@ public abstract class LauncherStep : IStep
 	public abstract string Key { get; }
 	protected abstract string TitleRx { get; }
 	protected abstract string[] StartNames { get; }
-	protected abstract string LogName { get; }
 	protected abstract string SettingsFile(RunContext a_ctx);
 
 	// the tool keeps one Mod Organizer, profile and output in its own settings, whatever it was last pointed at: without this it
@@ -48,9 +47,50 @@ public abstract class LauncherStep : IStep
 		}
 	}
 
+	// the folder beside its program that holds its translations (each a JSON file with its button's words), or null
+	protected virtual string? TranslationFolder => null;
+
+	// the names its start button may carry: its own words in every language it ships ("run" > "generate" in each translation file
+	// - his checklist 439: a tool set to another language is understood too), then the English ones
+	public static List<string> StartButtonNames(string? a_translations, IEnumerable<string> a_english)
+	{
+		var names = new List<string>();
+		if (a_translations != null && Directory.Exists(a_translations)) {
+			foreach (var f in Directory.EnumerateFiles(a_translations, "*.json")) {
+				try {
+					if (JsonNode.Parse(Files.ReadSharedText(f))?["run"]?["generate"] is JsonValue v && v.TryGetValue<string>(out var n) && n.Trim() != "") {
+						names.Add(n.Trim());
+					}
+				} catch (Exception e) when (e is JsonException or IOException or UnauthorizedAccessException) {
+				}
+			}
+		}
+		names.AddRange(a_english);
+		return names.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+	}
+
+	static bool Exited(System.Diagnostics.Process a_p)
+	{
+		try {
+			return a_p.HasExited;
+		} catch (InvalidOperationException) {
+			return true;
+		}
+	}
+
+	static string Short(string a_t) => a_t.Length > 400 ? "..." + a_t[^400..] : a_t;
+
+	// what its window says, for a failure: its text boxes (Landscape Fixer's run log) last, the labels before them
+	static string WindowSays(System.Windows.Automation.AutomationElement a_w)
+	{
+		var log = Uia.EditTexts(a_w).OrderBy(t => t.Length).LastOrDefault() ?? "";
+		return Short(Uia.TextOf(a_w, 1500) + (log.Trim() == "" ? "" : " | its log: " + log.Trim()));
+	}
+
 	public void Run(RunContext a_ctx, StepSettings a_s)
 	{
 		var mod = a_s.OutputMod!;
+		var name = StepCatalog.Name(Key);
 		var image = a_s.Str("image") ?? a_s.Req("executable") + ".exe";
 		StepKit.ParkMod(a_ctx, Key, mod);
 		var tw = a_s.Str("tool_writes");
@@ -59,39 +99,50 @@ public abstract class LauncherStep : IStep
 			// its files to the backup (recorded, put back if the step does not finish); the folder and its meta.ini stay
 			StepKit.ParkMod(a_ctx, Key, tw!);
 		}
-		var logPath = Path.Combine(toolDir ?? a_ctx.Mo2.ModDir(mod), LogName);
+		var outDir = toolDir ?? a_ctx.Mo2.ModDir(mod);
 		var t0 = DateTime.UtcNow;
-		PointAtThisRun(a_ctx, toolDir ?? a_ctx.Mo2.ModDir(mod));
-		using (new Toggle(a_ctx, [mod, .. a_s.List("enable_during")], a_s.List("disable_during"), StepCatalog.Name(Key), a_ctx.Cancel)) {
+		PointAtThisRun(a_ctx, outDir);
+		var exeDir = a_ctx.Mo2.Executable(a_s.Req("executable"))?.Binary is { Length: > 0 } bin ? Path.GetDirectoryName(bin) : null;
+		var names = StartButtonNames(exeDir != null && TranslationFolder != null ? Path.Combine(exeDir, TranslationFolder) : null, StartNames).ToArray();
+		using (new Toggle(a_ctx, [mod, .. a_s.List("enable_during")], a_s.List("disable_during"), name, a_ctx.Cancel)) {
 			try {
 				var proc = a_ctx.Control.RunExecutable(a_s.Req("executable"), image, a_s.Str("args"), a_ctx.Cancel);
-				var w = StepKit.WaitWindow(a_ctx, image, t => Regex.IsMatch(t, TitleRx), TimeSpan.FromMinutes(3), StepCatalog.Name(Key) + "'s window");
-				Thread.Sleep(2000);
-				Uia.Press(Uia.Button(w, StartNames) ?? throw new StepFailedException($"{StepCatalog.Name(Key)} has no {StartNames[0]} button"));
-				a_ctx.Activity(Key, StepCatalog.Name(Key) + " is patching");
-				var finished = false;
-				Waits.Tool(a_ctx, Key, proc, a_s.Deadline(60), () => {
-					foreach (var box in Uia.Boxes(StepKit.PidsOf(image)())) {
-						if (Regex.IsMatch(box.Text, @"Working\.\.\.")) {
-							continue;
-						}
-						// the finished box also shows the whole log (which can hold the word "error") - its headline decides
-						var head = box.Text.Split("collapsiblePane")[0];
-						a_ctx.Log.Detail($"{StepCatalog.Name(Key)} says: {head.Trim()}");
-						if (!Regex.IsMatch(head, "complete|finished|done", RegexOptions.IgnoreCase) && Regex.IsMatch(head, "error|failed|exception", RegexOptions.IgnoreCase)) {
-							throw new StepFailedException($"{StepCatalog.Name(Key)}: {head.Trim()}");
-						}
-						if (Regex.IsMatch(head, "complete|finished|done", RegexOptions.IgnoreCase)) {
-							finished = true;
-						}
-						if (Uia.Button(box.Element, "OK", "Close", "Finish", "Exit") is { } ok) {
-							Uia.Press(ok);
-						}
+				var w = StepKit.WaitWindow(a_ctx, image, t => Regex.IsMatch(t, TitleRx), TimeSpan.FromMinutes(3), name + "'s window");
+				// its button, once its window has finished laying itself out (usable, on screen)
+				System.Windows.Automation.AutomationElement? go = null;
+				for (var sw = System.Diagnostics.Stopwatch.StartNew(); go == null; Thread.Sleep(1000)) {
+					a_ctx.Cancel.ThrowIfCancellationRequested();
+					go = Uia.Button(w, names) is { } b && Uia.Usable(b) ? b : null;
+					if (go == null && (Exited(proc) || sw.Elapsed > TimeSpan.FromMinutes(1))) {
+						throw new StepFailedException($"{name} shows no usable {StartNames[0]} button. Its window shows: {WindowSays(w)}");
 					}
-					// done = its "complete" box, or it exited; a quiet log counts only once the tool also used no CPU for the
-					// idle minutes (a quiet phase mid-run is normal)
-					return finished || proc.HasExited ? Waits.Poll.Done : Waits.Poll.Wait;
-				}, a_onIdle: () => finished = File.Exists(logPath) && File.GetLastWriteTimeUtc(logPath) > t0);
+				}
+				Uia.Press(go);
+				// it started = its button goes grey while it works. Landscape Fixer refuses a run it cannot do (no game, no profile)
+				// only on its status line - never a box - so that line is what the step names
+				for (var sw = System.Diagnostics.Stopwatch.StartNew(); Uia.Usable(go); Thread.Sleep(500)) {
+					a_ctx.Cancel.ThrowIfCancellationRequested();
+					UnknownBox(name, image);
+					if (Exited(proc)) {
+						throw new StepFailedException($"{name} closed when {Uia.Name(go)} was pressed");
+					}
+					if (sw.Elapsed > TimeSpan.FromSeconds(30)) {
+						throw new StepFailedException($"{name} did not start working when {Uia.Name(go)} was pressed. Its window shows: {WindowSays(w)}");
+					}
+				}
+				a_ctx.Activity(Key, name + " is patching");
+				// done = its button usable again (its run ended) or it closed; a box during a run is none it shows on its own way, so
+				// it is named and left for the player (his 2026-11-06 rule: an unknown box is never read as something known)
+				Waits.Tool(a_ctx, Key, proc, a_s.Deadline(60), () => {
+					UnknownBox(name, image);
+					return Exited(proc) || Uia.Usable(go) ? Waits.Poll.Done : Waits.Poll.Wait;
+				});
+				// a run that ended without writing anything stopped on an error, which its own log box holds
+				if (Files.NewestWrite(outDir) <= t0) {
+					throw new StepFailedException($"{name} ended without writing anything into {Path.GetFileName(outDir)}. " +
+						(Exited(proc) ? "It closed." : "Its window shows: " + WindowSays(w)));
+				}
+				a_ctx.Log.Detail($"{name} finished its run");
 			} finally {
 				StepKit.CloseTool(a_ctx, image);
 			}
@@ -109,6 +160,13 @@ public abstract class LauncherStep : IStep
 		}
 		a_ctx.SetAfter(mod);
 	}
+
+	static void UnknownBox(string a_name, string a_image)
+	{
+		if (Uia.Boxes(StepKit.PidsOf(a_image)()).FirstOrDefault() is { } box) {
+			throw new StepFailedException($"{a_name} shows a box this step does not know (left for you): {box.Text.Trim()}");
+		}
+	}
 }
 
 // Landscape Fixer (Cl3mus, GPL-3.0) replaced his SnowFixer and AutoBlend: one run, one output, one plugin
@@ -116,8 +174,8 @@ public sealed class LandscapeFixerStep : LauncherStep
 {
 	public override string Key => "landscapefixer";
 	protected override string TitleRx => "^Landscape Fixer";
-	protected override string[] StartNames => ["Start", "Generate"];
-	protected override string LogName => "LandscapeFixer-log.txt";
+	protected override string[] StartNames => ["Generate", "Start"];
+	protected override string? TranslationFolder => "LandscapeFixer_translations";
 
 	// it keeps one settings file per Mod Organizer instance, named after the folder holding that instance's ModOrganizer.ini
 	protected override string SettingsFile(RunContext a_ctx) =>
