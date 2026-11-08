@@ -3608,6 +3608,32 @@ public static class Program
 		var player = InGame.NewestPlayerSave(p, null, "Björn");
 		Equal("Save2_Bjorn", InGame.PlaySaveFrom(null, null, InGame.OldCleanSave(p, "Björn"), player, InGame.SaveTime(p, player)).Save,
 			"the save to play starts from the picked character's save, not the newer clean save of another");
+		// the steps themselves pass the picked character on - each case below stops before any game would start
+		var setup = f.WriteSetup(("cleansave", new JsonObject()), ("playsave", new JsonObject()));
+		setup.Root["character"] = "Björn";
+		var mo2 = Mo2Instance.Load(f.Exe, f.Instance);
+		var runs = Runner.RunsDir(f.Data);
+		var j = new Journal { Id = "character", Folder = Path.Combine(runs, "0000 character"), SetupFile = setup.File, SetupName = setup.Name, Profile = "Test", Started = DateTime.Now };
+		Directory.CreateDirectory(j.Folder);
+		using var log = new RunLog(j.Folder);
+		var ctx = new RunContext { Setup = setup, Mo2 = mo2, Profile = p, Control = new Mo2Control(mo2, "Test", log), Log = log, Journal = j,
+			Cancel = CancellationToken.None, BackupFolder = Path.Combine(f.Backups, "character") };
+		Equal("Björn", InGame.Character(ctx), "the setup's character is read");
+		string Refused(Action a_step)
+		{
+			try {
+				a_step();
+			} catch (StepFailedException e) {
+				return e.Message;
+			}
+			return "(not refused)";
+		}
+		var named = new StepSettings(new JsonObject { ["save"] = "Save3_Lydia" });
+		Check(Refused(() => InGame.Deactivate(ctx, named)).Contains("is Lydia's, not Björn's", StringComparison.Ordinal), "the clean save refuses a named save of another character");
+		Check(Refused(() => InGame.PlaySave(ctx, named)).Contains("is Lydia's, not Björn's", StringComparison.Ordinal), "so does the save to play");
+		File.Delete(Path.Combine(saves, "Save2_Bjorn.ess"));
+		Equal("no save to load", Refused(() => InGame.PlaySave(ctx, new StepSettings(new JsonObject()))),
+			"with no save of the picked character, the save to play never falls back to another character's clean save");
 	}
 
 	static void T_EveryToolStepHasItsHelpPage()
