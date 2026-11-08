@@ -4410,6 +4410,50 @@ public static class Program
 		}
 	}
 
+	// his checklist 443 / 492: Root Builder setups are waited for, and our add-on goes in beside Root Builder, never without it
+	static void T_RootBuilderIsWaitedFor()
+	{
+		using var f = new FakeMo2();
+		var plain = Mo2Instance.Load(f.Exe, f.Instance);
+		Check(!plain.RootBuilderBuilds && !plain.RootBuilderDeployed(), "no Root Builder: nothing to wait for");
+		Equal(RootBuilderAddOn.State.NoRootBuilder, RootBuilderAddOn.StateOf(plain), "and no add-on to offer");
+		var plugins = Path.Combine(Path.GetDirectoryName(f.Exe)!, "plugins");
+		Directory.CreateDirectory(Path.Combine(plugins, "rootbuilder"));
+		Check(!Mo2Instance.Load(f.Exe, f.Instance).RootBuilderBuilds, "its automatic build off: it builds only when the player asks");
+		File.AppendAllText(Path.Combine(f.Instance, "ModOrganizer.ini"), "[Plugins]\r\nRootBuilder\\autobuild=true\r\n");
+		var mo2 = Mo2Instance.Load(f.Exe, f.Instance);
+		Check(mo2.RootBuilderBuilds, "its automatic build on");
+		Check(!mo2.RootBuilderDeployed(), "nothing built yet");
+		var data = Path.Combine(plugins, "data", "RootBuilder", "game", "1_6_1170_0");
+		Directory.CreateDirectory(data);
+		File.WriteAllText(Path.Combine(data, "BuildData.json"), "{}");
+		Check(mo2.RootBuilderDeployed(), "built: its files are in the game folder");
+		var keep = (Mo2Control.RootBuilderWait, Mo2Control.RootBuilderLook);
+		try {
+			Mo2Control.RootBuilderLook = TimeSpan.FromMilliseconds(5);
+			var reads = 0;
+			Check(Mo2Control.WaitForClear(() => ++reads < 3, CancellationToken.None), "waited until they are out");
+			Equal(3, reads, "looked until then");
+			Mo2Control.RootBuilderWait = TimeSpan.FromMilliseconds(30);
+			Check(!Mo2Control.WaitForClear(() => true, CancellationToken.None), "and not for ever");
+			using var stop = new CancellationTokenSource();
+			stop.Cancel();
+			Throws<OperationCanceledException>(() => Mo2Control.WaitForClear(() => true, stop.Token), "a Stop ends the wait");
+		} finally {
+			(Mo2Control.RootBuilderWait, Mo2Control.RootBuilderLook) = keep;
+		}
+		Equal(RootBuilderAddOn.State.NotAdded, RootBuilderAddOn.StateOf(mo2), "the add-on on offer");
+		RootBuilderAddOn.Add(mo2);
+		Equal(RootBuilderAddOn.State.Current, RootBuilderAddOn.StateOf(mo2), "added");
+		var added = Path.Combine(plugins, "rootbuilderprofiles");
+		Check(File.ReadAllText(Path.Combine(added, "__init__.py")).Contains("def createPlugin", StringComparison.Ordinal), "under the name Mod Organizer loads");
+		Check(File.ReadAllText(Path.Combine(added, "core.py")).Contains("\"Local\\\\" + Brand.Name + " run\"", StringComparison.Ordinal), "it knows this program's run lock by its real name");
+		File.AppendAllText(Path.Combine(added, "core.py"), "# changed\n");
+		Equal(RootBuilderAddOn.State.Different, RootBuilderAddOn.StateOf(mo2), "another copy of it is told apart");
+		RootBuilderAddOn.Add(mo2);
+		Equal(RootBuilderAddOn.State.Current, RootBuilderAddOn.StateOf(mo2), "and brought level");
+	}
+
 	static void T_EveryToolStepHasItsHelpPage()
 	{
 		foreach (var s in StepCatalog.All.Where(s => s.Key is not ("shaders" or "xlodgen"))) {

@@ -20,6 +20,9 @@ public sealed partial class Mo2Instance
 	public string SelectedProfile { get; }
 	// the language picked in its settings ("" = it follows Windows')
 	public string Language { get; }
+	// Root Builder there with its automatic build on: before each program Mod Organizer starts it copies every ticked mod's Root folder into
+	// the game folder, and when the program ends it takes them out again
+	public bool RootBuilderBuilds { get; }
 	// a global instance's name (its folder under %LOCALAPPDATA%\ModOrganizer) - passed to MO2 as -i; null for a portable one
 	public string? GlobalName { get; }
 	public IReadOnlyList<Mo2Executable> Executables { get; }
@@ -49,6 +52,8 @@ public sealed partial class Mo2Instance
 		GameName = Get("General", "gameName");
 		SelectedProfile = Get("General", "selected_profile");
 		Language = Get("Settings", "language");
+		RootBuilderBuilds = Directory.Exists(Path.Combine(Path.GetDirectoryName(a_exe)!, "plugins", "rootbuilder")) &&
+			Get("Plugins", @"RootBuilder\autobuild").Equals("true", StringComparison.OrdinalIgnoreCase);
 		var exes = new List<Mo2Executable>();
 		if (a_sections.TryGetValue("customExecutables", out var ce)) {
 			_ = int.TryParse(ce.GetValueOrDefault("size"), out var n);
@@ -97,6 +102,17 @@ public sealed partial class Mo2Instance
 
 	// The instance of ModOrganizer.exe: a ModOrganizer.ini beside the exe (portable), else the global instance the exe last
 	// used (%LOCALAPPDATA%\ModOrganizer\<name>, named in its own ModOrganizer.ini by the user's pick - a_instance).
+	// its files in the game folder now? Root Builder keeps BuildData.json in its data folder from a build until its clear
+	public bool RootBuilderDeployed()
+	{
+		var data = Path.Combine(Path.GetDirectoryName(Exe)!, "plugins", "data", "RootBuilder");
+		try {
+			return Directory.Exists(data) && Directory.EnumerateFiles(data, "BuildData.json", SearchOption.AllDirectories).Any();
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+			return false;
+		}
+	}
+
 	public static Mo2Instance Load(string a_mo2Exe, string? a_instanceDir = null)
 	{
 		if (!File.Exists(a_mo2Exe)) {

@@ -465,6 +465,10 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 		if (RunningProbe == null) {
 			WaitWhilePlayerUses(a_ct);
 		}
+		// his checklist 443: Mod Organizer closed before Root Builder's clear would leave its files in the game folder
+		if (RunningProbe == null && Mo2.RootBuilderBuilds && !WaitForClear(Mo2.RootBuilderDeployed, a_ct)) {
+			_log.Warn($"Root Builder still has its files in the game folder after {RootBuilderWait.TotalMinutes:0} minutes - closing Mod Organizer all the same; it takes them out at its next start");
+		}
 		_log.Detail("closing Mod Organizer");
 		_boxesBeforeClose = [.. Uia.Boxes(Pids()).Select(b => b.Text)];
 		var sw = Stopwatch.StartNew();
@@ -486,6 +490,27 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 		}
 		_log.Detail($"Mod Organizer closed after {sw.Elapsed.TotalSeconds:0} s");
 		Thread.Sleep(800);
+	}
+
+	public static TimeSpan RootBuilderWait { get; set; } = TimeSpan.FromMinutes(3);
+	public static TimeSpan RootBuilderLook { get; set; } = TimeSpan.FromSeconds(1);
+	// its first build reads the whole game folder before the program starts
+	static readonly TimeSpan RootBuilderBuildTime = TimeSpan.FromMinutes(10);
+
+	TimeSpan StartLimit(TimeSpan a_normal) => Mo2.RootBuilderBuilds ? a_normal + RootBuilderBuildTime : a_normal;
+
+	// true = its files are out of the game folder; false = they still stood at the limit
+	public static bool WaitForClear(Func<bool> a_deployed, CancellationToken a_ct)
+	{
+		var sw = Stopwatch.StartNew();
+		while (a_deployed()) {
+			if (sw.Elapsed > RootBuilderWait) {
+				return false;
+			}
+			a_ct.WaitHandle.WaitOne(RootBuilderLook);
+			a_ct.ThrowIfCancellationRequested();
+		}
+		return true;
 	}
 
 	readonly HashSet<string> _leftAlone = [];
@@ -530,6 +555,13 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 	{
 		var otherWords = SpeaksOther(Mo2.Language, System.Globalization.CultureInfo.CurrentUICulture.Name);
 		foreach (var box in Uia.Boxes(Pids())) {
+			// our add-on's questions are about the player's own files: never answered for them (it asks nothing during a run; an older copy may)
+			if (box.Title.Equals(RootBuilderAddOn.Title, StringComparison.OrdinalIgnoreCase)) {
+				if (_leftAlone.Add(box.Text)) {
+					_log.Warn($"Mod Organizer shows a box this run does not answer - left for you: {Trim(box.Text)}");
+				}
+				continue;
+			}
 			// what the box asks cannot be read in another language, but the state it would ask about can
 			var cameAfter = otherWords && !_boxesBeforeClose.Contains(box.Text);
 			if (box.Text.Contains("download", StringComparison.OrdinalIgnoreCase) || (cameAfter && DownloadsInProgress().Count > 0)) {
@@ -606,8 +638,9 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 			}
 			return FreshPid(a_image, old);
 		}
-		var pid = LaunchTool(cmd, Watch, a_startTimeout ?? TimeSpan.FromMinutes(3), a_ct) ?? throw new StepFailedException(
-			$"{a_image} did not start within {(a_startTimeout ?? TimeSpan.FromMinutes(3)).TotalMinutes:0} minutes - is MO2's executable \"{a_title}\" right?" +
+		var startLimit = StartLimit(a_startTimeout ?? TimeSpan.FromMinutes(3));
+		var pid = LaunchTool(cmd, Watch, startLimit, a_ct) ?? throw new StepFailedException(
+			$"{a_image} did not start within {startLimit.TotalMinutes:0} minutes - is MO2's executable \"{a_title}\" right?" +
 			WhatMo2Said(a_title, a_image, logAt) + KeepEvidence(a_title, logAt, asked, started));
 		_log.Detail($"{a_image} started (process {pid})");
 		Ours(pid);
@@ -785,8 +818,9 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 		EnsureSteam(a_ct);
 		Start(a_ct);
 		_log.Detail($"starting the game through Mod Organizer ({a_title})");
-		var pid = LaunchTool($"{Quote(Mo2.Exe)}{Instance} -p {Quote(ProfileName)} run -e {Quote(a_title)}", a_gamePid, TimeSpan.FromMinutes(5), a_ct) ??
-			throw new StepFailedException($"the game did not start within 5 minutes - is MO2's executable \"{a_title}\" right?");
+		var startLimit = StartLimit(TimeSpan.FromMinutes(5));
+		var pid = LaunchTool($"{Quote(Mo2.Exe)}{Instance} -p {Quote(ProfileName)} run -e {Quote(a_title)}", a_gamePid, startLimit, a_ct) ??
+			throw new StepFailedException($"the game did not start within {startLimit.TotalMinutes:0} minutes - is MO2's executable \"{a_title}\" right?");
 		// the run's own game: the only one it may close (a game the player starts is never touched)
 		Started.Add(pid);
 		return pid;

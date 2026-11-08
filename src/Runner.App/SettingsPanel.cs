@@ -412,6 +412,42 @@ public static class SettingsPanel
 
 		NewVersions(a_w, stack);
 
+		// his checklist 492: our add-on, only where Root Builder is in this setup's Mod Organizer
+		if (a_vm.Setup is { } rootSetup) {
+			try {
+				var rootMo2 = Mo2Instance.Load(rootSetup.Mo2Exe, rootSetup.Mo2Instance);
+				var state = RootBuilderAddOn.StateOf(rootMo2);
+				if (state != RootBuilderAddOn.State.NoRootBuilder) {
+					Head("ROOT BUILDER");
+					var rootNote = new TextBlock { Style = (Style)a_w.FindResource("MutedText"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 8),
+						Text = "Runs wait for Root Builder to put its files in place and to take them out. Our add-on, Root Builder Profiles, keeps what Root Builder leaves behind per profile " +
+						"and offers to move presets no mod owns out of the game folder. It is optional, and it needs Root Builder itself." };
+					stack.Children.Add(rootNote);
+					if (state == RootBuilderAddOn.State.Current) {
+						rootNote.Text += " It is in Mod Organizer.";
+					} else {
+						var addOn = new Button { Content = state == RootBuilderAddOn.State.NotAdded ? "Add Root Builder Profiles ..." : "Update Root Builder Profiles ...", Style = (Style)a_w.FindResource("Ghost"), HorizontalAlignment = HorizontalAlignment.Left };
+						addOn.Click += (_, _) => {
+							if (!Ask.Show(a_w, RootBuilderAddOn.Title, "It goes into Mod Organizer's plugins folder, and Mod Organizer loads it the next time it starts. To take it out, delete its folder there, rootbuilderprofiles.", "Add it", "Not now")) {
+								return;
+							}
+							try {
+								RootBuilderAddOn.Add(rootMo2);
+								rootNote.Text = "Root Builder Profiles is in Mod Organizer now. It loads the next time Mod Organizer starts.";
+								addOn.IsEnabled = false;
+							} catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException) {
+								a_vm.Say("The add-on could not be added: " + e.Message, "bad");
+							}
+						};
+						stack.Children.Add(addOn);
+					}
+				}
+			} catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException) {
+				// a setup whose Mod Organizer does not read says so in its check: nothing to offer here
+				a_vm.Say("Mod Organizer could not be read for its plugins: " + e.Message, "warn");
+			}
+		}
+
 		// his ask 2026-10-27: aware of a tool's updates, the download from the runner (its page, in the player's browser)
 		Head("TOOL UPDATES");
 		var updNote = new TextBlock { Text = "Asks each tool's own page (Nexus, GitHub) for its newest version - only when you press this.",

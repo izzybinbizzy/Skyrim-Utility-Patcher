@@ -18,4 +18,9 @@
     <PackageReference Include="System.Management" Version="10.0.14" />
   </ItemGroup>
 
+  <ItemGroup>
+    <EmbeddedResource Include="AddOn\init.py" LogicalName="RootBuilderProfiles.init" />
+    <EmbeddedResource Include="AddOn\core.py" LogicalName="RootBuilderProfiles.core" />
+  </ItemGroup>
+
 </Project>
