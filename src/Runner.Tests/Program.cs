@@ -3484,6 +3484,43 @@ public static class Program
 		Check((r.Setup["shared"]?["setYourself"] as JsonArray)?.Count == r.Removed.Count, "the copy itself says what to set");
 	}
 
+	// his checklist 457: a save's character is read off the start of its header (the UESP layout), every character with a save is
+	// listed most recently played first, and a picked character limits the in-game steps to that character's saves
+	static void T_TheCharacterIsReadOffTheSave()
+	{
+		var dir = Path.Combine(Path.GetTempPath(), "SUP saves " + Guid.NewGuid().ToString("N"));
+		Directory.CreateDirectory(dir);
+		try {
+			void Save(string a_file, string a_name, DateTime a_at)
+			{
+				using (var fs = File.Create(Path.Combine(dir, a_file)))
+				using (var w = new BinaryWriter(fs, Encoding.Latin1)) {
+					w.Write(Encoding.ASCII.GetBytes("TESV_SAVEGAME"));
+					w.Write(100u);
+					w.Write(12u);
+					w.Write(7u);
+					w.Write((ushort)a_name.Length);
+					w.Write(Encoding.Latin1.GetBytes(a_name));
+					w.Write(new byte[64]);
+				}
+				File.SetLastWriteTimeUtc(Path.Combine(dir, a_file), a_at);
+			}
+			var t0 = new DateTime(2026, 11, 1, 12, 0, 0, DateTimeKind.Utc);
+			Save("Save1_Lydia.ess", "Lydia", t0);
+			Save("Save2_Björn.ess", "Björn", t0.AddHours(1));
+			Save("Save3_Lydia.ess", "Lydia", t0.AddHours(2));
+			File.WriteAllText(Path.Combine(dir, "broken.ess"), "not a save");
+			Equal("Björn", SaveHeader.PlayerName(Path.Combine(dir, "Save2_Björn.ess")), "the name is read, its letters too");
+			Equal(null, SaveHeader.PlayerName(Path.Combine(dir, "broken.ess")), "a file that is no save gives no name");
+			Equal("Lydia, Björn", string.Join(", ", SaveHeader.Characters(dir)), "every character once, the most recently played first");
+		} finally {
+			try {
+				Directory.Delete(dir, true);
+			} catch (IOException) {
+			}
+		}
+	}
+
 	static void T_EveryToolStepHasItsHelpPage()
 	{
 		foreach (var s in StepCatalog.All.Where(s => s.Key is not ("shaders" or "xlodgen"))) {

@@ -252,6 +252,20 @@ public static class SettingsPanel
 		Field(stack, apply, "Backups folder", work, "backups");
 		Field(stack, apply, "Scratch folder (emptied after a whole run)", work, "scratch");
 		Field(stack, apply, "SKSE log folder (empty = My Games)", work, "skseLogs");
+		// his checklist 457: the character whose saves the in-game steps load (the names are read off the saves, off the window's thread)
+		Field(stack, apply, "Character for the in-game steps (empty = the newest save)", work, "character");
+		var whoHint = new TextBlock { Style = (Style)a_w.FindResource("MutedText"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(230, -6, 0, 10) };
+		stack.Children.Add(whoHint);
+		var forSaves = a_vm.Setup!;
+		_ = Task.Run(() => {
+			try {
+				var mo2 = Mo2Instance.Load(forSaves.Mo2Exe, forSaves.Mo2Instance);
+				return SaveHeader.Characters(InGame.SavesDir(new Profile(mo2, forSaves.Profile, () => false)));
+			} catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException or ArgumentException) {
+				return new List<string>();
+			}
+		}).ContinueWith(t => whoHint.Dispatcher.BeginInvoke(() => whoHint.Text = t.Result.Count == 0 ? "No saves found in this profile yet." :
+			"Characters with saves here, most recently played first: " + string.Join(", ", t.Result.Take(12))), TaskScheduler.Default);
 		Field(stack, apply, "A tool idle this long is looked at (minutes)", work, "idleMinutes", JsonValueKind.Number);
 		Field(stack, apply, "Free space a run needs (GB)", work, "minFreeGb", JsonValueKind.Number);
 		Choice(stack, apply, "Rebuild the shader caches", work, "shaderRebuild", [("whenChanged", "only when the shader mod changed"), ("always", "every run"), ("never", "never")]);

@@ -216,7 +216,8 @@ public static partial class InGame
 
 	// the player's own newest save - never one the runner (or the old MO2 Updater) made itself (his addition 2, 2026-10-27), nor
 	// one written while a run of ours went on (an autosave or quicksave the runner's game made in QASmoke - the fourth review, M3)
-	public static string? NewestPlayerSave(Profile a_profile, IReadOnlyList<(DateTime From, DateTime To)>? a_ourRuns = null)
+	// a_character: only that character's saves (the setup's "character", his checklist 457); empty = anyone's newest
+	public static string? NewestPlayerSave(Profile a_profile, IReadOnlyList<(DateTime From, DateTime To)>? a_ourRuns = null, string? a_character = null)
 	{
 		var d = SavesDir(a_profile);
 		if (!Directory.Exists(d)) {
@@ -225,9 +226,13 @@ public static partial class InGame
 		var f = new DirectoryInfo(d).EnumerateFiles("*.ess")
 			.Where(x => !Brand.Made(x.Name) && !x.Name.StartsWith("MO2 Updater - ", StringComparison.OrdinalIgnoreCase))
 			.Where(x => !(a_ourRuns ?? []).Any(r => x.LastWriteTimeUtc >= r.From && x.LastWriteTimeUtc <= r.To))
-			.OrderByDescending(x => x.LastWriteTimeUtc).FirstOrDefault();
+			.OrderByDescending(x => x.LastWriteTimeUtc)
+			.FirstOrDefault(x => string.IsNullOrWhiteSpace(a_character) || string.Equals(SaveHeader.PlayerName(x.FullName), a_character.Trim(), StringComparison.OrdinalIgnoreCase));
 		return f == null ? null : Path.GetFileNameWithoutExtension(f.Name);
 	}
+
+	// the character the setup picked for the in-game steps (null = anyone's newest save)
+	public static string? Character(RunContext a_ctx) => Setup.Str(a_ctx.Setup.Root, "character") is { Length: > 0 } c && c.Trim() != "" ? c.Trim() : null;
 
 	// the steps that start the runner's own game (the clean save, the save to play, the shader caches, the game-run grass cache)
 	static readonly HashSet<string> GameSteps = ["cleansave", "playsave", "shaders", "grass"];
@@ -289,7 +294,7 @@ public static partial class InGame
 			if (!ours) {
 				return null;
 			}
-			var mine = NewestPlayerSave(a_ctx.Profile, OurRuns(a_ctx));
+			var mine = NewestPlayerSave(a_ctx.Profile, OurRuns(a_ctx), Character(a_ctx));
 			return $"your newest save \"{newest}\" was made by this run's game (in QASmoke, DynDOLOD maybe off) - to play, load your own save" +
 				(mine != null ? $" \"{mine}\"" : "");
 		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
@@ -789,7 +794,8 @@ public static partial class InGame
 				$"Note exactly where you are standing (you go back there at the end). Open the console and type: coc {cell} - once you are there and your followers have caught up, save.");
 			return;
 		}
-		var save = a_s.Str("save") is { Length: > 0 } named ? named : NewestPlayerSave(a_ctx.Profile, OurRuns(a_ctx)) ?? throw new StepFailedException("the profile has no save of yours to load");
+		var save = a_s.Str("save") is { Length: > 0 } named ? named : NewestPlayerSave(a_ctx.Profile, OurRuns(a_ctx), Character(a_ctx)) ?? throw new StepFailedException(
+			Character(a_ctx) is { } who ? $"the profile has no save of {who} (the character this setup picked) to load" : "the profile has no save of yours to load");
 		a_ctx.Log.Detail($"your newest save: \"{save}\"");
 		try {
 			StartAndLoad(a_ctx, "cleansave", a_s, save);
@@ -863,7 +869,7 @@ public static partial class InGame
 	// be rebuilt")
 	public static void PlaySave(RunContext a_ctx, StepSettings a_s)
 	{
-		var player = a_ctx.CleanSaveName == null ? NewestPlayerSave(a_ctx.Profile, OurRuns(a_ctx)) : null;
+		var player = a_ctx.CleanSaveName == null ? NewestPlayerSave(a_ctx.Profile, OurRuns(a_ctx), Character(a_ctx)) : null;
 		// a named save that is gone (deleted, renamed) is passed over for the fallbacks, never loaded and failed on
 		var named = a_s.Str("save") is { Length: > 0 } n && SaveTime(a_ctx.Profile, n) != null ? n : null;
 		if (named == null && a_s.Str("save") is { Length: > 0 } missing) {
