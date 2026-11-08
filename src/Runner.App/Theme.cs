@@ -126,6 +126,9 @@ public static class Theme
 	// the look changed without the player picking it (Settings shows the new one)
 	public static event Action? Changed;
 
+	// any theme applied: what a converter colored from the old one is colored again (the state colors, the message's color)
+	public static event Action? Applied;
+
 	// the template's colour names -> the window's resource keys (a brush, and the same name + "Color")
 	static readonly Dictionary<string, string> ColorKeys = new(StringComparer.Ordinal) {
 		["Bg"] = "Bg", ["Panel"] = "Panel", ["Panel2"] = "Panel2", ["Line"] = "Line", ["Accent"] = "Gold", ["AccentLight"] = "GoldLight",
@@ -287,6 +290,7 @@ public static class Theme
 		WindowFrame.PaintAll();
 		TakeSizes();
 		ApplyScale();
+		Applied?.Invoke();
 		if (a_keep) {
 			// a theme the player picked: Windows' high contrast is no longer followed
 			s_followHighContrast = false;

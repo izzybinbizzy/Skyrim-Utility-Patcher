@@ -2,7 +2,7 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="clr-namespace:ToolRunner.App"
-        Title="Skyrim Utility Patcher" Width="1240" Height="800" MinWidth="980" MinHeight="620"
+        Title="{Binding WindowTitle}" Width="1240" Height="800" MinWidth="980" MinHeight="620"
         Background="{DynamicResource Bg}" Foreground="{DynamicResource Text}" FontFamily="{DynamicResource UiFont}" FontSize="{DynamicResource SizeBody}"
         WindowStartupLocation="CenterScreen" ShowActivated="True">
   <Window.Resources>
@@ -46,15 +46,16 @@
         <DockPanel Grid.Column="1" VerticalAlignment="Center" Margin="28,0,16,0">
           <TextBlock DockPanel.Dock="Left" Text="Setup" Foreground="{DynamicResource Muted}" VerticalAlignment="Center" Margin="0,0,8,0"/>
           <Button DockPanel.Dock="Right" Content="_New setup" Style="{StaticResource Ghost}" Margin="8,0,0,0" Click="NewSetup_Click" ToolTip="Make a setup for an MO2 profile (Ctrl+N)"
-                  IsEnabled="{Binding IsRunning, Converter={StaticResource Not}}"/>
+                  IsEnabled="{Binding IsRunning, Converter={StaticResource Not}}" AutomationProperties.AcceleratorKey="Ctrl+N"/>
           <ComboBox x:Name="SetupBox" ItemsSource="{Binding Setups}" SelectedItem="{Binding SelectedSetup}" DisplayMemberPath="Name" MinWidth="150" MaxWidth="320"
                     HorizontalAlignment="Left" AutomationProperties.Name="Setup" IsEnabled="{Binding IsRunning, Converter={StaticResource Not}}"/>
         </DockPanel>
         <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
-          <Button Content="_Check" Style="{StaticResource Ghost}" Command="{Binding CheckCommand}" ToolTip="Check every tool and setting before a run (F5)" Margin="0,0,8,0"/>
-          <Button Content="_History" Style="{StaticResource Ghost}" Click="History_Click" ToolTip="Past runs (Ctrl+H)" Margin="0,0,8,0"/>
+          <Button Content="_Check" Style="{StaticResource Ghost}" Command="{Binding CheckCommand}" ToolTip="Check every tool and setting before a run (F5)" Margin="0,0,8,0"
+                  AutomationProperties.AcceleratorKey="F5"/>
+          <Button Content="_History" Style="{StaticResource Ghost}" Click="History_Click" ToolTip="Past runs (Ctrl+H)" Margin="0,0,8,0" AutomationProperties.AcceleratorKey="Ctrl+H"/>
           <Button Content="_Queue" Style="{StaticResource Ghost}" Click="Queue_Click" ToolTip="Run several setups one after another" Margin="0,0,8,0"/>
-          <Button Content="_Settings" Style="{StaticResource Ghost}" Click="Settings_Click" ToolTip="This setup's settings (Ctrl+,)"/>
+          <Button Content="_Settings" Style="{StaticResource Ghost}" Click="Settings_Click" ToolTip="This setup's settings (Ctrl+,)" AutomationProperties.AcceleratorKey="Ctrl+Comma"/>
         </StackPanel>
       </Grid>
     </Border>
@@ -65,7 +66,7 @@
               Visibility="{Binding PowerText, Converter={StaticResource NotEmpty}}">
         <DockPanel>
           <Button DockPanel.Dock="Right" Content="Keep the PC _on (cancel)" Style="{StaticResource Primary}" Command="{Binding CancelPowerCommand}"/>
-          <TextBlock Text="{Binding PowerText}" TextWrapping="Wrap" VerticalAlignment="Center" AutomationProperties.LiveSetting="Assertive"/>
+          <TextBlock Text="{Binding PowerText}" TextWrapping="Wrap" VerticalAlignment="Center"/>
         </DockPanel>
       </Border>
       <Border Background="{DynamicResource BannerBad}" BorderBrush="{DynamicResource Bad}" BorderThickness="0,0,0,1" Padding="20,10"
@@ -77,8 +78,7 @@
         </DockPanel>
       </Border>
       <Border Padding="20,6" Visibility="{Binding Message, Converter={StaticResource NotEmpty}}" Background="{DynamicResource Panel2}">
-        <TextBlock Text="{Binding Message}" Foreground="{Binding MessageKind, Converter={StaticResource KindBrush}}" TextWrapping="Wrap"
-                   AutomationProperties.LiveSetting="Polite"/>
+        <TextBlock Text="{Binding Message}" Foreground="{Binding MessageKind, Converter={StaticResource KindBrush}}" TextWrapping="Wrap"/>
       </Border>
     </StackPanel>
 
@@ -121,6 +121,8 @@
           <ListBox.ItemContainerStyle>
             <Style TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">
               <Setter Property="AutomationProperties.Name" Value="{Binding Name}"/>
+              <Setter Property="AutomationProperties.ItemStatus" Value="{Binding Status}"/>
+              <Setter Property="AutomationProperties.HelpText" Value="{Binding About}"/>
               <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
               <Setter Property="Padding" Value="10,2"/>
               <Setter Property="MinHeight" Value="0"/>
@@ -174,8 +176,7 @@
                 <TextBlock Text="{Binding Left}" Style="{StaticResource MutedText}" HorizontalAlignment="Right"/>
               </StackPanel>
               <StackPanel>
-                <TextBlock Text="{Binding NowTitle}" FontFamily="{DynamicResource HeadFont}" FontSize="{DynamicResource SizeStepTitle}" Foreground="{DynamicResource GoldLight}"
-                           AutomationProperties.LiveSetting="Polite"/>
+                <TextBlock Text="{Binding NowTitle}" FontFamily="{DynamicResource HeadFont}" FontSize="{DynamicResource SizeStepTitle}" Foreground="{DynamicResource GoldLight}"/>
                 <TextBlock Text="{Binding NowActivity}" TextWrapping="Wrap" Margin="0,4,0,0" Foreground="{DynamicResource Text}"/>
               </StackPanel>
             </DockPanel>
@@ -194,14 +195,14 @@
               </DockPanel>
             </Border>
             <TextBlock Text="{Binding QueueText}" TextWrapping="Wrap" Margin="0,12,0,0" Foreground="{DynamicResource Gold}"
-                       Visibility="{Binding QueueText, Converter={StaticResource NotEmpty}}" AutomationProperties.LiveSetting="Polite"/>
+                       Visibility="{Binding QueueText, Converter={StaticResource NotEmpty}}"/>
             <TextBlock Text="{Binding Verdict}" TextWrapping="Wrap" Margin="0,12,0,0" FontSize="{DynamicResource SizeVerdict}"
                        Foreground="{Binding VerdictKind, Converter={StaticResource KindBrush}}"
                        Visibility="{Binding Verdict, Converter={StaticResource NotEmpty}}"/>
             <!-- wraps: in the smallest window the New game tick goes under the buttons instead of being cut off -->
             <WrapPanel Orientation="Horizontal" Margin="0,16,0,0">
               <Button Style="{StaticResource Primary}" Command="{Binding StartCommand}" IsEnabled="{Binding CanStart}"
-                      ToolTip="Run every ticked step (Ctrl+Enter)" AutomationProperties.Name="Start">
+                      ToolTip="Run every ticked step (Ctrl+Enter)" AutomationProperties.Name="Start" AutomationProperties.AcceleratorKey="Ctrl+Enter">
                 <TextBlock Text="START" Foreground="{DynamicResource OnAccent}"/>
               </Button>
               <Button Content="Stop _after this step" Style="{StaticResource Ghost}" Command="{Binding StopAfterCommand}" Margin="12,0,0,0"
@@ -220,12 +221,21 @@
           </StackPanel>
         </Border>
         <!-- the check's findings -->
+        <!-- a list the keyboard and a screen reader can walk line by line (arrow keys), held to a few lines so the log keeps its room -->
         <Border DockPanel.Dock="Top" Style="{StaticResource Card}" Margin="0,0,0,12" Visibility="{Binding Issues.Count, Converter={StaticResource NotEmpty}}">
-          <ItemsControl ItemsSource="{Binding Issues}">
-            <ItemsControl.ItemTemplate>
-              <DataTemplate><TextBlock Text="{Binding}" TextWrapping="Wrap" Margin="0,2"/></DataTemplate>
-            </ItemsControl.ItemTemplate>
-          </ItemsControl>
+          <ListBox ItemsSource="{Binding Issues}" MaxHeight="220" Background="Transparent" BorderThickness="0" AutomationProperties.Name="What the check found"
+                   ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+            <ListBox.ItemContainerStyle>
+              <Style TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">
+                <Setter Property="AutomationProperties.Name" Value="{Binding}"/>
+                <Setter Property="Padding" Value="4,2"/>
+                <Setter Property="MinHeight" Value="0"/>
+              </Style>
+            </ListBox.ItemContainerStyle>
+            <ListBox.ItemTemplate>
+              <DataTemplate><TextBlock Text="{Binding}" TextWrapping="Wrap"/></DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
         </Border>
         <!-- the picked step's last run and what it did, and the steps whose output is out of date -->
         <Border DockPanel.Dock="Top" Style="{StaticResource Card}" Margin="0,0,0,12" Visibility="{Binding LastCardText, Converter={StaticResource NotEmpty}}">
@@ -257,11 +267,11 @@
     <Border Grid.Row="3" Background="{DynamicResource Panel}" BorderBrush="{DynamicResource Line}" BorderThickness="0,1,0,0" Padding="20,6">
       <DockPanel>
         <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" Margin="0,0,24,0">
-          <TextBlock Margin="0,0,18,0" AutomationProperties.LiveSetting="Polite">
+          <TextBlock Margin="0,0,18,0" AutomationProperties.Name="{Binding Mo2Text}">
             <Run Text="●" Foreground="{Binding Mo2Open, Converter={StaticResource StateBrush}, ConverterParameter=warn}"/>
             <Run Text="{Binding Mo2Text, Mode=OneWay}" Foreground="{DynamicResource Text}"/>
           </TextBlock>
-          <TextBlock AutomationProperties.LiveSetting="Polite">
+          <TextBlock AutomationProperties.Name="{Binding GameText}">
             <Run Text="●" Foreground="{Binding GameRunning, Converter={StaticResource StateBrush}, ConverterParameter=bad}"/>
             <Run Text="{Binding GameText, Mode=OneWay}" Foreground="{DynamicResource Text}"/>
           </TextBlock>
@@ -272,8 +282,10 @@
 
     <!-- side panels over the right part: history, settings -->
     <Border x:Name="Shade" Grid.Row="0" Grid.RowSpan="4" Background="{DynamicResource Shade}" Visibility="Collapsed" MouseDown="Shade_MouseDown"/>
+    <!-- Tab stays inside an open drawer (its own cycle) until Esc or Close - the window behind it is shaded and out of reach -->
     <Border x:Name="Drawer" Grid.Row="1" Grid.RowSpan="3" HorizontalAlignment="Right" Width="640" Background="{DynamicResource Panel}"
-            BorderBrush="{DynamicResource GoldDim}" BorderThickness="1,0,0,0" Visibility="Collapsed">
+            BorderBrush="{DynamicResource GoldDim}" BorderThickness="1,0,0,0" Visibility="Collapsed"
+            KeyboardNavigation.TabNavigation="Cycle" KeyboardNavigation.ControlTabNavigation="Cycle" KeyboardNavigation.DirectionalNavigation="Contained">
       <DockPanel Margin="20">
         <DockPanel DockPanel.Dock="Top" Margin="0,0,0,12">
           <Button DockPanel.Dock="Right" Content="Close" Style="{StaticResource Ghost}" Click="CloseDrawer_Click" ToolTip="Esc"/>

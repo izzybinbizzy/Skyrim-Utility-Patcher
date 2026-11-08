@@ -42,6 +42,34 @@ public partial class MainWindow : Window
 		if (_vm.Setups.Count == 0) {
 			_vm.Say("No setup yet: press New setup and pick your Mod Organizer and profile.", "warn");
 		}
+		// what changes on its own is said to a screen reader (his checklist 490) - once the window is up, so the first look at the
+		// last run is not read out as news
+		Loaded += (_, _) => Dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, () => _vm.PropertyChanged += Announce);
+		Theme.Applied += _vm.Repaint;
+	}
+
+	void Announce(object? a_s, System.ComponentModel.PropertyChangedEventArgs a_e)
+	{
+		switch (a_e.PropertyName) {
+		case nameof(MainViewModel.Message):
+			A11y.Say(this, _vm.Message, _vm.MessageKind == "bad");
+			break;
+		case nameof(MainViewModel.NowTitle) when _vm.IsRunning && _vm.Waiting == "":
+			A11y.Say(this, "Now: " + _vm.NowTitle);
+			break;
+		case nameof(MainViewModel.Waiting) when _vm.Waiting != "":
+			A11y.Say(this, "Your turn in the game: " + _vm.Waiting, true);
+			break;
+		case nameof(MainViewModel.Verdict) when _vm.Verdict != "":
+			A11y.Say(this, _vm.NowTitle + ": " + _vm.Verdict, true);
+			break;
+		case nameof(MainViewModel.PowerText) when _vm.PowerText != "":
+			A11y.Say(this, _vm.PowerText, true);
+			break;
+		case nameof(MainViewModel.Interrupted) when _vm.Interrupted != "":
+			A11y.Say(this, _vm.Interrupted, true);
+			break;
+		}
 	}
 
 	void OnKeys(object a_s, KeyEventArgs a_e)
@@ -196,7 +224,17 @@ public partial class MainWindow : Window
 		}
 		Drawer.Visibility = Shade.Visibility = Visibility.Collapsed;
 		_panel = "";
+		// the keyboard goes back where it was before the drawer opened
+		if (_beforeDrawer is UIElement { IsVisible: true, IsEnabled: true } back) {
+			back.Focus();
+		} else {
+			StepList.Focus();
+		}
+		_beforeDrawer = null;
 	}
+
+	// what had the keyboard before a drawer opened (it gets it back when the drawer closes)
+	IInputElement? _beforeDrawer;
 
 	// settings typed but not saved: asked before they are thrown away
 	bool LeaveSettings() =>
@@ -235,7 +273,20 @@ public partial class MainWindow : Window
 			"changes" => WithSwitch(ChangesPanel(null), a_which),
 			_ => SettingsPanel.Build(this, _vm),
 		};
+		var opening = Drawer.Visibility != Visibility.Visible;
+		if (opening) {
+			_beforeDrawer = Keyboard.FocusedElement;
+		}
+		System.Windows.Automation.AutomationProperties.SetName(Drawer, a_which switch { "history" => "Past runs", "changes" => "What MO2 changed", _ => "Settings" });
 		Drawer.Visibility = Shade.Visibility = Visibility.Visible;
+		// the keyboard moves into the drawer (Tab then stays inside it - its own cycle - until Esc or Close), and a screen reader
+		// hears which one opened
+		Dispatcher.BeginInvoke(DispatcherPriority.Input, () => {
+			if (!Drawer.IsKeyboardFocusWithin) {
+				Drawer.MoveFocus(new TraversalRequest(FocusNavigationDirection.First));
+			}
+		});
+		A11y.Say(this, (opening ? "Opened: " : "") + System.Windows.Automation.AutomationProperties.GetName(Drawer) + ". Escape closes it.");
 	}
 
 	// the off-screen pictures only: the changes view filled with made-up rows (nothing read or written)
@@ -481,13 +532,17 @@ public partial class MainWindow : Window
 
 	protected override void OnClosed(EventArgs a_e)
 	{
+		Theme.Applied -= _vm.Repaint;
 		_timer.Stop();
 		_tray?.Dispose();
 		base.OnClosed(a_e);
 	}
 }
 
-public sealed record ChangeRow(string Mod, string What, string Detail);
+public sealed record ChangeRow(string Mod, string What, string Detail)
+{
+	public override string ToString() => $"{Mod} {What}, {Detail}";
+}
 
 // a themed yes / no window (never a plain system box)
 public static class Ask
@@ -500,15 +555,23 @@ public static class Ask
 		return result;
 	}
 
+	// a notice with one button (Enter and Esc both close it)
+	public static void Tell(Window a_owner, string a_title, string a_text, string a_ok) => Make(a_owner, a_title, a_text, a_ok, null, _ => { }).ShowDialog();
+
 	// the box itself (the off-screen pictures draw it without waiting on it)
-	public static Window Make(Window a_owner, string a_title, string a_text, string a_yes, string a_no, Action<bool> a_done)
+	public static Window Make(Window a_owner, string a_title, string a_text, string a_yes, string? a_no, Action<bool> a_done)
 	{
 		var w = new Window {
 			Owner = a_owner, Title = a_title, Width = 560, SizeToContent = SizeToContent.Height, WindowStartupLocation = WindowStartupLocation.CenterOwner,
 			Background = Brushes2.Get("Panel"), Foreground = Brushes2.Get("Text"), ResizeMode = ResizeMode.NoResize, ShowInTaskbar = false,
+			FontFamily = (System.Windows.Media.FontFamily)a_owner.FindResource("UiFont"), FontSize = (double)a_owner.FindResource("SizeBody"),
 		};
-		var yes = new Button { Content = a_yes, Style = (Style)a_owner.FindResource("Primary"), Margin = new Thickness(0, 0, 10, 0) };
-		var no = new Button { Content = a_no, Style = (Style)a_owner.FindResource("Ghost"), IsCancel = true, IsDefault = true };
+		var yes = new Button { Content = a_yes, Style = (Style)a_owner.FindResource("Primary"), Margin = new Thickness(0, 0, a_no == null ? 0 : 10, 0) };
+		// a notice has only its one button: it is the safe answer too
+		var no = new Button { Content = a_no ?? "", Style = (Style)a_owner.FindResource("Ghost"), IsCancel = a_no != null, IsDefault = a_no != null };
+		if (a_no == null) {
+			yes.IsCancel = yes.IsDefault = true;
+		}
 		yes.Click += (_, _) => {
 			a_done(true);
 			w.Close();
@@ -516,7 +579,9 @@ public static class Ask
 		no.Click += (_, _) => w.Close();
 		var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 18, 0, 0) };
 		buttons.Children.Add(yes);
-		buttons.Children.Add(no);
+		if (a_no != null) {
+			buttons.Children.Add(no);
+		}
 		var body = new StackPanel { Margin = new Thickness(22) };
 		body.Children.Add(new TextBlock { Text = a_title, Style = (Style)a_owner.FindResource("H1"), Margin = new Thickness(0, 0, 0, 12), FontSize = (double)a_owner.FindResource("SizeHeading1") });
 		// a long text (a run's preview) scrolls inside the box instead of growing past the screen
@@ -526,7 +591,11 @@ public static class Ask
 		body.Children.Add(scroll);
 		body.Children.Add(buttons);
 		w.Content = new Border { Background = Brushes2.Get("Panel"), Child = body };
-		w.Loaded += (_, _) => no.Focus();
+		// the safe answer has the keyboard; a screen reader hears the whole question, not only the button
+		w.Loaded += (_, _) => {
+			(a_no == null ? yes : no).Focus();
+			A11y.Say(w, a_title + ". " + a_text, true);
+		};
 		return w;
 	}
 }

@@ -3193,4 +3193,69 @@ public static class Program
 			File.Delete(file);
 		}
 	}
+
+	// his checklist 490: a screen reader hears each step whole in words (its glyph and color say it to the eye), and list rows by
+	// their words - never a type's name or a file path
+	static void T_ScreenReadersHearEachStepInWords()
+	{
+		Equal("done in 4m", ToolRunner.App.A11y.StepStatus(true, false, StepState.Done, "4m", "5m", ""), "a finished step");
+		Equal("running for 2m", ToolRunner.App.A11y.StepStatus(true, false, StepState.Running, "2m", "", ""), "the running step");
+		Equal("failed, PGPatcher.esp requires master Gone.esm", ToolRunner.App.A11y.StepStatus(true, false, StepState.Failed, "1m", "", "PGPatcher.esp requires master Gone.esm"), "a failure with its reason");
+		Equal("switched off, usually takes 24m", ToolRunner.App.A11y.StepStatus(false, false, null, "", "24m", ""), "a switched-off step");
+		Equal("left out for a new game", ToolRunner.App.A11y.StepStatus(true, true, null, "", "", ""), "a save step on a new game");
+		Equal("Bottled", new ToolRunner.App.SetupItem("Bottled", @"C:\Data\Setups\Bottled.json").ToString(), "a setup is read by its name, not its path");
+		var row = new ToolRunner.App.HistoryRow("Tue Oct 27  21:02", "Bottled", "1h 41m", "finished: 12 step(s)", true, @"C:\Runs\1").ToString();
+		Check(row.Contains("finished", StringComparison.Ordinal) && !row.Contains(@"C:\Runs", StringComparison.Ordinal), "a past run in words: " + row);
+		var said = new List<(string, bool)>();
+		ToolRunner.App.A11y.Heard = (t, i) => said.Add((t, i));
+		try {
+			ToolRunner.App.A11y.Say(null!, "Your turn in the game", true);
+			ToolRunner.App.A11y.Say(null!, "   ");
+			ToolRunner.App.A11y.Say(null!, new string('x', 900));
+		} finally {
+			ToolRunner.App.A11y.Heard = null;
+		}
+		Equal(2, said.Count, "blank text is never said");
+		Check(said[0].Item2 && said[0].Item1 == "Your turn in the game", "an important line as important");
+		Check(said[1].Item1.Length < 620, "a long text is cut for the reader");
+	}
+
+	// his checklist 484: a clean removal sends only the program's own data and its own run backups to the Recycle Bin; setups stay
+	// when asked; nothing goes while a run did not finish
+	static void T_CleanRemovalTakesOnlyItsOwn()
+	{
+		using var f = new FakeMo2();
+		var setup = f.WriteSetup(("pandora", new JsonObject()));
+		var setupsDir = Path.GetDirectoryName(f.SetupFile)!;
+		var own = Path.Combine(setup.BackupDir, "2026-11-01 20-00-00 " + setup.Name);
+		var other = Path.Combine(setup.BackupDir, "2026-11-01 20-00-00 Someone Else");
+		var stray = Path.Combine(setup.BackupDir, "my notes");
+		foreach (var d in new[] { own, other, stray }) {
+			Directory.CreateDirectory(d);
+		}
+		Check(Files.SamePath(setupsDir, Path.Combine(f.Data, "Setups")), "the fake setup lives in the data folder's Setups");
+		var all = DataRemoval.Make(f.Data, false);
+		Equal<string?>(null, all.Refused, "nothing refused");
+		Check(all.Remove.Contains(own, StringComparer.OrdinalIgnoreCase), "this setup's run backup goes");
+		Check(!all.Remove.Contains(other, StringComparer.OrdinalIgnoreCase) && !all.Remove.Contains(stray, StringComparer.OrdinalIgnoreCase), "another setup's backup and a stray folder stay");
+		Check(all.Remove.Any(p => Files.SamePath(p, f.Data)), "the data folder goes whole");
+		var keep = DataRemoval.Make(f.Data, true);
+		Check(keep.Kept.Any(p => Files.SamePath(p, setupsDir)) && !keep.Remove.Any(p => Files.SamePath(p, setupsDir) || Files.SamePath(p, f.Data)), "the setups kept, so the data folder itself stays");
+		var binned = new List<string>();
+		Equal(0, DataRemoval.Carry(keep, p => { binned.Add(p); return null; }).Count, "all of it went");
+		Check(binned.Count == keep.Remove.Count(p => File.Exists(p) || Directory.Exists(p)), "each entry sent once");
+		var j = new Journal { Id = "x", Folder = Path.Combine(Runner.RunsDir(f.Data), "2026-11-02 21-00-00 " + setup.Name), SetupFile = f.SetupFile, SetupName = setup.Name,
+			Started = DateTime.Now, State = RunState.Running, Pid = 0 };
+		Directory.CreateDirectory(j.Folder);
+		j.Save();
+		var refused = DataRemoval.Make(f.Data, false);
+		Check(refused.Refused != null, "a run that did not finish refuses the removal");
+		var threw = false;
+		try {
+			DataRemoval.Carry(refused, _ => throw new InvalidOperationException("never reached"));
+		} catch (InvalidOperationException e) when (e.Message == refused.Refused) {
+			threw = true;
+		}
+		Check(threw, "carrying a refused plan says why and sends nothing");
+	}
 }

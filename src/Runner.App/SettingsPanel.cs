@@ -415,10 +415,15 @@ public static class SettingsPanel
 		};
 		undo.Click += (_, _) => a_w.ShowPanel("settings", true);
 		folders.Click += (_, _) => MainViewModel.OpenFolder(AppPaths.Data);
-		var bar = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 12, 0, 0) };
+		// his checklist 484: a clean removal of everything the program keeps (to the Recycle Bin, never erased)
+		var remove = new Button { Content = "Remove its data ...", Style = (Style)a_w.FindResource("Danger"), Margin = new Thickness(10, 0, 0, 0),
+			ToolTip = "Sends the program's own data and its run backups to the Recycle Bin - the mods the tools made stay in Mod Organizer" };
+		remove.Click += (_, _) => RemoveData(a_w, errors);
+		var bar = new WrapPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 12, 0, 0) };
 		bar.Children.Add(save);
 		bar.Children.Add(undo);
 		bar.Children.Add(folders);
+		bar.Children.Add(remove);
 		var where = new TextBlock { Text = "Data folder (setups, runs, backups): " + AppPaths.Data, Style = (Style)a_w.FindResource("MutedText"),
 			TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 0) };
 		var dock = new DockPanel();
@@ -430,6 +435,44 @@ public static class SettingsPanel
 		dock.Children.Add(errors);
 		dock.Children.Add(new ScrollViewer { Content = stack, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Padding = new Thickness(0, 0, 12, 0) });
 		return dock;
+	}
+
+	// everything the program keeps to the Recycle Bin, after a plain list of what goes and what stays; the window closes after,
+	// since the folder it writes into is gone. Refused while a run goes or one still needs its profile put back.
+	static void RemoveData(MainWindow a_w, TextBlock a_errors)
+	{
+		if (HasChanges && !Ask.Show(a_w, "Settings not saved", "You changed settings and did not press Save. Go on without saving them?", "Go on", "Keep editing")) {
+			return;
+		}
+		var keepSetups = Ask.Show(a_w, "Keep your setups?", "Your setups (which steps run, in which order, with which settings) can stay, so a new copy of the program " +
+			"picks them up again. Everything else the program keeps goes.", "Keep my setups", "Remove them too");
+		var plan = DataRemoval.Make(AppPaths.Data, keepSetups);
+		if (plan.Refused != null) {
+			a_errors.Text = "Not removed: " + plan.Refused + ".";
+			return;
+		}
+		var lines = plan.Remove.Select(p => "• " + p).ToList();
+		var text = "These go to the Recycle Bin (you can bring them back from there):\n" + string.Join("\n", lines) +
+			(plan.Kept.Count > 0 ? "\n\nThese stay:\n" + string.Join("\n", plan.Kept.Select(p => "• " + p)) : "") +
+			"\n\nThe mods the tools made (the outputs) stay in Mod Organizer - they are part of your load order; remove them there if you want." +
+			"\n\nThe window closes afterwards. The program file itself stays where it is - delete it yourself when you are done.";
+		if (!Ask.Show(a_w, "Remove the program's data", text, "Send them to the Recycle Bin", "Keep everything")) {
+			return;
+		}
+		List<string> failed;
+		try {
+			failed = DataRemoval.Carry(plan);
+		} catch (InvalidOperationException e) {
+			a_errors.Text = "Not removed: " + e.Message + ".";
+			return;
+		}
+		if (failed.Count > 0) {
+			a_errors.Text = "Some of it could not go to the Recycle Bin:\n" + string.Join("\n", failed);
+			return;
+		}
+		HasChanges = false;
+		Ask.Tell(a_w, "Removed", "The program's data is in the Recycle Bin. The window closes now.", "Close");
+		Application.Current.Shutdown();
 	}
 
 	static readonly JsonSerializerOptions Pretty = new() { WriteIndented = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };

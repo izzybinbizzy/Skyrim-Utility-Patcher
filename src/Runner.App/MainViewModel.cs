@@ -9,19 +9,22 @@ public sealed partial class StepRow : Observable
 	public required string Key { get; init; }
 	public required string Name { get; init; }
 	public required string About { get; init; }
-	public bool On { get; set => Set(ref field, value); }
-	public StepState? State { get; set { if (Set(ref field, value)) OnPropertyChanged(nameof(Glyph)); } }
-	public string Usual { get; set => Set(ref field, value); } = "";
-	public string Elapsed { get; set => Set(ref field, value); } = "";
+	public bool On { get; set { if (Set(ref field, value)) OnPropertyChanged(nameof(Status)); } }
+	public StepState? State { get; set { if (Set(ref field, value)) { OnPropertyChanged(nameof(Glyph)); OnPropertyChanged(nameof(Status)); } } }
+	public string Usual { get; set { if (Set(ref field, value)) OnPropertyChanged(nameof(Status)); } } = "";
+	public string Elapsed { get; set { if (Set(ref field, value)) OnPropertyChanged(nameof(Status)); } } = "";
 	public bool IsCurrent { get; set => Set(ref field, value); }
-	public string Note { get; set => Set(ref field, value); } = "";
+	public string Note { get; set { if (Set(ref field, value)) OnPropertyChanged(nameof(Status)); } } = "";
 	public int Number { get; set => Set(ref field, value); }
 	// ticked, but left out of every run: the setup is set to a new game and this is a save step
-	public bool LeftOut { get; set => Set(ref field, value); }
+	public bool LeftOut { get; set { if (Set(ref field, value)) OnPropertyChanged(nameof(Status)); } }
 	// its last run in one line: when, how it ended, and whether its output is still current ("" = it never ran)
 	public string LastRun { get; set => Set(ref field, value); } = "";
 	public string LastKind { get; set => Set(ref field, value); } = "";
 	public bool Runs => On && !LeftOut;
+
+	// the row in words for a screen reader (the glyph and its color say it to the eye)
+	public string Status => A11y.StepStatus(On, LeftOut, State, Elapsed, Usual, Note);
 
 	public string Glyph => State switch {
 		StepState.Running => Theme.Glyph("Running"),
@@ -32,11 +35,25 @@ public sealed partial class StepRow : Observable
 		_ => "",
 	};
 
+	// a new theme: the glyph and the state's color are read again
+	public void Repaint()
+	{
+		OnPropertyChanged(nameof(State));
+		OnPropertyChanged(nameof(Glyph));
+		OnPropertyChanged(nameof(LastKind));
+	}
 }
 
-public sealed record SetupItem(string Name, string File);
+// a list row is read out by its words, never by its type's name or a file path (screen readers use the item's text)
+public sealed record SetupItem(string Name, string File)
+{
+	public override string ToString() => Name;
+}
 
-public sealed record HistoryRow(string When, string Setup, string Took, string Verdict, bool Ok, string Folder);
+public sealed record HistoryRow(string When, string Setup, string Took, string Verdict, bool Ok, string Folder)
+{
+	public override string ToString() => $"{When}, {Setup}, {(Took == "-" ? "" : Took + ", ")}{Verdict}";
+}
 
 // The dashboard's state. The window reads the run's record off disk once a second; nothing here runs a tool.
 public sealed partial class MainViewModel : Observable
@@ -52,15 +69,31 @@ public sealed partial class MainViewModel : Observable
 	public bool GameRunning { get; set { if (Set(ref field, value)) OnPropertyChanged(nameof(GameText)); } }
 	public string Mo2Text => Mo2Open ? "Mod Organizer open" : "Mod Organizer closed";
 	public string GameText => GameRunning ? "Skyrim running" : "Skyrim not running";
-	public bool IsRunning { get; set { if (Set(ref field, value)) { OnPropertyChanged(nameof(ShowProgress)); OnPropertyChanged(nameof(CanStart)); OnPropertyChanged(nameof(LastCardText)); } } }
+	public bool IsRunning { get; set { if (Set(ref field, value)) { OnPropertyChanged(nameof(ShowProgress)); OnPropertyChanged(nameof(CanStart)); OnPropertyChanged(nameof(LastCardText)); OnPropertyChanged(nameof(WindowTitle)); } } }
 	// START needs a setup that reads and no run going
 	public bool CanStart => !IsRunning && Setup != null;
 	// no moving bar while the run waits for the player: nothing is working then
 	public bool ShowProgress => IsRunning && Waiting == "";
-	public string NowTitle { get; set => Set(ref field, value); } = "Ready";
+	public string NowTitle { get; set { if (Set(ref field, value)) OnPropertyChanged(nameof(WindowTitle)); } } = "Ready";
 	public string NowActivity { get; set => Set(ref field, value); } = "";
-	public double Progress { get; set => Set(ref field, value); }
-	public bool ProgressKnown { get; set => Set(ref field, value); }
+	public double Progress { get; set { if (Set(ref field, value)) OnPropertyChanged(nameof(WindowTitle)); } }
+	public bool ProgressKnown { get; set { if (Set(ref field, value)) OnPropertyChanged(nameof(WindowTitle)); } }
+	// the title bar and the taskbar button say what runs (read out on Alt+Tab, seen with the window behind the game)
+	public string WindowTitle => !IsRunning ? Brand.Name :
+		Waiting != "" ? $"Your turn in the game - {Brand.Name}" :
+		$"{NowTitle}{(ProgressKnown ? $" {Progress * 100:0}%" : "")} - {Brand.Name}";
+
+	// a new theme: every color a converter picked is picked again from the new one
+	public void Repaint()
+	{
+		OnPropertyChanged(nameof(MessageKind));
+		OnPropertyChanged(nameof(VerdictKind));
+		OnPropertyChanged(nameof(Mo2Open));
+		OnPropertyChanged(nameof(GameRunning));
+		foreach (var s in Steps) {
+			s.Repaint();
+		}
+	}
 	// the whole run's share done (steps finished + the running step's part), for the taskbar button
 	public double RunProgress { get; set => Set(ref field, value); }
 	// what the taskbar draws: the share done, at least a visible piece while it waits, all of it when it is red
@@ -70,7 +103,7 @@ public sealed partial class MainViewModel : Observable
 	public string Left { get; set => Set(ref field, value); } = "";
 	public string Verdict { get; set => Set(ref field, value); } = "";
 	public string VerdictKind { get; set => Set(ref field, value); } = "";
-	public string Waiting { get; set { if (Set(ref field, value)) OnPropertyChanged(nameof(ShowProgress)); } } = "";
+	public string Waiting { get; set { if (Set(ref field, value)) { OnPropertyChanged(nameof(ShowProgress)); OnPropertyChanged(nameof(WindowTitle)); } } } = "";
 	public string Interrupted { get; set => Set(ref field, value); } = "";
 	public string Message { get; set => Set(ref field, value); } = "";
 	public string MessageKind { get; set => Set(ref field, value); } = "";
