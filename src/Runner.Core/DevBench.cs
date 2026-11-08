@@ -81,15 +81,16 @@ public sealed class DevBench(string a_baseUrl = "http://127.0.0.1:8920/api/tool/
 
 	// a load box answered by its TEXT and the button's LABEL: a save with missing / inactive plugins first asks "search ...?" /
 	// "Activate now?" -> No (activating a plugin in game can crash it), then "... continue loading?" -> Yes; a one-button notice
-	// is acknowledged; anything else is not answered (null)
-	public static (string? Answer, int Index) DecideBox(string a_body, IReadOnlyList<string> a_labels, int? a_buttonCount)
+	// is acknowledged; anything else is not answered (null). a_words: the game's own text for those boxes and buttons, for a game
+	// that is not in English (his checklist 439)
+	public static (string? Answer, int Index) DecideBox(string a_body, IReadOnlyList<string> a_labels, int? a_buttonCount, GameWords? a_words = null)
 	{
 		var body = a_body.ToLowerInvariant();
 		var low = a_labels.Select(l => l.Trim().ToLowerInvariant()).ToList();
 		string want;
-		if (body.Contains("activate now") || body.Contains("currently inactive") || (body.Contains("search") && (body.Contains("creations") || body.Contains("content")))) {
+		if (body.Contains("activate now") || body.Contains("currently inactive") || (body.Contains("search") && (body.Contains("creations") || body.Contains("content"))) || a_words?.AsksNo(a_body) == true) {
 			want = "no";
-		} else if (body.Contains("continue") && body.Contains("load")) {
+		} else if ((body.Contains("continue") && body.Contains("load")) || a_words?.AsksYes(a_body) == true) {
 			want = "yes";
 		} else if (a_labels.Count == 1 || (a_labels.Count == 0 && a_buttonCount == 1)) {
 			return ("acknowledged", 0);
@@ -97,6 +98,9 @@ public sealed class DevBench(string a_baseUrl = "http://127.0.0.1:8920/api/tool/
 			return (null, -1);
 		}
 		var i = low.IndexOf(want);
+		if (i < 0 && a_words != null) {
+			i = a_words.Button(want == "yes", a_labels);
+		}
 		if (i >= 0) {
 			return ("answered " + want.ToUpperInvariant(), i);
 		}

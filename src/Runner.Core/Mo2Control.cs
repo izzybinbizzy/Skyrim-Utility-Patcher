@@ -353,7 +353,7 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 			return;
 		}
 		foreach (var b in Uia.Boxes(Pids()).Where(b => b.Text == a_text)) {
-			if (Uia.Button(b.Element, "OK", "Close") is { } ok) {
+			if ((b.Buttons.Count == 1 ? b.Buttons[0] : Uia.Button(b.Element, "OK", "Close")) is { } ok) {
 				Uia.Press(ok);
 			}
 		}
@@ -466,6 +466,7 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 			WaitWhilePlayerUses(a_ct);
 		}
 		_log.Detail("closing Mod Organizer");
+		_boxesBeforeClose = [.. Uia.Boxes(Pids()).Select(b => b.Text)];
 		var sw = Stopwatch.StartNew();
 		var limit = a_timeout ?? TimeSpan.FromMinutes(5);
 		var lastPost = TimeSpan.FromSeconds(-30);
@@ -488,6 +489,10 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 	}
 
 	readonly HashSet<string> _leftAlone = [];
+	HashSet<string> _boxesBeforeClose = [];
+
+	// his checklist 439: a Mod Organizer set to words we cannot read (its own setting, else Windows' language, as it picks one itself)
+	public static bool SpeaksOther(string a_setting, string a_windows) => !(a_setting == "" ? a_windows : a_setting).StartsWith("en", StringComparison.OrdinalIgnoreCase);
 
 	public static TimeSpan PlayerQuiet { get; set; } = TimeSpan.FromSeconds(45);
 
@@ -512,9 +517,10 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 	}
 
 	// the questions and notices Mod Organizer itself shows when it closes - every Windows language says them in its own words, so
-	// the known shapes are read by their key words in English and by MO2's own one-button notice (an OK alone)
-	public static bool CloseBox(string a_text, int a_buttons = 0) =>
-		a_buttons == 1 ||
+	// the known shapes are read by their key words in English and by MO2's own one-button notice (an OK alone). In another language
+	// the words cannot be read, so a box that came after the close request counts as MO2's answer to it
+	public static bool CloseBox(string a_text, int a_buttons = 0, bool a_cameAfterClose = false) =>
+		a_cameAfterClose || a_buttons == 1 ||
 		System.Text.RegularExpressions.Regex.IsMatch(a_text, @"\b(quit\w*|exit\w*|clos\w*|error\w*|fail\w*|warning\w*|notification\w*)\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
 	// a box MO2 shows while closing: the downloads question is never answered Yes (Cancel, and closing stops); "programs are
@@ -522,30 +528,33 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 	// Notifications window and its own Qt error boxes block the close - answered OK / Close
 	void AnswerCloseBoxes()
 	{
+		var otherWords = SpeaksOther(Mo2.Language, System.Globalization.CultureInfo.CurrentUICulture.Name);
 		foreach (var box in Uia.Boxes(Pids())) {
-			if (box.Text.Contains("download", StringComparison.OrdinalIgnoreCase)) {
-				var cancel = Uia.Button(box.Element, "Cancel", "No");
+			// what the box asks cannot be read in another language, but the state it would ask about can
+			var cameAfter = otherWords && !_boxesBeforeClose.Contains(box.Text);
+			if (box.Text.Contains("download", StringComparison.OrdinalIgnoreCase) || (cameAfter && DownloadsInProgress().Count > 0)) {
+				var cancel = Uia.Button(box.Element, "Cancel", "No") ?? (cameAfter ? Uia.NoByPlace(box.Buttons) : null);
 				if (cancel != null) {
 					Uia.Press(cancel);
 				}
 				throw new Mo2BusyException("Mod Organizer asked about downloads in progress - answered Cancel, left open: " + Trim(box.Text));
 			}
-			if (box.Text.Contains("running", StringComparison.OrdinalIgnoreCase) && ForeignChildren(false) is { Count: > 0 } theirs) {
-				if (Uia.Button(box.Element, "No", "Cancel") is { } no) {
+			if ((box.Text.Contains("running", StringComparison.OrdinalIgnoreCase) || cameAfter) && ForeignChildren(false) is { Count: > 0 } theirs) {
+				if ((Uia.Button(box.Element, "No", "Cancel") ?? (cameAfter ? Uia.NoByPlace(box.Buttons) : null)) is { } no) {
 					Uia.Press(no);
 				}
 				throw new Mo2BusyException($"Mod Organizer asked to end programs that are still running, among them yours ({string.Join(", ", theirs.Select(t => t.Image).Distinct())}) - answered No, left open: {Trim(box.Text)}");
 			}
 			// only the boxes MO2 itself shows on closing are answered (a quit question, its own error / notice); any other box
 			// may be the player's own work in MO2 and is left alone - the close then waits, and names it at its limit
-			if (!CloseBox(box.Text, box.Buttons.Count)) {
+			if (!CloseBox(box.Text, box.Buttons.Count, cameAfter)) {
 				if (_leftAlone.Add(box.Text)) {
 					_log.Warn($"Mod Organizer shows a box this run does not answer - left for you: {Trim(box.Text)}");
 				}
 				continue;
 			}
 			// a one-button notice is pressed by its only button whatever its words (a Mod Organizer in another language)
-			var ok = box.Buttons.Count == 1 ? box.Buttons[0] : Uia.Button(box.Element, "Yes", "OK", "Close", "Exit");
+			var ok = box.Buttons.Count == 1 ? box.Buttons[0] : Uia.Button(box.Element, "Yes", "OK", "Close", "Exit") ?? (cameAfter ? Uia.YesByPlace(box.Buttons) : null);
 			if (ok != null) {
 				_log.Detail($"Mod Organizer asked on close: {Trim(box.Text)} - {Uia.Name(ok)}");
 				Uia.Press(ok);
@@ -553,8 +562,9 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 		}
 		var main = MainWindow();
 		if (main != 0 && Uia.FromHandle(main) is { } e) {
-			foreach (var w in Uia.All(e, System.Windows.Automation.ControlType.Window).Where(w => Uia.Name(w) == "Notifications")) {
-				if (Uia.Button(w, "Close") is { } c) {
+			// by its class and its button's object name in any language (MO2's ProblemsDialog, closeButton)
+			foreach (var w in Uia.All(e, System.Windows.Automation.ControlType.Window).Where(w => Uia.Name(w) == "Notifications" || Uia.ClassName(w) == "ProblemsDialog")) {
+				if ((Uia.Button(w, "Close") ?? Uia.RealButtons(w).FirstOrDefault(b => Uia.AutomationId(b).EndsWith("closeButton", StringComparison.Ordinal))) is { } c) {
 					_log.Detail("Mod Organizer's notifications box closed");
 					Uia.Press(c);
 				}

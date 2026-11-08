@@ -11,6 +11,8 @@ public sealed class RunContext
 	public required Profile Profile { get; init; }
 	public required Mo2Control Control { get; init; }
 	public required RunLog Log { get; init; }
+	// the game's own words for its load boxes, read the first time a box is not in English
+	public GameWords? GameWords { get; set; }
 	public required Journal Journal { get; init; }
 	public required CancellationToken Cancel { get; init; }
 	public required string BackupFolder { get; init; }

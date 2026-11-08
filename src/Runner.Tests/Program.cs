@@ -4265,6 +4265,20 @@ public static class Program
 		}
 	}
 
+	static void T_TheRealGameArchiveHoldsItsWords()
+	{
+		if (Environment.GetEnvironmentVariable("SUP_REAL_MO2") is not { Length: > 0 } exe) {
+			Console.WriteLine("      (skipped: SUP_REAL_MO2 not set)");
+			return;
+		}
+		var game = Mo2Instance.Load(exe, Environment.GetEnvironmentVariable("SUP_REAL_BASE")).GameDir;
+		var texts = GameWords.TranslationsIn(Path.Combine(game, "Data", "Skyrim - Interface.bsa"));
+		Check(texts.Count >= 8, $"every language's file: {texts.Count}");
+		var w = GameWords.Of(texts, []);
+		Equal(("answered NO", 1), DevBench.DecideBox("This save relies on Creations you have already downloaded but are currently inactive:\nMod.esp\nActivate now?", ["Ja", "Nein"], 2, w), "the German buttons, off the game's own file");
+		Check(w.AsksNo("You can also search for missing content in the Creations menu."), "a box's own English text, off that file");
+	}
+
 	// his checklist 459: a save that did not happen is said in the player's words, and names the way forward (the real proof of the force
 	// is in-game, on the full run's list)
 	static void T_ASaveThatDidNotHappenIsSaid()
@@ -4319,6 +4333,81 @@ public static class Program
 		Check(C("DynDOLOD.esm", "Late.esm").Single().Text.Contains("Late.esm", StringComparison.Ordinal), "a master after DynDOLOD.esm");
 		Check(C("DynDOLOD.esm", "Late.esl").Single().Text.Contains("Late.esl", StringComparison.Ordinal), "a light master after it too");
 		Equal(0, C("Early.esm", "DynDOLOD.esm", "Some.esp").Count, "plugins after DynDOLOD.esm are fine");
+	}
+
+	// his checklist 439: a standard Windows button by its control id, a Qt box's by where it stands; a Mod Organizer in another language
+	// answers only what came after the close request
+	static void T_ButtonsAreKnownByWhatTheyDo()
+	{
+		Equal("Yes", Uia.StandardName("6"), "a Windows box's Yes, in any language");
+		Equal("No", Uia.StandardName("CommandButton_7"), "a task dialog's No");
+		Equal("OK", Uia.StandardName("1"), "OK");
+		Equal<string?>(null, Uia.StandardName("9"), "not a standard button");
+		Equal<string?>(null, Uia.StandardName("0"), "nor this");
+		Equal<string?>(null, Uia.StandardName("mainWindow.closeButton"), "a Qt name is no id");
+		Equal<string?>(null, Uia.StandardName(""), "no id at all");
+		Equal("1|0", string.Join("|", Uia.ReadingOrder([(100.0, 50.0), (10.0, 50.0)])), "a row is read left to right");
+		Equal("0|1", string.Join("|", Uia.ReadingOrder([(10.0, 50.0), (10.0, 90.0)])), "a column top to bottom");
+		Check(!Mo2Control.SpeaksOther("en", "de-DE") && !Mo2Control.SpeaksOther("", "en-US"), "English by its setting, or by Windows when it has none");
+		Check(Mo2Control.SpeaksOther("de", "en-US") && Mo2Control.SpeaksOther("", "fr-FR"), "another language by its setting first");
+		Check(Mo2Control.CloseBox("Wirklich beenden?", 2, true), "a question that came after the close request");
+		Check(!Mo2Control.CloseBox("Wirklich beenden?", 2), "and not one that was open before it");
+	}
+
+	// his checklist 439: the game's own words for its load boxes, from a game archive laid out as the game's is
+	static void T_GameBoxesAreReadInItsOwnLanguage()
+	{
+		const string German = "$Yes\tJa\r\n$No\tNein\r\n$SaveGameMissingContentActivate\tJetzt aktivieren?\r\n$SaveGameInactiveContent\tDieser Spielstand braucht inaktive Inhalte:\r\n$Other\tEtwas anderes\r\n$SaveGameUnownedContinue\t\r\n";
+		var w = GameWords.Of([German], ["Dieser Spielstand braucht fehlende Inhalte. Weiter laden?"]);
+		Equal(("answered NO", 1), DevBench.DecideBox("Dieser Spielstand braucht inaktive Inhalte:\nMod.esp\nJetzt aktivieren?", ["Ja", "Nein"], 2, w), "the first box: No, in the game's words");
+		Equal(("answered YES", 0), DevBench.DecideBox("Dieser Spielstand braucht fehlende Inhalte. Weiter laden?", ["Ja", "Nein"], 2, w), "the second box: Yes");
+		Equal<string?>(null, DevBench.DecideBox("Etwas anderes", ["Ja", "Nein"], 2, w).Answer, "any other box is not answered");
+		Equal<string?>(null, DevBench.DecideBox("Dieser Spielstand braucht fehlende Inhalte. Weiter laden?", ["Oui", "Non"], 2, w).Answer, "nor one whose buttons it cannot read");
+		Equal(("answered NO", 1), DevBench.DecideBox("Some content is missing, search the Creations menu?", ["Yes", "No"], 2, w), "English still reads");
+		Equal(0, GameWords.Of([], []).HasAskYes, "nothing read: nothing known");
+		var dir = Path.Combine(Path.GetTempPath(), "SUP words " + Guid.NewGuid().ToString("N"));
+		try {
+			Directory.CreateDirectory(Path.Combine(dir, "Data"));
+			var other = "something else"u8.ToArray();
+			var text = System.Text.Encoding.Unicode.GetPreamble().Concat(System.Text.Encoding.Unicode.GetBytes(German)).ToArray();
+			var names = System.Text.Encoding.Latin1.GetBytes("other.txt\0translate_german.txt\0");
+			const int FolderName = 11;
+			var dataAt = 36 + 24 + FolderName + 2 * 16 + names.Length;
+			using (var o = new BinaryWriter(File.Create(Path.Combine(dir, "Data", "Skyrim - Interface.bsa")))) {
+				o.Write(0x00415342u);
+				o.Write(105u);
+				o.Write(36u);
+				o.Write(3u);
+				o.Write(1);
+				o.Write(2);
+				o.Write(FolderName - 1);
+				o.Write(names.Length);
+				o.Write(0u);
+				o.Write(1UL);
+				o.Write(2);
+				o.Write(0u);
+				o.Write(0UL);
+				o.Write((byte)(FolderName - 1));
+				o.Write(System.Text.Encoding.Latin1.GetBytes("interface\0"));
+				o.Write(1UL);
+				o.Write((uint)other.Length);
+				o.Write((uint)dataAt);
+				o.Write(2UL);
+				o.Write((uint)text.Length);
+				o.Write((uint)(dataAt + other.Length));
+				o.Write(names);
+				o.Write(other);
+				o.Write(text);
+			}
+			var read = GameWords.Read(dir, s => s == "sSaveGameContentIsMissing" ? "Dieser Spielstand braucht fehlende Inhalte. Weiter laden?" : null);
+			Equal(1, read.HasAskYes, "the game setting that answered");
+			Equal(("answered NO", 1), DevBench.DecideBox("Jetzt aktivieren?", ["Ja", "Nein"], 2, read), "read out of the archive");
+			Equal(0, GameWords.Read(Path.Combine(dir, "none"), _ => null).HasAskYes, "a game folder with no archive is no failure");
+			File.WriteAllBytes(Path.Combine(dir, "Data", "Skyrim - Interface.bsa"), [1, 2, 3]);
+			Equal(0, GameWords.Read(dir, _ => null).HasAskYes, "nor one that does not read");
+		} finally {
+			Directory.Delete(dir, true);
+		}
 	}
 
 	static void T_EveryToolStepHasItsHelpPage()

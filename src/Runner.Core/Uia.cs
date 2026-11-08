@@ -102,7 +102,7 @@ public static class Uia
 		foreach (var n in a_names) {
 			var hit = buttons.FirstOrDefault(b => string.Equals(Name(b).Trim(), n, StringComparison.OrdinalIgnoreCase)) ??
 				// a Windows message box in another language ("Ja", "Nein"): its standard buttons by their control id
-				(StandardIds.TryGetValue(n, out var id) ? buttons.FirstOrDefault(b => AutomationId(b) == id) : null);
+				buttons.FirstOrDefault(b => string.Equals(StandardName(AutomationId(b)), n, StringComparison.OrdinalIgnoreCase));
 			if (hit != null) {
 				return hit;
 			}
@@ -110,9 +110,37 @@ public static class Uia
 		return null;
 	}
 
-	static readonly Dictionary<string, string> StandardIds = new(StringComparer.OrdinalIgnoreCase) {
-		["OK"] = "1", ["Cancel"] = "2", ["Abort"] = "3", ["Retry"] = "4", ["Ignore"] = "5", ["Yes"] = "6", ["No"] = "7", ["Close"] = "8",
-	};
+	static readonly string[] StandardNames = ["OK", "Cancel", "Abort", "Retry", "Ignore", "Yes", "No", "Close"];
+	const string TaskDialogButton = "CommandButton_";
+
+	// what a standard Windows button is, whatever Windows' language calls it, from its control id (a task dialog's carries a prefix)
+	public static string? StandardName(string a_id)
+	{
+		var id = a_id.StartsWith(TaskDialogButton, StringComparison.Ordinal) ? a_id[TaskDialogButton.Length..] : a_id;
+		return int.TryParse(id, System.Globalization.NumberStyles.None, InvariantCulture, out var n) && n >= 1 && n <= StandardNames.Length ? StandardNames[n - 1] : null;
+	}
+
+	// a button as our checks know it: its standard name, else its own words
+	public static string RoleName(AutomationElement a_b) => StandardName(AutomationId(a_b)) ?? Name(a_b).Replace("&", "", StringComparison.Ordinal).Trim();
+
+	// the order a box lays its buttons out in: top to bottom, left to right
+	public static List<int> ReadingOrder(IReadOnlyList<(double Left, double Top)> a_at) =>
+		[.. Enumerable.Range(0, a_at.Count).OrderBy(i => a_at[i].Top).ThenBy(i => a_at[i].Left)];
+
+	// a Qt box's buttons carry neither English words nor a control id in another language, but Qt lays them out by what they do: on
+	// Windows yes / OK first, no / cancel last (QDialogButtonBox's Windows layout)
+	static AutomationElement? AtEnd(IReadOnlyList<AutomationElement> a_buttons, bool a_first)
+	{
+		try {
+			var order = ReadingOrder([.. a_buttons.Select(b => (b.Current.BoundingRectangle.Left, b.Current.BoundingRectangle.Top))]);
+			return order.Count == 0 ? null : a_buttons[a_first ? order[0] : order[^1]];
+		} catch (Exception gone) when (Gone(gone)) {
+			return null;
+		}
+	}
+
+	public static AutomationElement? YesByPlace(IReadOnlyList<AutomationElement> a_buttons) => AtEnd(a_buttons, true);
+	public static AutomationElement? NoByPlace(IReadOnlyList<AutomationElement> a_buttons) => AtEnd(a_buttons, false);
 
 	public static List<AutomationElement> RealButtons(AutomationElement a_root) =>
 		All(a_root, ControlType.Button).Where(b => !InTitleBar(b) && Name(b).Trim() != "").ToList();

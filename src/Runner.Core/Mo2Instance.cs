@@ -18,6 +18,8 @@ public sealed partial class Mo2Instance
 	public string GameDir { get; }
 	public string GameName { get; }
 	public string SelectedProfile { get; }
+	// the language picked in its settings ("" = it follows Windows')
+	public string Language { get; }
 	// a global instance's name (its folder under %LOCALAPPDATA%\ModOrganizer) - passed to MO2 as -i; null for a portable one
 	public string? GlobalName { get; }
 	public IReadOnlyList<Mo2Executable> Executables { get; }
@@ -46,6 +48,7 @@ public sealed partial class Mo2Instance
 		GameDir = Full(Get("General", "gamePath"), iniDir);
 		GameName = Get("General", "gameName");
 		SelectedProfile = Get("General", "selected_profile");
+		Language = Get("Settings", "language");
 		var exes = new List<Mo2Executable>();
 		if (a_sections.TryGetValue("customExecutables", out var ce)) {
 			_ = int.TryParse(ce.GetValueOrDefault("size"), out var n);
