@@ -1,0 +1,57 @@
+name: Bug report
+description: Something Skyrim Utility Patcher did wrong, or a step that failed
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting it. The fastest way to an answer: in the program, open History, pick the run, press "Make a bug report", and attach that zip below. It holds the run's logs, its setup and the versions of everything, with your Windows name and PC name masked. Nothing is ever sent by the program itself.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What did the program do, and at which step?
+      placeholder: "DynDOLOD failed after 20 minutes with: ..."
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: zip
+    attributes:
+      label: The bug report zip
+      description: Drag the zip from "Make a bug report" here. Without it, paste the run's simple log (steps.txt) instead.
+    validations:
+      required: true
+  - type: dropdown
+    id: manager
+    attributes:
+      label: Mod Organizer
+      options:
+        - Portable instance
+        - Global instance
+    validations:
+      required: true
+  - type: dropdown
+    id: game
+    attributes:
+      label: Your copy of the game
+      options:
+        - Steam (Special Edition / Anniversary Edition)
+        - GOG
+        - A modlist's own copy (Wabbajack "Stock Game" or similar)
+    validations:
+      required: true
+  - type: checkboxes
+    id: checked
+    attributes:
+      label: Before you post
+      options:
+        - label: I pressed Check (F5) and read what it found.
+          required: true
+        - label: I run the newest version of Skyrim Utility Patcher.
+          required: true
