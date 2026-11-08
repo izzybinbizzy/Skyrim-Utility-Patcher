@@ -133,7 +133,7 @@ public static class Runner
 			Mo2Exe = setup.Mo2Exe, Mo2Instance = setup.Mo2Instance, BackupDir = Path.Combine(setup.BackupDir, id), Pid = Environment.ProcessId,
 			PidStarted = Process.GetCurrentProcess().StartTime.ToUniversalTime(),
 			Started = DateTime.Now, State = RunState.Running,
-			Steps = todo.Select(s => new StepRecord { Key = s.Key, Name = StepCatalog.Name(s.Key), State = StepState.Pending }).ToList(),
+			Steps = todo.Select(s => new StepRecord { Key = s.Key, Name = StepCatalog.Name(s.Key), State = StepState.Pending, Output = new StepSettings(s.Settings).OutputMod }).ToList(),
 		};
 		Directory.CreateDirectory(journal.Folder);
 		journal.Save();

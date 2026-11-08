@@ -10,13 +10,17 @@ namespace ToolRunner;
 // them), and so are the mods its "What MO2 changed" view hides. A step with changes since it finished is out of date.
 public static class LastRuns
 {
-	public sealed record Ran(DateTime RunStarted, string RunFolder, string Name, StepState State, DateTime Started, DateTime? Ended, string Note);
+	// Output: the mod that run built into (null = a run from before it was recorded, or a step with no output mod)
+	public sealed record Ran(DateTime RunStarted, string RunFolder, string Name, StepState State, DateTime Started, DateTime? Ended, string Note, string? Output = null);
 
-	// ChangedSince null = not known: Mod Organizer was never looked at, or its mod list was being rewritten as it was read
-	public sealed record Section(string Key, Ran? Latest, Ran? LastDone, IReadOnlyList<(string Mod, string What)>? ChangedSince)
+	// ChangedSince null = not known: Mod Organizer was not watched yet when the step finished, the kept history no longer reaches
+	// back that far, or its mod list was being rewritten as it was read. OutputNow: the mod the setup names for its output today
+	public sealed record Section(string Key, Ran? Latest, Ran? LastDone, IReadOnlyList<(string Mod, string What)>? ChangedSince, string? OutputNow = null)
 	{
-		public bool OutOfDate => LastDone != null && ChangedSince is { Count: > 0 };
-		public bool Current => LastDone != null && ChangedSince is { Count: 0 };
+		// the mod its last finished run built into, when the setup names another one now (its output is not where the setup looks)
+		public string? BuiltElsewhere => LastDone?.Output is { } was && OutputNow is { } now && !was.Equals(now, StringComparison.OrdinalIgnoreCase) ? was : null;
+		public bool OutOfDate => LastDone != null && (BuiltElsewhere != null || ChangedSince is { Count: > 0 });
+		public bool Current => LastDone != null && BuiltElsewhere == null && ChangedSince is { Count: 0 };
 	}
 
 	// each step's latest run and latest finished run, from the setup's runs (any order); a step the run never reached has no
@@ -26,7 +30,7 @@ public static class LastRuns
 		var found = new Dictionary<string, (Ran? Latest, Ran? LastDone)>(StringComparer.Ordinal);
 		foreach (var j in a_runs.Where(j => string.Equals(j.SetupFile, a_setupFile, StringComparison.OrdinalIgnoreCase)).OrderByDescending(j => j.Started)) {
 			foreach (var s in j.Steps.Where(s => s.Started != null && s.State is not (StepState.Pending or StepState.Skipped))) {
-				var ran = new Ran(j.Started, j.Folder, s.Name, s.State, s.Started!.Value, s.Ended, s.Note);
+				var ran = new Ran(j.Started, j.Folder, s.Name, s.State, s.Started!.Value, s.Ended, s.Note, s.Output);
 				found.TryGetValue(s.Key, out var had);
 				found[s.Key] = (had.Latest ?? ran, had.LastDone ?? (s.State == StepState.Done && s.Ended != null ? ran : null));
 			}
@@ -55,26 +59,36 @@ public static class LastRuns
 		return own;
 	}
 
-	// the changes made outside the runner in a_profile after a_since: the kept rows naming the profile, then the ones not kept
-	// yet (a_pending, all newer than the last look); a_skip says which mods do not count
+	// the changes made outside the runner in a_profile after a_since: the kept rows naming the profile (oldest first), then the
+	// ones not kept yet (a_pending, all newer than the last look); a_skip says which mods do not count. Null = not known: no
+	// pending read, Mod Organizer watched only since after a_since (a_watchedSince), or the kept rows cut short after a_since
 	public static List<(string Mod, string What)>? ChangesSince(IEnumerable<Mo2Changes.Change> a_rows, IReadOnlyList<(string Mod, string What)>? a_pending,
-		string a_profile, DateTime a_since, Func<string, bool> a_skip)
+		string a_profile, DateTime a_since, DateTime? a_watchedSince, Func<string, bool> a_skip)
 	{
-		if (a_pending == null) {
+		var rows = a_rows as IReadOnlyList<Mo2Changes.Change> ?? a_rows.ToList();
+		if (a_pending == null || a_watchedSince is not { } watched || watched > a_since ||
+		    (rows.Count >= Mo2Changes.KeepRows && rows[0].When > a_since)) {
 			return null;
 		}
-		var all = a_rows.Where(r => r.Who == Mo2Changes.Outside && r.When > a_since && r.Profiles.Contains(a_profile, StringComparer.OrdinalIgnoreCase) &&
-		                             r.What is not ("profile added" or "profile removed"))
+		var all = rows.Where(r => r.Who == Mo2Changes.Outside && r.When > a_since && r.Profiles.Contains(a_profile, StringComparer.OrdinalIgnoreCase) &&
+		                          r.What is not ("profile added" or "profile removed"))
 			.Select(r => (r.Mod, r.What)).Concat(a_pending).Where(c => !a_skip(c.Mod)).ToList();
-		// a mod ticked and unticked again (or added and removed again) is back as the step found it
+		// a mod ticked and unticked again (or installed and removed again) is back as the step found it
 		var undone = all.GroupBy(c => c.Mod, StringComparer.OrdinalIgnoreCase).Where(g => Cancels(g.Select(c => c.What.Split(' ')[0]).ToList()))
 			.Select(g => g.Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
 		return all.Where(c => !undone.Contains(c.Mod)).ToList();
 	}
 
-	static bool Cancels(List<string> a_kinds) =>
-		a_kinds.All(k => k is "ticked" or "unticked" or "added" or "removed") &&
-		a_kinds.Count(k => k == "ticked") == a_kinds.Count(k => k == "unticked") && a_kinds.Count(k => k == "added") == a_kinds.Count(k => k == "removed");
+	// a_kinds in the order they happened. Removed and installed again is a new copy of the mod (its files may differ), so it
+	// counts; installed and removed again is gone as it came
+	static bool Cancels(List<string> a_kinds)
+	{
+		if (!a_kinds.All(k => k is "ticked" or "unticked" or "added" or "removed") || a_kinds.Count(k => k == "ticked") != a_kinds.Count(k => k == "unticked")) {
+			return false;
+		}
+		var installs = a_kinds.Where(k => k is "added" or "removed").ToList();
+		return installs.Count % 2 == 0 && installs.Select((k, i) => k == (i % 2 == 0 ? "added" : "removed")).All(b => b);
+	}
 
 	// the step's own lines of its run's log: from its "=== <name> ===" line to its "done in" / FAILED / STOPPED line (the time
 	// and the detail lines left out), at most a_max of them, the last ones when there are more
@@ -113,14 +127,15 @@ public static class LastRuns
 		var own = OwnMods(a_setup);
 		var hide = a_setup.ChangesHideMods;
 		bool Skip(string a_mod) => own.Contains(a_mod) || hide.Any(h => a_mod.StartsWith(h, StringComparison.OrdinalIgnoreCase));
-		var rows = Mo2Changes.Read(Mo2Changes.Dir(a_dataDir, a_mo2));
 		// while a run goes, or one stopped before its last look, what changed since that look is partly the run's own switching:
 		// not known until it ends or is put back
-		var pending = runs.Any(j => j.Unfinished) ? null : Mo2Changes.Pending(a_mo2, a_dataDir, a_setup.Profile);
+		var (rows, pending, watched) = runs.Any(j => j.Unfinished)
+			? (Mo2Changes.Read(Mo2Changes.Dir(a_dataDir, a_mo2)), null, null)
+			: Mo2Changes.Snapshot(a_mo2, a_dataDir, a_setup.Profile);
 		return a_setup.Steps.Select(s => {
 			of.TryGetValue(s.Key, out var r);
-			var since = r.LastDone?.Ended is { } e ? ChangesSince(rows, pending, a_setup.Profile, e, Skip) : null;
-			return new Section(s.Key, r.Latest, r.LastDone, since);
+			var since = r.LastDone?.Ended is { } e ? ChangesSince(rows, pending, a_setup.Profile, e, watched, Skip) : null;
+			return new Section(s.Key, r.Latest, r.LastDone, since, new StepSettings(s.Settings).OutputMod);
 		}).ToList();
 	}
 
@@ -154,6 +169,9 @@ public static class LastRuns
 			return head + " - it has not finished yet";
 		}
 		var done = d == l ? "" : $"; last finished {When(d.Started)}";
+		if (a_s.BuiltElsewhere is { } was) {
+			return head + done + $" - it built into {was} then; the setup now names {a_s.OutputNow}";
+		}
 		return head + done + (a_s.ChangedSince switch {
 			null => " - changes since: not known",
 			{ Count: 0 } => " - current",
@@ -180,8 +198,11 @@ public static class LastRuns
 			if (d != l) {
 				lines.Add($"Last finished: {When(d.Started)} ({Took(d)}) - its output is from then.");
 			}
-			lines.Add(a_s.ChangedSince switch {
-				null => "Whether its output is current is not known: Mod Organizer's changes are watched from the first run on, and its mod list could not be read just now.",
+			lines.Add(a_s.BuiltElsewhere is { } was
+				? $"Out of date: it last built into {was}, and the setup now names {a_s.OutputNow} for its output. Run it again to build there."
+				: a_s.ChangedSince switch {
+				null => "Whether its output is current is not known: Mod Organizer's changes are watched from the first run on - not yet when it " +
+				        "finished, the kept history no longer reaches back that far, or its mod list could not be read just now.",
 				{ Count: 0 } => $"Current: nothing changed in the profile {a_profile} since it finished.",
 				{ } c => $"Out of date: {c.Count} change{(c.Count == 1 ? "" : "s")} in the profile {a_profile} since it finished ({Counted(c)}), e.g. " +
 				         string.Join("; ", c.Take(3).Select(x => $"{x.Mod} {x.What}")) + ". Run it again to bring its output up to date.",

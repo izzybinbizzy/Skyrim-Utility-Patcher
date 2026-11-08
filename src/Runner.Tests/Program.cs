@@ -3061,13 +3061,31 @@ public static class Program
 			Row(7, Mo2Changes.Outside, "Looked At", "ticked", "Test"),
 			Row(8, Mo2Changes.Outside, "Looked At", "unticked", "Test"),
 		};
-		var changes = LastRuns.ChangesSince(rows, [("New Mod", "removed (was under Misc)")], "Test", since, m => m == "DynDOLOD Output")!;
+		var watched = since.AddDays(-1);
+		var changes = LastRuns.ChangesSince(rows, [("New Mod", "removed (was under Misc)")], "Test", since, watched, m => m == "DynDOLOD Output")!;
 		Equal("Grass Mod,Tree Mod,New Mod", string.Join(",", changes.Select(c => c.Mod)),
 			"only changes made outside the runner, in this profile (any case), after it finished, not the setup's own mods, not one undone again - then the ones not kept yet");
-		Equal("Looked At ticked", string.Join(",", LastRuns.ChangesSince(rows.Take(8), [], "Test", since, _ => false)!.Where(c => c.Mod == "Looked At").Select(c => c.Mod + " " + c.What)),
+		Equal("Looked At ticked", string.Join(",", LastRuns.ChangesSince(rows.Take(8), [], "Test", since, watched, _ => false)!.Where(c => c.Mod == "Looked At").Select(c => c.Mod + " " + c.What)),
 			"a tick not undone still counts");
 		Equal("1 added, 1 moved, 1 removed", LastRuns.Counted(changes), "counted by kind");
-		Equal<IReadOnlyList<(string, string)>?>(null, LastRuns.ChangesSince(rows, null, "Test", since, _ => false), "a mod list that could not be read now: not known, never \"current\"");
+		Equal<IReadOnlyList<(string, string)>?>(null, LastRuns.ChangesSince(rows, null, "Test", since, watched, _ => false), "a mod list that could not be read now: not known, never \"current\"");
+		// the history's edges (CodeRabbit on #24): watched only since after it finished, or the kept rows cut short after it
+		// finished - not known; a mod removed and installed again is a new copy (it counts), one installed and removed again is not
+		Equal<IReadOnlyList<(string, string)>?>(null, LastRuns.ChangesSince(rows, [], "Test", since, since.AddMinutes(1), _ => false),
+			"Mod Organizer watched only since after it finished: not known");
+		Equal<IReadOnlyList<(string, string)>?>(null, LastRuns.ChangesSince(rows, [], "Test", since, null, _ => false), "never watched: not known");
+		var full = Enumerable.Range(0, Mo2Changes.KeepRows).Select(i => Row(10 + i, Mo2Changes.Outside, "Busy Mod", i % 2 == 0 ? "ticked" : "unticked", "Test")).ToList();
+		Equal<IReadOnlyList<(string, string)>?>(null, LastRuns.ChangesSince(full, [], "Test", since, watched, _ => false), "the kept rows cut short after it finished: not known");
+		Equal(0, LastRuns.ChangesSince(full, [], "Test", since.AddSeconds(19 * 60 + 30), watched, _ => false)!.Count,
+			"kept rows that still reach back past it are judged (an even run of ticks and unticks: back as it was)");
+		var installs = new[] {
+			Row(9, Mo2Changes.Outside, "Reinstalled", "removed (was under Misc)", "Test"),
+			Row(10, Mo2Changes.Outside, "Reinstalled", "added (ticked, under Misc)", "Test"),
+			Row(11, Mo2Changes.Outside, "Tried Out", "added (ticked, under Misc)", "Test"),
+			Row(12, Mo2Changes.Outside, "Tried Out", "removed (was under Misc)", "Test"),
+		};
+		Equal("Reinstalled,Reinstalled", string.Join(",", LastRuns.ChangesSince(installs, [], "Test", since, watched, _ => false)!.Select(c => c.Mod)),
+			"removed and installed again counts (its files may differ); installed and removed again does not");
 		var t = since.AddHours(-1);
 		var done = new LastRuns.Ran(t, "run", "DynDOLOD", StepState.Done, t, t.AddMinutes(24), "");
 		var stale = new LastRuns.Section("dyndolod", done, done, changes);
@@ -3076,6 +3094,12 @@ public static class Program
 		Check(card.Contains("Out of date: 3 changes in the profile Test since it finished (1 added, 1 moved, 1 removed), e.g. Grass Mod added", StringComparison.Ordinal) &&
 		      card.Contains("Run it again", StringComparison.Ordinal) && !card.Contains("What it did", StringComparison.Ordinal), "the card says what changed: " + card);
 		Check(LastRuns.Line(stale with { ChangedSince = null }).EndsWith("changes since: not known", StringComparison.Ordinal), "unknown is said as unknown");
+		// its last finished run built into another mod than the setup names now: out of date, whatever changed
+		var moved = new LastRuns.Section("dyndolod", done with { Output = "Old Output" }, done with { Output = "Old Output" }, [], "New Output");
+		Check(moved.OutOfDate && !moved.Current && moved.BuiltElsewhere == "Old Output", "built into another mod than the setup names: out of date");
+		Check(LastRuns.Line(moved).EndsWith("it built into Old Output then; the setup now names New Output", StringComparison.Ordinal), "the line says where: " + LastRuns.Line(moved));
+		Check(string.Join("\n", LastRuns.Detail(moved, "Test", [])).Contains("Run it again to build there", StringComparison.Ordinal), "the card says what to do");
+		Check(new LastRuns.Section("dyndolod", done, done, [], "New Output").Current, "a run from before outputs were recorded is judged by its changes only");
 	}
 
 	static void T_LastRunsReadTheStepsOwnLinesOfItsLog()
@@ -3131,6 +3155,13 @@ public static class Program
 		var never = LastRuns.Build(setup, mo2, Journal.All(Runner.RunsDir(f.Data)), f.Data);
 		Equal<IReadOnlyList<(string, string)>?>(null, never.Single(s => s.Key == "texgen").ChangedSince, "Mod Organizer never looked at: not known");
 		Mo2Changes.Record(mo2, f.Data, Mo2Changes.Outside);
+		Equal<IReadOnlyList<(string, string)>?>(null, LastRuns.Build(setup, mo2, Journal.All(Runner.RunsDir(f.Data)), f.Data).Single(s => s.Key == "texgen").ChangedSince,
+			"watched only since after it finished: not known (what changed before the first look is not on record)");
+		// its next run finishes while Mod Organizer is watched
+		var t2 = DateTime.Now;
+		j.Started = t2;
+		j.Steps = [Ran("texgen", StepState.Done, t2, 0)];
+		j.Save();
 		var looked = LastRuns.Build(setup, mo2, Journal.All(Runner.RunsDir(f.Data)), f.Data);
 		var texgen = looked.Single(s => s.Key == "texgen");
 		Check(texgen.Current, "nothing changed since the look: current");
@@ -3144,6 +3175,10 @@ public static class Program
 		Mo2Changes.Record(mo2, f.Data, Mo2Changes.Outside);
 		var kept = LastRuns.Build(setup, mo2, Journal.All(Runner.RunsDir(f.Data)), f.Data).Single(s => s.Key == "texgen");
 		Equal("Base Mod unticked", string.Join(",", kept.ChangedSince!.Select(c => c.Mod + " " + c.What)), "once kept, it still counts (once)");
+		j.Steps[0].Output = "Old Output";
+		j.Save();
+		var elsewhere = LastRuns.Build(setup, mo2, Journal.All(Runner.RunsDir(f.Data)), f.Data).Single(s => s.Key == "texgen");
+		Check(elsewhere.BuiltElsewhere == "Old Output" && elsewhere.OutputNow == "Output A" && elsewhere.OutOfDate, "the output its run recorded against the setup's now");
 		Equal(before.Replace("+Base Mod", "-Base Mod", StringComparison.Ordinal).Replace("+Output A", "-Output A", StringComparison.Ordinal), File.ReadAllText(list),
 			"the profile is only read");
 		var logs = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
