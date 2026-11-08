@@ -2878,6 +2878,24 @@ public static class Program
 		Check(!Directory.Exists(Path.Combine(f.Mods, "Empty Out")), "its folder left the mods folder");
 		Check(File.Exists(Path.Combine(park, "empty outputs", "Empty Out", "meta.ini")), "its folder is in the run's backup, never erased");
 		Check(!p.Added.Contains("Empty Out") && p.Added.Contains("Full Out"), "it is no longer kept as an added mod");
+		// a folder that cannot move (a file of it held open) keeps its line too - never a folder Mod Organizer would list as new;
+		// and a take-out cut off after its folder moved finishes by taking out the line that was left (CodeRabbit on #24)
+		p.EnsureMod("Held Out");
+		using (new FileStream(Path.Combine(f.Mods, "Held Out", "meta.ini"), FileMode.Open, FileAccess.Read, FileShare.Read)) {
+			var held = false;
+			try {
+				p.TakeOutEmptyOutput("Held Out", park);
+			} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+				held = true;
+			}
+			Check(held, "a folder that cannot move says so");
+		}
+		Check(Directory.Exists(Path.Combine(f.Mods, "Held Out")) && f.Text("modlist.txt").Contains("-Held Out", StringComparison.Ordinal),
+			"the held folder and its line are as they were");
+		Directory.CreateDirectory(Path.Combine(park, "empty outputs"));
+		Directory.Move(Path.Combine(f.Mods, "Held Out"), Path.Combine(park, "empty outputs", "Held Out"));
+		Check(p.TakeOutEmptyOutput("Held Out", park), "the line a cut-off take-out left is taken out");
+		Check(!f.Text("modlist.txt").Contains("Held Out", StringComparison.Ordinal), "no line of a folder that is gone");
 	}
 
 	// the run never closes Mod Organizer while the player is working in it: in front AND touched within the quiet time

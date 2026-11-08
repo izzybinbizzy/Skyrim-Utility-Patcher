@@ -227,18 +227,24 @@ public sealed class Profile(Mo2Instance a_mo2, string a_name, Func<bool> a_mo2Ru
 	public bool TakeOutEmptyOutput(string a_mod, string a_parkIn, RunLog? a_log = null)
 	{
 		var d = Mo2.ModDir(a_mod);
-		if (!IsEmptyOutput(d)) {
+		var to = Path.Combine(a_parkIn, "empty outputs", a_mod);
+		var empty = IsEmptyOutput(d);
+		// an earlier take-out cut off after its folder moved and before its line went: only the line is left to take out
+		var lineLeft = !Directory.Exists(d) && File.Exists(Path.Combine(to, "meta.ini"));
+		if (!empty && !lineLeft) {
 			return false;
 		}
 		MustBeClosed("the mod list");
+		if (empty) {
+			// the folder first: one that cannot move (a file of it held open) leaves the folder and its line as they were
+			Directory.CreateDirectory(Path.GetDirectoryName(to)!);
+			Files.MoveDirectory(d, to);
+		}
 		var (lines, nl) = ReadLines(ModList);
 		var n = lines.RemoveAll(l => l.Length > 1 && l[0] is '+' or '-' or '*' && l[1..].Equals(a_mod, StringComparison.OrdinalIgnoreCase));
 		if (n > 0) {
 			Files.WriteAtomic(ModList, string.Join(nl, lines));
 		}
-		var to = Path.Combine(a_parkIn, "empty outputs", a_mod);
-		Directory.CreateDirectory(Path.GetDirectoryName(to)!);
-		Files.MoveDirectory(d, to);
 		Added.Remove(a_mod);
 		_ours?.Remove(a_mod);
 		SaveOurs();
