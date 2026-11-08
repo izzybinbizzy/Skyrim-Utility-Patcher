@@ -177,6 +177,12 @@ public static partial class ToolUpdates
 		return nodes[0]?["version"]?.ToString() ?? throw new InvalidOperationException($"Nexus gave no version for mod {modId}");
 	}
 
+	// the newest version published on a Nexus page, else a GitHub repository's latest release (the program's own notice uses it)
+	public static Task<string> Newest(string? a_nexusId, string? a_gitHub, CancellationToken a_ct) =>
+		a_nexusId != null ? Nexus(Http, a_nexusId, a_ct) :
+		a_gitHub != null ? GitHub(Http, a_gitHub, a_ct) :
+		throw new InvalidOperationException("no page to read the version from");
+
 	static async Task<string> GitHub(HttpClient a_http, string a_repo, CancellationToken a_ct)
 	{
 		var o = await a_http.GetFromJsonAsync<JsonObject>($"https://api.github.com/repos/{a_repo}/releases/latest", a_ct).ConfigureAwait(false);

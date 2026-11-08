@@ -225,6 +225,26 @@ public static class SettingsPanel
 		top.Children.Add(findHint);
 
 		Head("THIS SETUP");
+		// his checklist 466: a copy another player can import - its steps and options, nothing of this PC
+		var share = new Button { Content = "Share this setup ...", Style = (Style)a_w.FindResource("Ghost"), HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 0, 0, 8),
+			ToolTip = "Writes a copy of this setup (as last saved) for another player: every path of this PC and the commands it runs before and after a run are taken out" };
+		share.Click += (_, _) => {
+			if (a_vm.Setup is not { } current) {
+				return;
+			}
+			try {
+				var file = SetupShare.Write(current, Path.Combine(AppPaths.Data, "Shared setups"), MainWindow.AppVersion);
+				var gone = SetupShare.Share(current, MainWindow.AppVersion).Removed;
+				if (Ask.Show(a_w, "Shared copy made", $"It is ready: {Path.GetFileName(file)}\n\nTaken out (the other player sets these themselves):\n" +
+				    (gone.Count == 0 ? "nothing" : string.Join("\n", gone.Select(g => "- " + g))) + "\n\nThey bring it in with the import command (see the readme).",
+				    "Show the file", "Close")) {
+					System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer.exe", $"/select,\"{file}\"") { UseShellExecute = true });
+				}
+			} catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception) {
+				a_vm.Say("The shared copy could not be made: " + e.Message, "bad");
+			}
+		};
+		stack.Children.Add(share);
 		var mo2 = work["mo2"] as JsonObject ?? (JsonObject)(work["mo2"] = new JsonObject());
 		Field(stack, apply, "Mod Organizer's program", mo2, "exe");
 		Field(stack, apply, "Its instance folder", mo2, "instance");
@@ -342,6 +362,14 @@ public static class SettingsPanel
 		stack.Children.Add(new TextBlock { Text = "The \"High contrast\" theme takes Windows' own high-contrast colors and is used by itself while Windows has high contrast on " +
 			"and no theme was picked here. \"Color-blind safe\" keeps finished, warning and failed apart by more than red and green. Every state also has its own mark.",
 			Style = (Style)a_w.FindResource("MutedText"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 0) });
+
+		// his checklist 471: the program's own new versions - kept for the whole program, saved the moment it is ticked
+		Head("NEW VERSIONS OF THIS PROGRAM");
+		var newVersions = new CheckBox { Content = "Tell me when a new version is out", IsChecked = !ProgramUpdate.IsOff(AppPaths.Data), Margin = new Thickness(0, 0, 0, 4) };
+		newVersions.Click += (_, _) => ProgramUpdate.SetOff(AppPaths.Data, newVersions.IsChecked != true);
+		stack.Children.Add(newVersions);
+		stack.Children.Add(new TextBlock { Text = "At most once a day, when the window opens, it asks its own download page which version is newest - nothing else is sent, " +
+			"and nothing is downloaded: the page opens in your browser when you choose.", Style = (Style)a_w.FindResource("MutedText"), TextWrapping = TextWrapping.Wrap });
 
 		// his ask 2026-10-27: aware of a tool's updates, the download from the runner (its page, in the player's browser)
 		Head("TOOL UPDATES");

@@ -3417,6 +3417,73 @@ public static class Program
 	}
 
 	// his checklist 475: each step's help is its tool's own page (never a guess), and the save steps get DynDOLOD's clean-save help
+	// his checklist 471: a newer version of the program is told at most once a day (one look on the web, then the remembered answer),
+	// a version set aside with "Not now" is not told again but the next newer one is, the switch turns the look off, and a look that
+	// fails stays quiet
+	static void T_ANewVersionIsToldOnceADay()
+	{
+		var dir = Path.Combine(Path.GetTempPath(), "SUP new version " + Guid.NewGuid().ToString("N"));
+		var looks = 0;
+		var newest = "1.1";
+		var fail = false;
+		ProgramUpdate.Probe = _ => {
+			++looks;
+			return fail ? throw new System.Net.Http.HttpRequestException("offline") : Task.FromResult("v" + newest);
+		};
+		try {
+			var now = new DateTime(2026, 11, 8, 12, 0, 0, DateTimeKind.Utc);
+			string? Ask(string a_current, DateTime a_at) => ProgramUpdate.Newer(dir, a_current, a_at, CancellationToken.None).GetAwaiter().GetResult();
+			Equal("v1.1", Ask("1.0", now), "a newer version is told");
+			Equal(1, looks, "one look on the web");
+			Equal("v1.1", Ask("1.0", now.AddHours(5)), "told again from what was remembered");
+			Equal(1, looks, "no second look within a day");
+			Equal(null, Ask("1.1", now.AddHours(6)), "the version you have is nothing new");
+			ProgramUpdate.SetAside(dir, "v1.1");
+			Equal(null, Ask("1.0", now.AddHours(7)), "a version set aside is not told again");
+			newest = "1.2";
+			Equal("v1.2", Ask("1.0", now.AddDays(1).AddHours(1)), "the next newer one is told after a day");
+			Equal(2, looks, "a day later it looks again");
+			ProgramUpdate.SetOff(dir, true);
+			Equal(null, Ask("1.0", now.AddDays(3)), "the switch turns it off");
+			Equal(2, looks, "switched off, it never looks");
+			ProgramUpdate.SetOff(dir, false);
+			fail = true;
+			Equal(null, Ask("1.0", now.AddDays(4)), "a failed look says nothing");
+			Check(ProgramUpdate.Page.StartsWith("https://", StringComparison.Ordinal), "its download page is a web address");
+		} finally {
+			ProgramUpdate.Probe = null;
+			try {
+				Directory.Delete(dir, true);
+			} catch (IOException) {
+			}
+		}
+	}
+
+	// his checklist 466: a shared setup keeps its steps and options and loses everything of this PC - its Mod Organizer, backup
+	// folder, every value holding a path, and the commands it runs before and after a run; it names what the other player sets
+	static void T_ASharedSetupCarriesNothingOfThisPc()
+	{
+		var setup = Setup.FromJson(JsonNode.Parse("""
+			{ "name": "My Setup", "mo2": { "exe": "C:\\Games\\MO2\\ModOrganizer.exe", "instance": "D:\\MO2\\Instances\\SSE", "profile": "Bottled" },
+			  "backups": "D:\\Backups", "beforeRun": ["del /q C:\\Temp\\x"], "afterRun": [], "idleMinutes": 3,
+			  "steps": [ { "key": "pgpatcher", "on": true, "output": "PGPatcher Output", "tool_writes": "C:\\Users\\Someone\\pg" },
+			             { "key": "dyndolod", "on": false, "output": "DynDOLOD Output", "args": "-o:\"\\\\nas\\lod\"", "lodWorlds": ["Tamriel", "E:\\x"] } ] }
+			""")!.AsObject());
+		var r = SetupShare.Share(setup, "1.0");
+		var text = r.Setup.ToJsonString();
+		Check(!SetupShare.HoldsPath(text.Replace("\\\\", "\\")), "no path of this PC is left: " + text);
+		Equal("", r.Setup["mo2"]?["exe"]?.ToString(), "Mod Organizer is the other player's to set");
+		Equal("Bottled", r.Setup["mo2"]?["profile"]?.ToString(), "the profile name is kept as a hint");
+		Check(r.Setup["beforeRun"] == null && r.Setup["backups"] == null, "no commands, no backup folder");
+		Equal(3, r.Setup["idleMinutes"]?.GetValue<int>(), "its options are kept");
+		Equal(2, (r.Setup["steps"] as JsonArray)?.Count, "every step is kept");
+		Equal("PGPatcher Output", r.Setup["steps"]?[0]?["output"]?.ToString(), "a step's own options are kept");
+		Equal(1, (r.Setup["steps"]?[1]?["lodWorlds"] as JsonArray)?.Count, "a list keeps its other items");
+		Check(r.Removed.Any(x => x.Contains("before", StringComparison.Ordinal)) && r.Removed.Any(x => x.Contains("tool_writes", StringComparison.Ordinal)),
+			"what was taken out is named: " + string.Join("; ", r.Removed));
+		Check((r.Setup["shared"]?["setYourself"] as JsonArray)?.Count == r.Removed.Count, "the copy itself says what to set");
+	}
+
 	static void T_EveryToolStepHasItsHelpPage()
 	{
 		foreach (var s in StepCatalog.All.Where(s => s.Key is not ("shaders" or "xlodgen"))) {
