@@ -783,6 +783,7 @@ public static class Program
 		Equal(before, f.Text("loadorder.txt"), "the load order as before");
 		var again = Runner.Undo(Journal.Load(j.Folder));
 		Check(again.Verdict.Contains("undone already", StringComparison.Ordinal), "only once: " + again.Verdict);
+		Check(ToolRunner.App.Cli.Handles(["undo"]), "the command line takes it, and does not open the window instead");
 		Check(LastRuns.Of(Journal.All(Runner.RunsDir(f.Data)), f.SetupFile).Count == 0, "an undone run no longer counts as a step's last run");
 		// an older run cannot be undone past a newer one that changed the same profile or outputs; a later run that changed nothing is in nobody's way
 		Journal J(string a_id, int a_days, string? a_setup = null, string a_profile = "P", string[]? a_built = null, RunState a_state = RunState.Finished) =>

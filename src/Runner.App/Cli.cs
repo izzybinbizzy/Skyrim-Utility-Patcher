@@ -16,7 +16,7 @@ namespace ToolRunner.App;
 // exit 0 = finished / clean, 1 = failed / refused, 2 = stopped, 3 = bad arguments, 4 = (updates) a tool has a newer version
 public static class Cli
 {
-	public static bool Handles(string[] a_args) => a_args.Length > 0 && a_args[0] is "run" or "retry" or "queue" or "check" or "preview" or "lod" or "restore" or "stop" or "stop-after" or "import" or "updates" or "changes" or "bugreport" or "share" or "--help" or "-h" or "/?";
+	public static bool Handles(string[] a_args) => a_args.Length > 0 && a_args[0] is "run" or "retry" or "queue" or "check" or "preview" or "lod" or "restore" or "stop" or "stop-after" or "import" or "updates" or "changes" or "bugreport" or "share" or "undo" or "--help" or "-h" or "/?";
 
 	static string? Opt(string[] a_args, string a_name)
 	{
