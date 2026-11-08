@@ -112,7 +112,7 @@ public static class ToolProof
 			} while (missing != "" && look.Elapsed < TimeSpan.FromSeconds(30));
 			return new Result(a_look.Step, missing == "", missing == "" ? $"{tool}: what a run presses is there" : $"{tool}: {missing}");
 		} finally {
-			StepKit.CloseTool(control, image);
+			StepKit.CloseTool(control, image, a_log);
 			if (toolMod != null) {
 				try {
 					control.Close(null, CancellationToken.None);

@@ -253,9 +253,9 @@ public static class StepKit
 	}
 
 	// a tool left open keeps MO2 locked: its windows asked to close, then the process tree ended (by PID)
-	public static void CloseTool(RunContext a_ctx, string? a_image) => CloseTool(a_ctx.Control, a_image);
+	public static void CloseTool(RunContext a_ctx, string? a_image) => CloseTool(a_ctx.Control, a_image, a_ctx.Log);
 
-	public static void CloseTool(Mo2Control a_control, string? a_image)
+	public static void CloseTool(Mo2Control a_control, string? a_image, RunLog a_log)
 	{
 		if (string.IsNullOrEmpty(a_image)) {
 			return;
@@ -288,7 +288,7 @@ public static class StepKit
 		foreach (var pid in Ours()) {
 			Procs.KillTree(pid);
 		}
-		a_ctx.Log.Detail($"{a_image} closed");
+		a_log.Detail($"{a_image} closed");
 	}
 
 	public static Func<IReadOnlyCollection<int>> PidsOf(string a_image) => () => Procs.Pids(a_image);
