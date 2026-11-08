@@ -89,18 +89,22 @@ public static class RunUndo
 
 	// a later run still standing that changed what undoing a_j would put back: the same setup's, one that moved the same output or tool
 	// folder, or another's on the same profile or with an output of a_j's - undoing a_j would lay its old lists and outputs over that run
-	static bool InTheWay(Journal a_later, Journal a_j)
+	static bool InTheWay(Journal a_later, Journal a_j, HashSet<string> a_folders)
 	{
 		if (a_later.Undone || a_later.Started <= a_j.Started || (!a_later.Unfinished && !LeftSomething(a_later))) {
 			return false;
 		}
 		static bool Same(string? a_a, string? a_b) => string.Equals(a_a, a_b, StringComparison.OrdinalIgnoreCase);
-		static bool SamePlace(string a_a, string a_b) => a_a == "" || a_b == "" ? a_a == a_b : Files.SamePath(a_a, a_b);
-		static IEnumerable<ParkRecord> Moved(Journal a_r) => a_r.Parked.Where(p => p.Replaced && !p.PutBack);
-		return Same(a_later.SetupFile, a_j.SetupFile) || Moved(a_later).Any(l => Moved(a_j).Any(p => Files.SamePath(l.From, p.From))) ||
-			(SamePlace(a_later.Mo2Exe, a_j.Mo2Exe) && Same(a_later.Mo2Instance, a_j.Mo2Instance) &&
+		static bool SamePlace(string? a_a, string? a_b) => string.IsNullOrEmpty(a_a) || string.IsNullOrEmpty(a_b) ? string.IsNullOrEmpty(a_a) && string.IsNullOrEmpty(a_b) : Files.SamePath(a_a, a_b);
+		return Same(a_later.SetupFile, a_j.SetupFile) || a_folders.Overlaps(FoldersMoved(a_later)) ||
+			(SamePlace(a_later.Mo2Exe, a_j.Mo2Exe) && SamePlace(a_later.Mo2Instance, a_j.Mo2Instance) &&
 			 (Same(a_later.Profile, a_j.Profile) || a_later.Built.Intersect(a_j.Built, StringComparer.OrdinalIgnoreCase).Any()));
 	}
+
+	// the mods and tool folders a run emptied and still holds the old content of
+	static HashSet<string> FoldersMoved(Journal a_r) =>
+		a_r.Parked.Where(p => p.Replaced && !p.PutBack && (!p.IsFolder || p.Moved) && p.From != "")
+			.Select(p => Path.GetFullPath(p.From).TrimEnd('\')).ToHashSet(StringComparer.OrdinalIgnoreCase);
 
 	// why this run cannot be undone now (null = it can): only the last run on its profile and outputs still standing, ended, with its backup there
 	public static string? WhyNot(Journal a_j, IEnumerable<Journal> a_runs)
@@ -108,13 +112,18 @@ public static class RunUndo
 		if (a_j.Undone) {
 			return "this run was undone already";
 		}
-		if (!a_j.Undoing && (a_j.Unfinished || (a_j.InGameAfter && a_j.OwnerAlive))) {
+		// one begun is ended whatever else has changed: only that frees the profile again
+		if (a_j.Undoing) {
+			return null;
+		}
+		if (a_j.Unfinished || (a_j.InGameAfter && a_j.OwnerAlive)) {
 			return "this run did not finish - put your profile back first";
 		}
 		if (!LeftSomething(a_j)) {
 			return "this run built nothing to undo";
 		}
-		if (a_runs.FirstOrDefault(j => InTheWay(j, a_j)) is { } later) {
+		var folders = FoldersMoved(a_j);
+		if (a_runs.FirstOrDefault(j => InTheWay(j, a_j, folders)) is { } later) {
 			return $"only the last run can be undone - a later run of \"{later.SetupName}\" changed the same profile or outputs";
 		}
 		if (!Directory.Exists(a_j.SnapshotDir) || !Directory.EnumerateFiles(a_j.SnapshotDir).Any()) {

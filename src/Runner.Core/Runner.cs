@@ -880,19 +880,21 @@ public static class Runner
 			if (data != null) {
 				NoteChanges(mo2, data, Mo2Changes.Outside, log);
 			}
-			var theirs = ctx.Profile.ChangedByOthers();
-			foreach (var m in a_j.Added.Concat(a_j.Built).Concat(a_j.Retire).Concat(a_j.ParkedMods)) {
-				theirs.Remove(m);
+			// a zip that does not read has changed nothing and holds nothing up
+			RunUndo.Unpack(a_j.BackupDir);
+			// read once: pressed again, the list may already be the old one and no longer shows them
+			if (a_j.UndoTheirs == null) {
+				var found = ctx.Profile.ChangedByOthers();
+				foreach (var m in a_j.Added.Concat(a_j.Built).Concat(a_j.Retire).Concat(a_j.ParkedMods)) {
+					found.Remove(m);
+				}
+				a_j.UndoMarks = found.Count > 0 ? ctx.Profile.PluginMarks() : [];
+				a_j.UndoTheirs = found;
 			}
-			foreach (var (m, state) in a_j.UndoTheirs ?? []) {
-				theirs.TryAdd(m, state);
-			}
-			var marks = a_j.UndoMarks is { Count: > 0 } kept ? kept : theirs.Count > 0 ? ctx.Profile.PluginMarks() : [];
-			a_j.UndoTheirs = theirs;
-			a_j.UndoMarks = marks;
+			var theirs = a_j.UndoTheirs;
+			var marks = a_j.UndoMarks ?? [];
 			a_j.Undoing = true;
 			a_j.Save();
-			RunUndo.Unpack(a_j.BackupDir);
 			var aside = Path.Combine(a_j.BackupDir, "undone");
 			foreach (var p in a_j.Parked.Where(p => p.Replaced && !p.PutBack).Reverse().ToList()) {
 				if (!p.SetAside && (!p.IsFolder || p.Moved)) {
@@ -924,10 +926,15 @@ public static class Runner
 			foreach (var a in a_j.Added.ToList()) {
 				ctx.Profile.TakeOutEmptyOutput(a, a_j.BackupDir, log);
 			}
-		} catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException or InvalidOperationException or Mo2BusyException) {
+		} catch (Exception e) {
 			log.Error("undo failed: " + Plain(e));
+			var left = a_j.Undoing ? "it stopped half way, and nothing new starts until it is undone again: what moved is on record, its files are in the run's backup" : "nothing was changed";
+			if (a_j.Undoing) {
+				a_j.State = RunState.Failed;
+				a_j.Verdict = "the undo stopped half way (" + Plain(e) + ") - undo this run again once that is free";
+			}
 			a_j.Save();
-			return new RunOutcome(RunState.Failed, "the run could not be undone whole: " + Plain(e) + " - what moved stays recorded and its files are in the run's backup; undo it again once the file is free", a_j.Folder);
+			return new RunOutcome(RunState.Failed, "the run could not be undone whole: " + Plain(e) + " - " + left, a_j.Folder);
 		}
 		a_j.Undone = true;
 		a_j.Undoing = false;

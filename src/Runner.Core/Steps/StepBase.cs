@@ -231,7 +231,14 @@ public static class StepKit
 			var park = new ParkRecord { Mod = a_label, From = a_path, To = dst, Replaced = true, IsFolder = true };
 			a_ctx.Journal.Parked.Add(park);
 			a_ctx.Journal.Save();
-			Files.MoveDirectory(a_path, dst);
+			try {
+				Files.MoveDirectory(a_path, dst);
+			} catch (Exception e) when ((e is IOException or UnauthorizedAccessException) && !Directory.Exists(dst)) {
+				// nothing moved (a move on one drive is all or nothing): nothing to come back
+				a_ctx.Journal.Parked.Remove(park);
+				a_ctx.Journal.Save();
+				throw;
+			}
 			park.Moved = true;
 			a_ctx.Journal.Save();
 			a_ctx.Log.Detail($"old {a_label} moved to the backup ({Files.CountFiles(dst)} file(s))");

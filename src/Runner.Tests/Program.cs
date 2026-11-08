@@ -799,11 +799,15 @@ public static class Program
 		sameFolder.Parked.Add(new ParkRecord { Mod = "tool", From = @"D:\Tools\out", To = "x", Replaced = true, IsFolder = true, Moved = true });
 		older.Parked.Add(new ParkRecord { Mod = "tool", From = "D:/Tools/out/", To = "y", Replaced = true, IsFolder = true, Moved = true });
 		Check(Blocked(sameFolder), "one that moved the same tool folder is");
+		sameFolder.Parked[0].Moved = false;
+		Check(!Blocked(sameFolder), "not one whose move of it never ended");
 		older.Parked.Clear();
 		var typed = J("typed otherwise", 0, "other.json");
 		typed.Mo2Exe = "D:/MO2/ModOrganizer.exe";
 		older.Mo2Exe = @"D:\MO2\ModOrganizer.exe";
 		older.Built = ["Output Y"];
+		typed.Mo2Instance = "D:/MO2/Instance/";
+		older.Mo2Instance = @"D:\MO2\Instance";
 		Check(Blocked(typed), "a Mod Organizer typed another way is the same one");
 		// a pack that is switched off keeps the folder
 		var dir = Path.Combine(f.Root, "pack test");
@@ -846,7 +850,9 @@ public static class Program
 			Equal(RunState.Failed, Runner.Undo(Journal.Load(j.Folder)).State, "the first press stops at the held file");
 		}
 		Equal("old B", File.ReadAllText(Path.Combine(f.Mods, "Output B", "old.txt")), "B is back after the first press");
-		Check(Journal.Load(j.Folder).Unfinished, "a half-undone run counts as not finished");
+		var cut = Journal.Load(j.Folder);
+		Check(cut.Unfinished && cut.State == RunState.Failed && cut.Verdict.Contains("half way", StringComparison.Ordinal), "a half-undone run counts as not finished, and says so");
+		Equal<string?>(null, RunUndo.WhyNot(cut, [cut]), "and it can always be ended");
 		Check(Runner.Run(new RunRequest(f.SetupFile, f.Data)).State != RunState.Finished && Journal.All(Runner.RunsDir(f.Data)).Count() == 1, "so nothing new starts on it");
 		// the window's put-back ends it
 		var second = Runner.Restore(Journal.Load(j.Folder));
@@ -877,6 +883,15 @@ public static class Program
 		var second = Runner.Undo(Journal.Load(j.Folder));
 		Equal(RunState.Restored, second.State, "the second press: " + second.Verdict);
 		Check(!ProfileOf(f).IsOn("Base Mod"), "what the player changed is kept");
+		// a backup that does not read has changed nothing, so nothing is held up
+		using var g = new FakeMo2();
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => WriteOutput(ctx, "landscapefixer", "Output A", "OutA.esp")));
+		g.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A" }));
+		Equal(RunState.Finished, Runner.Run(new RunRequest(g.SetupFile, g.Data)).State, "another run finished");
+		var run = Journal.All(Runner.RunsDir(g.Data)).First();
+		File.WriteAllText(Path.Combine(run.BackupDir, RunUndo.OutputsZip), "not a zip");
+		Equal(RunState.Failed, Runner.Undo(Journal.Load(run.Folder)).State, "the zip does not read");
+		Check(!Journal.Load(run.Folder).Unfinished, "and the profile is not held up by it");
 	}
 
 	// two steps writing one output each keep what they wrote; a tool folder's label never passes for a mod of that name; what a move that
@@ -887,6 +902,7 @@ public static class Program
 		var tool = Path.Combine(f.Root, "tool out");
 		var other = Path.Combine(f.Root, "other tool out");
 		var heldDir = Path.Combine(f.Root, "held tool out");
+		var half = Path.Combine(f.Root, "half tool out");
 		foreach (var d in new[] { tool, other, heldDir }) {
 			Directory.CreateDirectory(d);
 			File.WriteAllText(Path.Combine(d, "tool old.txt"), "old");
@@ -912,9 +928,16 @@ public static class Program
 					StepKit.ParkDir(ctx, heldDir, "held");
 					Check(false, "a held folder does not move");
 				} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
-					Check(ctx.Journal.Parked.Single(p => p.Mod == "held") is { Moved: false }, "a move that failed is on record as not moved");
+					Check(!ctx.Journal.Parked.Any(p => p.Mod == "held"), "a move that moved nothing is not on record");
 				}
 			}
+			// a move across drives that stopped half way: its record, and the two halves
+			Directory.CreateDirectory(half);
+			File.WriteAllText(Path.Combine(half, "rest.txt"), "rest");
+			var moved = Path.Combine(ctx.BackupFolder, "outputs", "half");
+			Directory.CreateDirectory(moved);
+			File.WriteAllText(Path.Combine(moved, "moved.txt"), "moved");
+			ctx.Journal.Parked.Add(new ParkRecord { Mod = "half", From = half, To = moved, Replaced = true, IsFolder = true });
 			ctx.Journal.Save();
 		}));
 		f.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A" }), ("synthesis", new JsonObject()));
@@ -933,7 +956,8 @@ public static class Program
 		Check(!ProfileOf(f).IsOn("Base Mod"), "the player's change to a mod named like a tool folder's label is kept");
 		Check(File.Exists(Path.Combine(tool, "tool old.txt")) && !File.Exists(Path.Combine(tool, "tool new.txt")), "the tool's folder is as it was");
 		Equal(1, Directory.GetFiles(undone, "tool new.txt", SearchOption.AllDirectories).Length, "what the run left in it is set aside");
-		Check(File.Exists(Path.Combine(heldDir, "tool old.txt")) && Directory.GetFiles(undone, "tool old.txt", SearchOption.AllDirectories).Length == 0, "what the failed move left stays where it is");
+		Check(File.Exists(Path.Combine(heldDir, "tool old.txt")) && Directory.GetFiles(undone, "tool old.txt", SearchOption.AllDirectories).Length == 0, "what a failed move touched stays where it is");
+		Check(File.Exists(Path.Combine(half, "rest.txt")) && File.Exists(Path.Combine(half, "moved.txt")), "the halves of a move that stopped come together again");
 	}
 
 	// ------------------------------------------------------------------ what MO2 changed (his ask 2026-10-27)

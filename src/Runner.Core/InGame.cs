@@ -595,9 +595,9 @@ public static partial class InGame
 			var limit = h.Stop ? TeleportWait : TeleportShortWait;
 			if (sw.Elapsed - since > limit) {
 				if (h.Stop) {
-					return $"your character is {h.Why}, and was still after {limit.TotalMinutes:0.#} minute(s) - load a save where you are not, and run this step again";
+					return $"your character is {h.Why}, after {sw.Elapsed.TotalMinutes:0.#} minute(s) of waiting - load a save where you are not, and run this step again";
 				}
-				a_log.Warn($"your character still reads as {h.Why} after {limit.TotalMinutes:0.#} minute(s) - going on with the teleport");
+				a_log.Warn($"your character still reads as {h.Why}, after {sw.Elapsed.TotalMinutes:0.#} minute(s) of waiting - going on with the teleport");
 				return null;
 			}
 			a_ct.WaitHandle.WaitOne(TeleportPoll);
