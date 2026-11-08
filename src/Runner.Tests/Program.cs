@@ -3634,6 +3634,15 @@ public static class Program
 		File.Delete(Path.Combine(saves, "Save2_Bjorn.ess"));
 		Equal("no save to load", Refused(() => InGame.PlaySave(ctx, new StepSettings(new JsonObject()))),
 			"with no save of the picked character, the save to play never falls back to another character's clean save");
+		// the clean save's own pick on the automatic route (DevBench ticked - a stand-in file, nothing runs): no save of the picked
+		// character is refused by name before anything starts, never another character's newest taken instead
+		var dev = Path.Combine(f.Mods, "DevBench", "SKSE", "Plugins");
+		Directory.CreateDirectory(dev);
+		File.WriteAllBytes(Path.Combine(dev, "devbench.dll"), []);
+		File.WriteAllText(Path.Combine(f.ProfileDir, "modlist.txt"), "+DevBench\r\n" + f.Text("modlist.txt"));
+		Check(DevBench.InProfile(p), "(DevBench ticked: the automatic route)");
+		var auto = Refused(() => InGame.Deactivate(ctx, new StepSettings(new JsonObject())));
+		Check(auto.Contains("no save of Björn", StringComparison.Ordinal), "the clean save's own pick keeps to the picked character: " + auto);
 	}
 
 	static void T_EveryToolStepHasItsHelpPage()
