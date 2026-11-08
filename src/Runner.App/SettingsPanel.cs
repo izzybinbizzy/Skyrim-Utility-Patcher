@@ -579,6 +579,30 @@ public static class SettingsPanel
 				updCheck.IsEnabled = true;
 			}
 		};
+		// his checklist 445: what a tool's update may have moved, looked for before a run needs it
+		var testTools = new Button { Content = "Test my tools ...", Style = (Style)a_w.FindResource("Ghost"), HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 0, 0, 8),
+			ToolTip = "Opens each tool that is driven through its window, up to the window a run presses, and looks for what it would press" };
+		var testRows = new StackPanel();
+		testTools.Click += async (_, _) => {
+			if (a_vm.Setup is not { } testSetup || !Ask.Show(a_w, "Test my tools", "Each tool this program drives through its window opens through Mod Organizer, up to the window a run presses, and closes again. " +
+				"Nothing is pressed and nothing is built. Mod Organizer closes for it, and the LOD tools read your whole load order first, so it can take a while.", "Test them", "Not now")) {
+				return;
+			}
+			testTools.IsEnabled = false;
+			testRows.Children.Clear();
+			try {
+				var results = await Task.Run(() => ToolProof.TestAll(testSetup, RunLog.Null, CancellationToken.None));
+				foreach (var r in results) {
+					testRows.Children.Add(new TextBlock { Text = r.Text, TextWrapping = TextWrapping.Wrap, Foreground = Brushes2.Get(r.Good ? "Text" : "Bad"), Margin = new Thickness(0, 2, 0, 2) });
+				}
+			} catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidOperationException or StepFailedException) {
+				a_vm.Say("The tools could not be tested: " + e.Message, "bad");
+			} finally {
+				testTools.IsEnabled = true;
+			}
+		};
+		stack.Children.Add(testTools);
+		stack.Children.Add(testRows);
 		stack.Children.Add(updNote);
 		stack.Children.Add(updCheck);
 		stack.Children.Add(updRows);

@@ -12,13 +12,14 @@ namespace ToolRunner.App;
 //   "Skyrim Utility Patcher.exe" updates --setup <file>                                                its tools' newest versions (asks their pages)
 //   "Skyrim Utility Patcher.exe" changes --setup <file> [--look]                                       what Mod Organizer changed, newest first
 //   "Skyrim Utility Patcher.exe" tools --mo2 <ModOrganizer.exe> [--instance <folder>] [--add]          which tools it finds, where to get the rest; --add puts the found ones in Mod Organizer's list
+//   "Skyrim Utility Patcher.exe" test-tools --setup <file>                                             each tool opened to the window a run presses; nothing pressed
 //   "Skyrim Utility Patcher.exe" addon-check <file>                                                    what is wrong with an add-on file, in plain words
 //   "Skyrim Utility Patcher.exe" bugreport [--setup <file>]                                            one zip for a bug report (the setup's last run), names masked
 //   "Skyrim Utility Patcher.exe" share --setup <file> [--out <folder>]                                 a copy of the setup to share: its paths and commands taken out
 // exit 0 = finished / clean, 1 = failed / refused, 2 = stopped, 3 = bad arguments, 4 = (updates) a tool has a newer version
 public static class Cli
 {
-	public static bool Handles(string[] a_args) => a_args.Length > 0 && a_args[0] is "tools" or "addon-check" or "run" or "retry" or "queue" or "check" or "preview" or "lod" or "restore" or "stop" or "stop-after" or "import" or "updates" or "changes" or "bugreport" or "share" or "--help" or "-h" or "/?";
+	public static bool Handles(string[] a_args) => a_args.Length > 0 && a_args[0] is "tools" or "addon-check" or "test-tools" or "run" or "retry" or "queue" or "check" or "preview" or "lod" or "restore" or "stop" or "stop-after" or "import" or "updates" or "changes" or "bugreport" or "share" or "--help" or "-h" or "/?";
 
 	static string? Opt(string[] a_args, string a_name)
 	{
@@ -52,6 +53,7 @@ public static class Cli
 				"bugreport" => BugReportCmd(a_args),
 				"tools" => ToolsCmd(a_args),
 				"addon-check" => AddOnCheckCmd(a_args),
+				"test-tools" => TestToolsCmd(a_args),
 				"share" => ShareCmd(a_args),
 				_ => Help(),
 			};
@@ -285,6 +287,20 @@ public static class Cli
 			Console.WriteLine($"{r.When.ToString("yyyy-MM-dd HH:mm", InvariantCulture)}  {r.Mod}: {r.What}  [{(r.Profiles.Count == 0 ? "Mod Organizer" : string.Join(", ", r.Profiles))}]  {r.Who}");
 		}
 		return 0;
+	}
+
+	// test-tools --setup <file>, exit 0 = what a run presses is there in every tool
+	static int TestToolsCmd(string[] a_args)
+	{
+		if (Opt(a_args, "--setup") is not { } s) {
+			Console.WriteLine("test-tools needs --setup <file>");
+			return 3;
+		}
+		var results = ToolProof.TestAll(Setup.Load(Path.GetFullPath(s)), RunLog.Null, CancellationToken.None);
+		foreach (var r in results) {
+			Console.WriteLine((r.Good ? "good  " : "LOOK  ") + r.Text);
+		}
+		return results.All(r => r.Good) ? 0 : 1;
 	}
 
 	// for modders: addon-check <file>, exit 0 = it is right

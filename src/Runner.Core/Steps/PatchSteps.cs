@@ -408,6 +408,8 @@ public sealed class SynthesisStep : IStep
 		return (patcher != null ? $"its patcher \"{patcher}\" failed: " : "a patcher failed: ") + (err.Length > 300 ? err[..300] : err);
 	}
 
+	public const string GoRx = @"^GoButton|\bRun\b|RunPatchers";
+
 	// its Run button: an enabled one on screen (it has two "GoButton"s - 2026-10-27 the first one pressed nothing and the window
 	// sat on its main screen), pressed, and the run proven started by its window changing; else the other one, else the step fails
 	// naming what the window shows - never a window left open doing nothing
@@ -416,7 +418,7 @@ public sealed class SynthesisStep : IStep
 		var idle = TimeSpan.FromMinutes(Math.Max(1, a_ctx.Setup.IdleMinutes));
 		var sw = System.Diagnostics.Stopwatch.StartNew();
 		List<System.Windows.Automation.AutomationElement> Buttons() => Uia.All(a_w(), System.Windows.Automation.ControlType.Button)
-			.Where(b => Regex.IsMatch(Uia.AutomationId(b) + " " + Uia.Name(b), @"^GoButton|\bRun\b|RunPatchers", RegexOptions.IgnoreCase) && Uia.Usable(b)).ToList();
+			.Where(b => Regex.IsMatch(Uia.AutomationId(b) + " " + Uia.Name(b), GoRx, RegexOptions.IgnoreCase) && Uia.Usable(b)).ToList();
 		// a window that went away reads as "no buttons, new text" - so a closed Synthesis is caught first, never taken for a start
 		void StillOpen(string a_when)
 		{

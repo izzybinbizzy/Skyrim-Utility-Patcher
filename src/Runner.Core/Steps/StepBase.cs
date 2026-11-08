@@ -253,7 +253,9 @@ public static class StepKit
 	}
 
 	// a tool left open keeps MO2 locked: its windows asked to close, then the process tree ended (by PID)
-	public static void CloseTool(RunContext a_ctx, string? a_image)
+	public static void CloseTool(RunContext a_ctx, string? a_image) => CloseTool(a_ctx.Control, a_image);
+
+	public static void CloseTool(Mo2Control a_control, string? a_image)
 	{
 		if (string.IsNullOrEmpty(a_image)) {
 			return;
@@ -261,8 +263,8 @@ public static class StepKit
 		// only what this run started, and the children of it (a packed program runs its window in a child)
 		List<int> Ours()
 		{
-			var mine = new HashSet<int>(a_ctx.Control.Started);
-			foreach (var root in a_ctx.Control.Started) {
+			var mine = new HashSet<int>(a_control.Started);
+			foreach (var root in a_control.Started) {
 				foreach (var c in Procs.Tree(root)) {
 					mine.Add(c);
 				}

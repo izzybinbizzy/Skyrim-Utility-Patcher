@@ -68,6 +68,10 @@ public static class Preflight
 			var s = new StepSettings(a_setup.StepSettings(key) ?? []);
 			try {
 				outList.AddRange(step.Check(c, s));
+				// his checklist 445: a note, never a stop
+				if (ToolProof.Newer(key, ToolUpdates.Yours(a_mo2, s).Version) is { } newer) {
+					outList.Add(newer);
+				}
 			} catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Text.Json.JsonException) {
 				outList.Add(new Issue(key, true, "its check could not read a file: " + e.Message));
 			} catch (Exception e) when (e is InvalidOperationException or FormatException) {

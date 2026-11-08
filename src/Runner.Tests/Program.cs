@@ -4664,6 +4664,28 @@ public static class Program
 		Check(File.Exists(Path.Combine(f.Mods, "Output A", "MyPatch.esp")), "and the output stays");
 	}
 
+	// his checklist 445: a tool newer than this release was proven with is a note, never a stop; what a run presses is looked for by its name, or its id
+	static void T_AToolsWindowIsCheckedAgainstWhatARunPresses()
+	{
+		Equal<ToolRunner.Steps.Issue?>(null, ToolProof.Newer("synthesis", "0.36.6.0"), "the version it was proven with");
+		Equal<ToolRunner.Steps.Issue?>(null, ToolProof.Newer("synthesis", "0.30"), "an older one is no news");
+		Equal<ToolRunner.Steps.Issue?>(null, ToolProof.Newer("synthesis", ""), "one that cannot be read says nothing");
+		Equal<ToolRunner.Steps.Issue?>(null, ToolProof.Newer("playsave", "9"), "a step with no tool");
+		var newer = ToolProof.Newer("synthesis", "0.37.0");
+		Check(newer is { Blocking: false } && newer.Text.Contains("0.37.0", StringComparison.Ordinal) && newer.Text.Contains("0.36.6", StringComparison.Ordinal), "a newer one is said, and only said");
+		foreach (var k in ToolProof.ProvenWith.Keys) {
+			Check(StepCatalog.Known(k), k + " is a step");
+		}
+		ToolProof.Look L(string a_step) => ToolProof.Looks.Single(l => l.Step == a_step);
+		Equal<string?>(null, ToolProof.Missing(L("xlodgen"), [("Generate", "1", true)]), "its button there");
+		Check(ToolProof.Missing(L("xlodgen"), [("Generate", "1", false)])?.Contains("Generate", StringComparison.Ordinal) == true, "a button that cannot be pressed does not count");
+		Check(ToolProof.Missing(L("xlodgen"), [("Other", "1", true)])?.Contains("Other", StringComparison.Ordinal) == true, "what it shows instead is named");
+		Check(ToolProof.Missing(L("xlodgen"), [])?.Contains("none", StringComparison.Ordinal) == true, "no buttons at all");
+		Equal<string?>(null, ToolProof.Missing(L("synthesis"), [("", "GoButton", true)]), "Synthesis's by its id");
+		Equal<string?>(null, ToolProof.Missing(L("landscapefixer"), [("Generieren", "", true)], ["Generieren"]), "a tool's own translation of it");
+		Check(ToolProof.Looks.All(l => StepCatalog.Known(l.Step)), "every look is at a step");
+	}
+
 	static void T_EveryToolStepHasItsHelpPage()
 	{
 		foreach (var s in StepCatalog.All.Where(s => s.Key is not ("shaders" or "xlodgen"))) {
