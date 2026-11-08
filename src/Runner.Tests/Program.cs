@@ -3453,6 +3453,16 @@ public static class Program
 			Equal(null, Ask("1.0", now.AddDays(4).AddHours(3)), "still nothing the same day");
 			Equal(afterFail, looks, "a failed look counts as the day's look - never asked again each start");
 			Check(ProgramUpdate.Page.StartsWith("https://", StringComparison.Ordinal), "its download page is a web address");
+			// switched off while a look is out on the web: the look's answer neither undoes the switch nor is told (CodeRabbit on #25)
+			fail = false;
+			newest = "1.3";
+			ProgramUpdate.Probe = _ => {
+				++looks;
+				ProgramUpdate.SetOff(dir, true);
+				return Task.FromResult("v" + newest);
+			};
+			Equal(null, Ask("1.0", now.AddDays(6)), "switched off during the look: nothing told");
+			Check(ProgramUpdate.IsOff(dir), "and the switch stays off");
 		} finally {
 			ProgramUpdate.Probe = null;
 			try {
@@ -3485,6 +3495,42 @@ public static class Program
 		Check(r.Removed.Any(x => x.Contains("before", StringComparison.Ordinal)) && r.Removed.Any(x => x.Contains("tool_writes", StringComparison.Ordinal)),
 			"what was taken out is named: " + string.Join("; ", r.Removed));
 		Check((r.Setup["shared"]?["setYourself"] as JsonArray)?.Count == r.Removed.Count, "the copy itself says what to set");
+		// CodeRabbit on #25: more path forms, names masked in values only, the file name masked, never written over its source,
+		// and a PGPatcher settings set named as the other player's to make
+		foreach (var p in new[] { @"%ProgramFiles(x86)%\Tool", "//nas/private/tool", @"\\nas\lod\x" }) {
+			Check(SetupShare.HoldsPath(p), "a path of this PC: " + p);
+		}
+		Check(!SetupShare.HoldsPath("https://www.nexusmods.com/skyrimspecialedition/mods/32382") && !SetupShare.HoldsPath("Tamriel"), "a web address or a word is no path");
+		var dir = Path.Combine(Path.GetTempPath(), "SUP share " + Guid.NewGuid().ToString("N"));
+		Directory.CreateDirectory(dir);
+		try {
+			var source = Path.Combine(dir, "Steps Of Izzy (shared).json");
+			File.WriteAllText(source, """
+				{ "name": "Steps Of Izzy", "mo2": { "profile": "Izzy Profile" },
+				  "steps": [ { "step": "pgpatcher", "on": true, "settings": { "settings": "PBR", "output_mod": "Izzy Output" } } ] }
+				""");
+			var named = Setup.Load(source);
+			List<(string Name, string Mask)> names = [("Izzy", "<you>"), ("Steps", "<this PC>")];
+			var shared = SetupShare.Share(named, "1.0", names);
+			Check(shared.Setup["steps"] is JsonArray { Count: 1 }, "a key that is also a name stays the setup's own key");
+			Equal("<you> Profile", shared.Setup["mo2"]?["profile"]?.ToString(), "a name in a value is masked");
+			Equal("pgpatcher", shared.Setup["steps"]?[0]?["step"]?.ToString(), "a step's own key is no name");
+			Check(shared.Removed.Any(x => x.Contains("PGPatcher settings set \"PBR\"", StringComparison.Ordinal)), "the settings set it names is the other player's to make: " +
+				string.Join("; ", shared.Removed));
+			var (file, _) = SetupShare.Write(named, dir, "1.0", names);
+			Check(!Path.GetFileName(file).Contains("Izzy", StringComparison.OrdinalIgnoreCase), "the file name masked too: " + Path.GetFileName(file));
+			Check(File.ReadAllText(source).Contains("Izzy Output", StringComparison.Ordinal), "the setup itself is untouched");
+			File.WriteAllText(Path.Combine(dir, "Mine (shared).json"), """{ "name": "Mine", "mo2": { "exe": "C:\\MO2\\ModOrganizer.exe" } }""");
+			var mine = Setup.Load(Path.Combine(dir, "Mine (shared).json"));
+			var (again, _) = SetupShare.Write(mine, dir, "1.0", names);
+			Check(!Files.SamePath(again, mine.File) && File.ReadAllText(mine.File).Contains("ModOrganizer.exe", StringComparison.Ordinal),
+				"a setup named \"... (shared)\" shared into its own folder is never written over: " + Path.GetFileName(again));
+		} finally {
+			try {
+				Directory.Delete(dir, true);
+			} catch (IOException) {
+			}
+		}
 	}
 
 	// his checklist 457: a save's character is read off the start of its header (the UESP layout), every character with a save is
@@ -3522,6 +3568,46 @@ public static class Program
 			} catch (IOException) {
 			}
 		}
+	}
+
+	// the in-game steps with a character picked: that character's newest save even when another character played since, a save
+	// of another character never loaded (named or an earlier clean save), and the save to play starting from the picked one's
+	// (CodeRabbit on #25)
+	static void T_TheInGameStepsUseThePickedCharactersSaves()
+	{
+		using var f = new FakeMo2();
+		File.WriteAllText(Path.Combine(f.ProfileDir, "settings.ini"), "[General]\r\nLocalSaves=true\r\n");
+		var p = ProfileOf(f);
+		var saves = InGame.SavesDir(p);
+		Directory.CreateDirectory(saves);
+		void Save(string a_file, string a_name, DateTime a_at)
+		{
+			using (var fs = File.Create(Path.Combine(saves, a_file + ".ess")))
+			using (var w = new BinaryWriter(fs, Encoding.Latin1)) {
+				w.Write(Encoding.ASCII.GetBytes("TESV_SAVEGAME"));
+				w.Write(100u);
+				w.Write(12u);
+				w.Write(7u);
+				w.Write((ushort)a_name.Length);
+				w.Write(Encoding.Latin1.GetBytes(a_name));
+				w.Write(new byte[64]);
+			}
+			File.SetLastWriteTimeUtc(Path.Combine(saves, a_file + ".ess"), a_at);
+		}
+		var t0 = DateTime.UtcNow.AddDays(-2);
+		Save("Save2_Bjorn", "Björn", t0.AddHours(1));
+		Save("Save3_Lydia", "Lydia", t0.AddHours(2));
+		Save("Skyrim Utility Patcher - clean save", "Lydia", t0.AddHours(3));
+		Equal("Save3_Lydia", InGame.NewestPlayerSave(p), "no character picked: anyone's newest (never one the runner made)");
+		Equal("Save2_Bjorn", InGame.NewestPlayerSave(p, null, "björn"), "the picked character's newest, though another played since");
+		Equal("Lydia", InGame.OtherCharacter(p, "Save3_Lydia", "Björn"), "a save of another character is told apart");
+		Equal<string?>(null, InGame.OtherCharacter(p, "Save2_Bjorn", "BJÖRN"), "the picked character's own save, in any case");
+		Equal<string?>(null, InGame.OtherCharacter(p, "Save3_Lydia", null), "no character picked: no conflict");
+		Equal<DateTime?>(null, InGame.OldCleanSave(p, "Björn"), "an earlier clean save of another character is not used");
+		Check(InGame.OldCleanSave(p, "Lydia") != null, "one of the picked character's is");
+		var player = InGame.NewestPlayerSave(p, null, "Björn");
+		Equal("Save2_Bjorn", InGame.PlaySaveFrom(null, null, InGame.OldCleanSave(p, "Björn"), player, InGame.SaveTime(p, player)).Save,
+			"the save to play starts from the picked character's save, not the newer clean save of another");
 	}
 
 	static void T_EveryToolStepHasItsHelpPage()

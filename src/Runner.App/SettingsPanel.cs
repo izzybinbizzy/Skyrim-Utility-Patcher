@@ -197,10 +197,25 @@ public static class SettingsPanel
 
 	static string Label(string a_key) => Labels.TryGetValue(a_key, out var l) ? l : char.ToUpperInvariant(a_key[0]) + a_key[1..].Replace('_', ' ');
 
+	// his checklist 471: the program's own new versions - kept for the whole program, saved the moment it is ticked
+	static void NewVersions(MainWindow a_w, StackPanel a_stack)
+	{
+		a_stack.Children.Add(new TextBlock { Text = "NEW VERSIONS OF THIS PROGRAM", Style = (Style)a_w.FindResource("H2"), Margin = new Thickness(0, 18, 0, 8), Tag = HeadTag });
+		var newVersions = new CheckBox { Content = "Tell me when a new version is out", IsChecked = !ProgramUpdate.IsOff(AppPaths.Data), Margin = new Thickness(0, 0, 0, 4) };
+		newVersions.Click += (_, _) => ProgramUpdate.SetOff(AppPaths.Data, newVersions.IsChecked != true);
+		a_stack.Children.Add(newVersions);
+		a_stack.Children.Add(new TextBlock { Text = "At most once a day, when the window opens, it asks its own download page which version is newest - nothing else is sent, " +
+			"and nothing is downloaded: the page opens in your browser when you choose.", Style = (Style)a_w.FindResource("MutedText"), TextWrapping = TextWrapping.Wrap });
+	}
+
 	public static FrameworkElement Build(MainWindow a_w, MainViewModel a_vm)
 	{
 		if (a_vm.Setup == null) {
-			return new TextBlock { Text = "Make or pick a setup first.", TextWrapping = TextWrapping.Wrap };
+			// the program's own new-version look happens with no setup too, so its switch is here as well
+			var none = new StackPanel();
+			none.Children.Add(new TextBlock { Text = "Make or pick a setup first.", TextWrapping = TextWrapping.Wrap });
+			NewVersions(a_w, none);
+			return none;
 		}
 		var work = (JsonObject)a_vm.Setup.Root.DeepClone();
 		HasChanges = false;
@@ -228,19 +243,26 @@ public static class SettingsPanel
 		// his checklist 466: a copy another player can import - its steps and options, nothing of this PC
 		var share = new Button { Content = "Share this setup ...", Style = (Style)a_w.FindResource("Ghost"), HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 0, 0, 8),
 			ToolTip = "Writes a copy of this setup (as last saved) for another player: every path of this PC and the commands it runs before and after a run are taken out" };
-		share.Click += (_, _) => {
-			if (a_vm.Setup is not { } current) {
+		share.Click += async (_, _) => {
+			if (a_vm.Setup is not { } current || !share.IsEnabled) {
 				return;
 			}
+			// the setup as it is this moment, written off the window's thread; one share at a time
+			share.IsEnabled = false;
+			var text = System.Text.Encoding.UTF8.GetBytes(current.Root.ToJsonString());
+			var source = current.File;
 			try {
-				var (file, gone) = SetupShare.Write(current, Path.Combine(AppPaths.Data, "Shared setups"), MainWindow.AppVersion);
-				if (Ask.Show(a_w, "Shared copy made", $"It is ready: {Path.GetFileName(file)}\n\nTaken out (the other player sets these themselves):\n" +
+				var (file, gone) = await Task.Run(() => SetupShare.Write(Setup.Parse(text, source), Path.Combine(AppPaths.Data, "Shared setups"), MainWindow.AppVersion))
+					.ConfigureAwait(true);
+				if (Ask.Show(a_w, "Shared copy made", $"It is ready: {Path.GetFileName(file)}\n\nWhat the other player sets themselves:\n" +
 				    (gone.Count == 0 ? "nothing" : string.Join("\n", gone.Select(g => "- " + g))) + "\n\nThey bring it in with the import command (see the readme).",
 				    "Show the file", "Close")) {
 					System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer.exe", $"/select,\"{file}\"") { UseShellExecute = true });
 				}
-			} catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception) {
+			} catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception or System.Text.Json.JsonException or InvalidDataException) {
 				a_vm.Say("The shared copy could not be made: " + e.Message, "bad");
+			} finally {
+				share.IsEnabled = true;
 			}
 		};
 		stack.Children.Add(share);
@@ -376,13 +398,7 @@ public static class SettingsPanel
 			"and no theme was picked here. \"Color-blind safe\" keeps finished, warning and failed apart by more than red and green. Every state also has its own mark.",
 			Style = (Style)a_w.FindResource("MutedText"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 0) });
 
-		// his checklist 471: the program's own new versions - kept for the whole program, saved the moment it is ticked
-		Head("NEW VERSIONS OF THIS PROGRAM");
-		var newVersions = new CheckBox { Content = "Tell me when a new version is out", IsChecked = !ProgramUpdate.IsOff(AppPaths.Data), Margin = new Thickness(0, 0, 0, 4) };
-		newVersions.Click += (_, _) => ProgramUpdate.SetOff(AppPaths.Data, newVersions.IsChecked != true);
-		stack.Children.Add(newVersions);
-		stack.Children.Add(new TextBlock { Text = "At most once a day, when the window opens, it asks its own download page which version is newest - nothing else is sent, " +
-			"and nothing is downloaded: the page opens in your browser when you choose.", Style = (Style)a_w.FindResource("MutedText"), TextWrapping = TextWrapping.Wrap });
+		NewVersions(a_w, stack);
 
 		// his ask 2026-10-27: aware of a tool's updates, the download from the runner (its page, in the player's browser)
 		Head("TOOL UPDATES");

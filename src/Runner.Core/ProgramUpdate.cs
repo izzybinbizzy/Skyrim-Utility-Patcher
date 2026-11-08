@@ -34,23 +34,31 @@ public static class ProgramUpdate
 		}
 	}
 
-	static void Write(string a_dataDir, State a_state)
+	// every change reads the file as it is now and writes it back under one lock, so a look finishing never undoes a switch-off or
+	// a set-aside made while it was out on the web
+	static readonly Lock Gate = new();
+
+	static State Update(string a_dataDir, Func<State?, State> a_change)
 	{
-		try {
-			Directory.CreateDirectory(a_dataDir);
-			Files.WriteAtomic(File(a_dataDir), JsonSerializer.Serialize(a_state));
-		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
-			// not kept: the next start looks again
+		lock (Gate) {
+			var state = a_change(Read(a_dataDir));
+			try {
+				Directory.CreateDirectory(a_dataDir);
+				Files.WriteAtomic(File(a_dataDir), JsonSerializer.Serialize(state));
+			} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+				// not kept: the next start looks again
+			}
+			return state;
 		}
 	}
 
 	public static bool IsOff(string a_dataDir) => Read(a_dataDir)?.Off == true;
 
 	public static void SetOff(string a_dataDir, bool a_off) =>
-		Write(a_dataDir, (Read(a_dataDir) ?? new State(DateTime.MinValue, "")) with { Off = a_off });
+		Update(a_dataDir, s => (s ?? new State(DateTime.MinValue, "")) with { Off = a_off });
 
 	public static void SetAside(string a_dataDir, string a_version) =>
-		Write(a_dataDir, (Read(a_dataDir) ?? new State(DateTime.MinValue, a_version)) with { SetAside = a_version });
+		Update(a_dataDir, s => (s ?? new State(DateTime.MinValue, a_version)) with { SetAside = a_version });
 
 	// the newer version to tell the player about, or null (none, the look is off, it was set aside, or the web did not answer -
 	// a failed look is never an error on screen and is tried again on the next start)
@@ -67,13 +75,13 @@ public static class ProgramUpdate
 				newest = await (Probe?.Invoke(a_ct) ?? ToolUpdates.Newest(NexusId, GitHubRepo, a_ct)).ConfigureAwait(false);
 			} catch (Exception e) when (e is HttpRequestException or TaskCanceledException or InvalidOperationException or JsonException or NotSupportedException) {
 				// a look that failed (offline, no release yet) counts as the day's look too: asked again tomorrow, never each start
-				Write(a_dataDir, (state ?? new State(a_now, "")) with { At = a_now, Newest = "" });
+				Update(a_dataDir, s => (s ?? new State(a_now, "")) with { At = a_now, Newest = "" });
 				return null;
 			}
-			state = (state ?? new State(a_now, newest)) with { At = a_now, Newest = newest };
-			Write(a_dataDir, state);
+			var found = newest;
+			state = Update(a_dataDir, s => (s ?? new State(a_now, found)) with { At = a_now, Newest = found });
 		}
-		if (newest == "" || !ToolUpdates.IsNewer(a_current, newest)) {
+		if (newest == "" || !ToolUpdates.IsNewer(a_current, newest) || state?.Off == true) {
 			return null;
 		}
 		return state?.SetAside is { } aside && !ToolUpdates.IsNewer(aside, newest) ? null : newest;

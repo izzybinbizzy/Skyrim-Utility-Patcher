@@ -155,7 +155,8 @@ public sealed partial class MainViewModel : Observable
 	public async Task LookForNewVersion(string a_current)
 	{
 		var newer = await Task.Run(() => ProgramUpdate.Newer(AppPaths.Data, a_current, DateTime.UtcNow, CancellationToken.None)).ConfigureAwait(true);
-		if (newer != null) {
+		// switched off in Settings while the look was out: nothing is shown
+		if (newer != null && !ProgramUpdate.IsOff(AppPaths.Data)) {
 			_newVersion = newer;
 			NewVersion = $"{Brand.Name} {newer} is out (you have {a_current}). Its download page has what changed.";
 		}

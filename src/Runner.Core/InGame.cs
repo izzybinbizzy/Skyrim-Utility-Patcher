@@ -234,6 +234,34 @@ public static partial class InGame
 	// the character the setup picked for the in-game steps (null = anyone's newest save)
 	public static string? Character(RunContext a_ctx) => Setup.Str(a_ctx.Setup.Root, "character") is { Length: > 0 } c && c.Trim() != "" ? c.Trim() : null;
 
+	// the character a save belongs to, when it is another than a_who (null = the same, no character picked, or not readable)
+	public static string? OtherCharacter(Profile a_profile, string a_save, string? a_who)
+	{
+		if (string.IsNullOrWhiteSpace(a_who)) {
+			return null;
+		}
+		var name = SaveHeader.PlayerName(Path.Combine(SavesDir(a_profile), a_save + ".ess"));
+		return name != null && !name.Equals(a_who.Trim(), StringComparison.OrdinalIgnoreCase) ? name : null;
+	}
+
+	// a save the setup names (or the player made) that belongs to another character than the one picked: never loaded, said why
+	static void SameCharacter(RunContext a_ctx, string a_save, string a_what)
+	{
+		if (Character(a_ctx) is { } who && OtherCharacter(a_ctx.Profile, a_save, who) is { } other) {
+			throw new StepFailedException($"{a_what} \"{a_save}\" is {other}'s, not {who}'s (the character this setup picked) - " +
+				"name one of that character's saves, or change the character in Settings");
+		}
+	}
+
+	// when an earlier run's clean save was made: only one of the picked character (null = none, or another character's)
+	public static DateTime? OldCleanSave(Profile a_profile, string? a_who) =>
+		OtherCharacter(a_profile, SaveClean, a_who) == null ? SaveTime(a_profile, SaveClean) : null;
+
+	// what the guided clean save asks the player to load
+	static string LoadWhat(RunContext a_ctx, StepSettings a_s) =>
+		a_s.Str("save") is { Length: > 0 } named ? $"load the save \"{named}\"" :
+		Character(a_ctx) is { } who ? $"load the newest save of {who}" : "load your newest save";
+
 	// the steps that start the runner's own game (the clean save, the save to play, the shader caches, the game-run grass cache)
 	static readonly HashSet<string> GameSteps = ["cleansave", "playsave", "shaders", "grass"];
 
@@ -788,10 +816,15 @@ public static partial class InGame
 		a_ctx.CleanSaveExtraOff = a_ctx.Profile.Dependents(outs);
 		var dyn = a_s.Raw["dyndolod_off"] != null ? a_s.Bool("dyndolod_off", false) : HasDynDolod(a_ctx.Profile);
 		var cell = a_s.Str("interior_cell") ?? "QASmoke";
+		if (a_s.Str("save") is { Length: > 0 } namedSave) {
+			SameCharacter(a_ctx, namedSave, "the save the setup names");
+		}
 		if (!Auto(a_ctx)) {
-			a_ctx.CleanSaveName = GuidedSave(a_ctx, "cleansave", a_s, "In the game: load your newest save and wait a full minute. " +
+			var made = GuidedSave(a_ctx, "cleansave", a_s, $"In the game: {LoadWhat(a_ctx, a_s)} and wait a full minute. " +
 				(dyn ? "Open DynDOLOD's menu (MCM), switch DynDOLOD off, and wait half a minute. " : "") +
 				$"Note exactly where you are standing (you go back there at the end). Open the console and type: coc {cell} - once you are there and your followers have caught up, save.");
+			SameCharacter(a_ctx, made, "the save you made");
+			a_ctx.CleanSaveName = made;
 			return;
 		}
 		var save = a_s.Str("save") is { Length: > 0 } named ? named : NewestPlayerSave(a_ctx.Profile, OurRuns(a_ctx), Character(a_ctx)) ?? throw new StepFailedException(
@@ -875,7 +908,18 @@ public static partial class InGame
 		if (named == null && a_s.Str("save") is { Length: > 0 } missing) {
 			a_ctx.Log.Warn($"the save the setup names (\"{missing}\") is not in the saves folder - another is used");
 		}
-		var (pick, why) = PlaySaveFrom(a_ctx.CleanSaveName, named, SaveTime(a_ctx.Profile, SaveClean), player, SaveTime(a_ctx.Profile, player));
+		// with no clean save of this run, a named save or an earlier clean save must be the picked character's too
+		var oldClean = SaveTime(a_ctx.Profile, SaveClean);
+		if (a_ctx.CleanSaveName == null) {
+			if (named != null) {
+				SameCharacter(a_ctx, named, "the save the setup names");
+			}
+			if (oldClean != null && OldCleanSave(a_ctx.Profile, Character(a_ctx)) == null) {
+				a_ctx.Log.Detail($"an earlier run's clean save belongs to another character than {Character(a_ctx)} - not used");
+				oldClean = null;
+			}
+		}
+		var (pick, why) = PlaySaveFrom(a_ctx.CleanSaveName, named, oldClean, player, SaveTime(a_ctx.Profile, player));
 		var from = pick ?? throw new StepFailedException(why);
 		a_ctx.Log.Detail($"the save to play starts from \"{from}\" ({why})");
 		var marker = a_ctx.Journal.ReturnMarker;
