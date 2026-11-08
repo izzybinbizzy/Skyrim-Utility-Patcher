@@ -54,17 +54,30 @@ public static partial class ToolUpdates
 		if (string.IsNullOrEmpty(exe) || !File.Exists(exe)) {
 			return (null, "");
 		}
+		// Java's own version says nothing of the program it runs, and a version that cannot be read stops nothing: it is only not known
+		if (Mo2Control.IsJava(Path.GetFileName(exe))) {
+			return (exe, "");
+		}
+		try {
+			return (exe, VersionOf(a_mo2, exe));
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+			return (exe, "");
+		}
+	}
+
+	static string VersionOf(Mo2Instance a_mo2, string exe)
+	{
 		// a tool installed as a Mod Organizer mod: MO2's own record of the version it installed
 		if (Files.IsUnder(exe, a_mo2.ModsDir)) {
 			var modDir = Path.Combine(a_mo2.ModsDir, Path.GetRelativePath(a_mo2.ModsDir, exe).Split(Path.DirectorySeparatorChar)[0]);
 			var meta = Path.Combine(modDir, "meta.ini");
 			if (File.Exists(meta) && Files.ReadSharedText(meta).Split('\n').Select(l => l.Trim())
 				    .FirstOrDefault(l => l.StartsWith("version=", StringComparison.OrdinalIgnoreCase)) is { } v && v.Length > "version=".Length) {
-				return (exe, v["version=".Length..]);
+				return v["version=".Length..];
 			}
 		}
 		var info = FileVersionInfo.GetVersionInfo(exe);
-		return (exe, info.FileVersion ?? info.ProductVersion ?? "");
+		return info.FileVersion ?? info.ProductVersion ?? "";
 	}
 
 	[GeneratedRegex(@"\d+")]
@@ -148,8 +161,8 @@ public static partial class ToolUpdates
 			try {
 				// never back on the caller's thread (a window thread that waits on this would deadlock)
 				var newest = src.NexusId != null ? await Nexus(http, src.NexusId, a_ct).ConfigureAwait(false) : await GitHub(http, src.GitHub!, a_ct).ConfigureAwait(false);
-				outList.Add(new Result(step.Key, tool, yours == "" ? "?" : yours, newest, exe != null && IsNewer(yours, newest), src.Page,
-					exe == null ? "its program was not found" : null));
+				outList.Add(new Result(step.Key, tool, yours == "" ? "?" : yours, newest, exe != null && yours != "" && IsNewer(yours, newest), src.Page,
+					exe == null ? "its program was not found" : yours == "" ? "its version could not be read" : null));
 			} catch (Exception e) when (e is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException or InvalidOperationException) {
 				outList.Add(new Result(step.Key, tool, yours, "", false, src.Page, "could not ask its page: " + e.Message));
 			}

@@ -149,6 +149,10 @@ public static class Runner
 		};
 		forThisRun = control;
 		journal.Mo2KeptOpen = control.CompanionOn;
+		control.CompanionGaveUp = () => {
+			journal.Mo2KeptOpen = false;
+			journal.Save();
+		};
 		var ctx = new RunContext {
 			Setup = setup, Mo2 = mo2, Profile = profile, Control = control, Log = log, Journal = journal, Cancel = cts.Token,
 			BackupFolder = journal.BackupDir, Guide = a_guide?.Invoke(journal) ?? new FileGuide(journal, commands.TakeContinue, commands.ClearContinue),
@@ -247,6 +251,7 @@ public static class Runner
 					made = RunStep(ctx, ps);
 				} finally {
 					journal.InGameAfter = false;
+					journal.NeedsRestore = journal.Kept.Any(k => !k.Done);
 					journal.Save();
 				}
 				if (!made) {

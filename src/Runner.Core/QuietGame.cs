@@ -62,16 +62,23 @@ public static class QuietGame
 		return scale.Replace(a_ini, "$1#ResolutionScale$2");
 	}
 
+	public static bool IsLocalSettings(string a_line)
+	{
+		var parts = a_line.Split('=', 2);
+		return parts.Length == 2 && parts[0].Trim().Equals("LocalSettings", StringComparison.OrdinalIgnoreCase) && parts[1].Trim().Equals("true", StringComparison.OrdinalIgnoreCase);
+	}
+
+	// GOG's own library ships in its copy of the game, wherever that was installed
+	public static bool IsGog(string a_gameDir) => File.Exists(Path.Combine(a_gameDir, "Galaxy64.dll"));
+
 	// the profile's own settings file when it keeps them, else My Games'
 	static string PrefsPath(Profile a_profile)
 	{
 		var settings = Path.Combine(a_profile.Dir, "settings.ini");
-		var local = File.Exists(settings) && Files.ReadSharedText(settings).Split('\n').Any(l => l.Trim().Equals("LocalSettings=true", StringComparison.OrdinalIgnoreCase));
-		if (local) {
+		if (File.Exists(settings) && Files.ReadSharedText(settings).Split('\n').Any(IsLocalSettings)) {
 			return Path.Combine(a_profile.Dir, "skyrimprefs.ini");
 		}
-		var gog = a_profile.Mo2.GameDir.Contains("GOG", StringComparison.OrdinalIgnoreCase);
-		return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "My Games", gog ? "Skyrim Special Edition GOG" : "Skyrim Special Edition", "SkyrimPrefs.ini");
+		return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "My Games", IsGog(a_profile.Mo2.GameDir) ? "Skyrim Special Edition GOG" : "Skyrim Special Edition", "SkyrimPrefs.ini");
 	}
 
 	// the files a step changed are read back to what they were by PutBack; a game start that finds them changed already leaves them
@@ -86,22 +93,31 @@ public static class QuietGame
 			return;
 		}
 		var files = new List<(string Path, Func<string, string> Change)> { (prefs, GamePrefs) };
+		// overwrite outranks every mod. The game's own Data folder is never written
 		files.AddRange(a_ctx.Profile.States().Where(s => s.Value == '+')
-			.Select(s => Path.Combine(a_ctx.Mo2.ModDir(s.Key), "SKSE", "Plugins", TweaksFile)).Where(File.Exists)
+			.Select(s => Path.Combine(a_ctx.Mo2.ModDir(s.Key), "SKSE", "Plugins", TweaksFile))
+			.Append(Path.Combine(a_ctx.Mo2.OverwriteDir, "SKSE", "Plugins", TweaksFile)).Where(File.Exists)
 			.Select(f => (f, (Func<string, string>)DisplayTweaks)));
 		foreach (var (path, change) in files) {
 			StepKit.KeepFile(a_ctx, path);
 			a_ctx.QuietFiles.Add(path);
 			Files.WriteAtomic(path, change(Files.ReadSharedText(path)));
 		}
+		// the save to play runs after the run's record says finished: a crash there must still leave something to put back
+		if (a_ctx.Journal.InGameAfter) {
+			a_ctx.Journal.NeedsRestore = true;
+			a_ctx.Journal.Save();
+		}
 		a_ctx.Log.Detail($"the game starts in a small, muted window ({Width} x {Height})");
 	}
 
+	// a file that will not go back stops the run: the next step would run in the quiet window, and the run's record keeps the file for "Put my profile back"
 	public static void PutBack(RunContext a_ctx)
 	{
-		foreach (var path in a_ctx.QuietFiles) {
-			StepKit.PutFilesBack(a_ctx, path);
-		}
+		var notBack = a_ctx.QuietFiles.SelectMany(path => StepKit.PutFilesBack(a_ctx, path)).ToList();
 		a_ctx.QuietFiles.Clear();
+		if (notBack.Count > 0) {
+			throw new StepFailedException($"the game's settings could not be put back from the quiet window ({Path.GetFileName(notBack[0])})");
+		}
 	}
 }
