@@ -104,7 +104,7 @@ public static class RunUndo
 	// the mods and tool folders a run emptied and still holds the old content of
 	static HashSet<string> FoldersMoved(Journal a_r) =>
 		a_r.Parked.Where(p => p.Replaced && !p.PutBack && (!p.IsFolder || p.Moved) && p.From != "")
-			.Select(p => Path.GetFullPath(p.From).TrimEnd('\')).ToHashSet(StringComparer.OrdinalIgnoreCase);
+			.Select(p => Path.GetFullPath(p.From).TrimEnd('\\')).ToHashSet(StringComparer.OrdinalIgnoreCase);
 
 	// why this run cannot be undone now (null = it can): only the last run on its profile and outputs still standing, ended, with its backup there
 	public static string? WhyNot(Journal a_j, IEnumerable<Journal> a_runs)
