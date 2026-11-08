@@ -3915,8 +3915,8 @@ public static class Program
 		}
 		Check(refused.Contains("\"Plugin Tool\"", StringComparison.Ordinal) && !p.IsOn("Plugin Tool"), "a tool mod with a plugin is named and left off: " + refused);
 		Equal<Toggle?>(null, StepKit.ToolModOn(ctx, new StepSettings(new JsonObject { ["executable"] = "SKSE" })), "nothing to switch for a program outside the mods folder");
-		Equal(0, StepKit.ToolMods(ctx, new StepSettings(new JsonObject { ["executable"] = "Tool2", ["enable_during"] = new JsonArray("Plugin Tool") })).Count,
-			"a mod the setup itself switches on for the step is its own choice, plugin or not");
+		Equal("Plugin Tool", string.Join(",", StepKit.ToolMods(ctx, new StepSettings(new JsonObject { ["executable"] = "Tool2", ["enable_during"] = new JsonArray("Plugin Tool") }))),
+			"a mod the setup itself names for the step is its own choice, plugin or not - and still switched on, for the steps that do not read that list");
 	}
 
 	static void T_EveryToolStepHasItsHelpPage()

@@ -48,11 +48,14 @@ public static class StepKit
 	public static List<string> ToolMods(RunContext a_ctx, StepSettings a_s)
 	{
 		var title = a_s.Req("executable");
-		// a mod the setup itself switches on for this step is its own choice, plugin or not
-		if (ToolMod(a_ctx.Mo2, a_ctx.Profile, title) is not { } mod || a_s.List("enable_during").Contains(mod, StringComparer.OrdinalIgnoreCase)) {
+		if (ToolMod(a_ctx.Mo2, a_ctx.Profile, title) is not { } mod) {
 			return [];
 		}
-		NoPluginIn(a_ctx.Mo2, mod, title);
+		// a mod the setup itself names for this step is its own choice, plugin or not (some steps do not read that list, so the mod
+		// is still returned here)
+		if (!a_s.List("enable_during").Contains(mod, StringComparer.OrdinalIgnoreCase)) {
+			NoPluginIn(a_ctx.Mo2, mod, title);
+		}
 		a_ctx.Log.Detail($"{title}'s program is inside the switched-off mod \"{mod}\" - switched on for its run, off again after");
 		return [mod];
 	}
