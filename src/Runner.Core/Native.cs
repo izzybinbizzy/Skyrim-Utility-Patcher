@@ -29,6 +29,12 @@ public static partial class Native
 	public static partial bool IsWindowVisible(nint a_hwnd);
 
 	[LibraryImport("user32.dll")]
+	private static partial nint GetWindow(nint a_hwnd, uint a_cmd);
+
+	// a window another window owns (GW_OWNER): a dialog or box of any toolkit - Delphi, WPF, WinForms - never a tool's main window
+	public static bool IsOwned(nint a_hwnd) => GetWindow(a_hwnd, 4) != 0;
+
+	[LibraryImport("user32.dll")]
 	[return: MarshalAs(UnmanagedType.Bool)]
 	public static partial bool IsWindowEnabled(nint a_hwnd);
 

@@ -58,6 +58,7 @@ public static class Preflight
 			outList.Add(new Issue("", false, "out of the recommended order: " + w));
 		}
 		var c = new CheckContext { Setup = a_setup, Mo2 = a_mo2, Profile = profile, States = profile.States() };
+		HashSet<string>? rivalsOff = null;
 		foreach (var key in a_steps) {
 			var step = StepRegistry.For(key);
 			if (step == null) {
@@ -74,7 +75,8 @@ public static class Preflight
 				outList.Add(new Issue(key, true, "its check found a setting of the wrong kind: " + e.Message));
 			}
 			outList.AddRange(ToolVersions.Check(a_setup, a_mo2, key, s));
-			outList.AddRange(Duplicates.Check(a_setup, a_mo2, c.States, key));
+			rivalsOff ??= Duplicates.Off(a_setup, c.States);
+			outList.AddRange(Duplicates.Check(a_setup, a_mo2, c.States, key, rivalsOff));
 			// the settings learned from the tool's own window: a tool updated since may have changed what they mean
 			if (ToolSettings.CanLearn(s) && ToolSettings.Load(a_setup, key) is { } l && ToolUpdates.Yours(a_mo2, s).Exe is { } exe &&
 			    File.GetLastWriteTimeUtc(exe) > l.At) {
@@ -141,16 +143,20 @@ public static class Duplicates
 		return null;
 	}
 
-	public static IEnumerable<Issue> Check(Setup a_setup, Mo2Instance a_mo2, IReadOnlyDictionary<string, char> a_states, string a_step)
+	// the mods the run itself switches off are no rivals: every output of the setup, every mod a step replaces, its LOD outputs -
+	// the same for every step, so the pre-check works it out once
+	public static HashSet<string> Off(Setup a_setup, IReadOnlyDictionary<string, char> a_states) =>
+		Runner.OutputsToTurnOff(a_setup, a_states).Select(o => o.Mod).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+	public static IEnumerable<Issue> Check(Setup a_setup, Mo2Instance a_mo2, IReadOnlyDictionary<string, char> a_states, string a_step, IReadOnlySet<string>? a_off = null)
 	{
 		var s = new StepSettings(a_setup.StepSettings(a_step) ?? []);
 		if (s.OutputMod is not { } own) {
 			yield break;
 		}
-		// the mods the run itself switches off are no rivals: every output of the setup, every mod a step replaces, its LOD outputs
-		var off = Runner.OutputsToTurnOff(a_setup, a_states).Select(o => o.Mod).Append(own).ToHashSet(StringComparer.OrdinalIgnoreCase);
+		var off = a_off ?? Off(a_setup, a_states);
 		foreach (var (mod, flag) in a_states) {
-			if (flag != '+' || off.Contains(mod)) {
+			if (flag != '+' || off.Contains(mod) || string.Equals(mod, own, StringComparison.OrdinalIgnoreCase)) {
 				continue;
 			}
 			if (Holds(a_mo2.ModDir(mod), a_step) is { } file) {

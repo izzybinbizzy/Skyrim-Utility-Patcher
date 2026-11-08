@@ -179,7 +179,8 @@ public static partial class ToolSettings
 		var skip = new[] { s.Str("output_dir") }.OfType<string>().ToList();
 		var before = Scan(roots, skip);
 		var opened = DateTime.UtcNow;
-		var control = new Mo2Control(mo2, a_setup.Profile, a_log);
+		// the player pressed "Learn its settings": their Mod Organizer closes the way Start closes it, never waited on for half an hour
+		var control = new Mo2Control(mo2, a_setup.Profile, a_log) { AllowCloseTheirs = true };
 		control.Close(null, a_ct);
 		using var proc = control.RunExecutable(title, image, null, a_ct, TimeSpan.FromMinutes(5));
 		a_log.Say($"{tool} is open - set it up as you want it, save, and close it");

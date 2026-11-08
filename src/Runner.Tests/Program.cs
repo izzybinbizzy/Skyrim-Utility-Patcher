@@ -3163,6 +3163,17 @@ public static class Program
 	}
 
 	// ------------------------------------------------------------------ the audit of 2026-11-07
+	// the boxes Mod Organizer shows while closing are answered: its quit question and notices by their words (whole words, so a
+	// player's box about "disclosure" is not one), and its one-button notice in any language; another box of the player's is left
+	static void T_Mo2CloseBoxesAreKnownByWordsOrOneButton()
+	{
+		Check(Mo2Control.CloseBox("Are you sure you want to quit?"), "the quit question");
+		Check(Mo2Control.CloseBox("Mod Organizer is closing"), "a word's other forms count");
+		Check(Mo2Control.CloseBox("Fehler beim Speichern", 1), "a one-button notice in another language");
+		Check(!Mo2Control.CloseBox("Read the disclosure first", 2), "a word inside another word is not one");
+		Check(!Mo2Control.CloseBox("Install this mod now?", 2), "the player's own question is left alone");
+	}
+
 	// Landscape Fixer's start button is found by its own words in every language it ships (its translation files beside it), so a
 	// player who runs it in German is understood too; a broken file or no folder falls back to the English names
 	static void T_LandscapeFixerKnowsItsButtonInEveryLanguage()

@@ -739,7 +739,8 @@ public static class Runner
 		}
 		var mo2 = Mo2Instance.Load(setup.Mo2Exe, setup.Mo2Instance);
 		using var log = new RunLog(a_j.Folder);
-		var control = new Mo2Control(mo2, a_j.Profile, log);
+		// the player pressed Restore: the Mod Organizer the cut-off run left open (or their own) is closed, as Start closes it
+		var control = new Mo2Control(mo2, a_j.Profile, log) { AllowCloseTheirs = true };
 		var ctx = new RunContext {
 			Setup = setup, Mo2 = mo2, Profile = new Profile(mo2, a_j.Profile, () => control.Running), Control = control, Log = log, Journal = a_j,
 			Cancel = CancellationToken.None, BackupFolder = a_j.BackupDir,
@@ -979,10 +980,13 @@ public sealed class Commands(Journal a_journal, Action a_cancel) : IDisposable
 		if (t == null) {
 			return;
 		}
-		// a look still going finishes before the run lets go of what it uses
-		using var done = new ManualResetEvent(false);
-		if (t.Dispose(done)) {
-			done.WaitOne(TimeSpan.FromSeconds(10));
+		// a look still going finishes before the run lets go of what it uses. The event is released only once the timer has set it:
+		// a look still going after 10 s sets it later, and a released event there would throw on a timer thread and end the program
+#pragma warning disable CA2000
+		var done = new ManualResetEvent(false);
+#pragma warning restore CA2000
+		if (!t.Dispose(done) || done.WaitOne(TimeSpan.FromSeconds(10))) {
+			done.Dispose();
 		}
 	}
 }

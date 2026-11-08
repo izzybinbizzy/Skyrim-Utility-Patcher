@@ -252,7 +252,38 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 
 	public Func<List<int>>? TheirsProbe { get; set; }
 
-	public List<int> TheirMo2() => TheirsProbe?.Invoke() ?? Pids().Where(p => !_ownMo2.Contains(p)).ToList();
+	public List<int> TheirMo2()
+	{
+		if (TheirsProbe != null) {
+			return TheirsProbe();
+		}
+		var others = Pids().Where(p => !_ownMo2.Contains(p)).ToList();
+		if (others.Count == 0) {
+			return others;
+		}
+		// a Mod Organizer started by one of this run's own (it restarts itself, or a request it was handed starts another) is the
+		// run's too - only one with no such parent is the player's
+		var parent = new Dictionary<int, int>();
+		foreach (var (pid, par) in Procs.Snapshot()) {
+			parent[pid] = par;
+		}
+		var theirs = new List<int>();
+		foreach (var p in others) {
+			var ours = false;
+			for (int at = p, hops = 0; hops < 8 && parent.TryGetValue(at, out var up) && up != 0 && up != at; at = up, ++hops) {
+				if (_ownMo2.Contains(up)) {
+					ours = true;
+					break;
+				}
+			}
+			if (ours) {
+				_ownMo2.Add(p);
+			} else {
+				theirs.Add(p);
+			}
+		}
+		return theirs;
+	}
 
 	// true while the run waits for the player's own Mod Organizer to close (the window shows it)
 	public bool WaitingForPlayer { get; private set; }
@@ -478,8 +509,9 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 
 	// the questions and notices Mod Organizer itself shows when it closes - every Windows language says them in its own words, so
 	// the known shapes are read by their key words in English and by MO2's own one-button notice (an OK alone)
-	public static bool CloseBox(string a_text) =>
-		new[] { "quit", "exit", "close", "error", "failed", "warning", "notification" }.Any(w => a_text.Contains(w, StringComparison.OrdinalIgnoreCase));
+	public static bool CloseBox(string a_text, int a_buttons = 0) =>
+		a_buttons == 1 ||
+		System.Text.RegularExpressions.Regex.IsMatch(a_text, @"\b(quit\w*|exit\w*|clos\w*|error\w*|fail\w*|warning\w*|notification\w*)\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
 	// a box MO2 shows while closing: the downloads question is never answered Yes (Cancel, and closing stops); "programs are
 	// still running" gets Yes only when every one of them is this run's (else No - MO2 would end the player's own program); its
@@ -502,7 +534,7 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 			}
 			// only the boxes MO2 itself shows on closing are answered (a quit question, its own error / notice); any other box
 			// may be the player's own work in MO2 and is left alone - the close then waits, and names it at its limit
-			if (!CloseBox(box.Text)) {
+			if (!CloseBox(box.Text, box.Buttons.Count)) {
 				if (_leftAlone.Add(box.Text)) {
 					_log.Warn($"Mod Organizer shows a box this run does not answer - left for you: {Trim(box.Text)}");
 				}
@@ -639,7 +671,8 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 		for (var attempt = 0; attempt < 3; ++attempt) {
 			WaitReady(a_ct);
 			_mo2LaunchedAt = DateTime.UtcNow;
-			Launch(a_cmd, Path.GetDirectoryName(Mo2.Exe)!);
+			// the second Mod Organizer that hands the request on is the run's own, never taken for the player's while it lives
+			_ownMo2.Add(Launch(a_cmd, Path.GetDirectoryName(Mo2.Exe)!));
 			var until = DateTime.UtcNow + a_limit;
 			var lost = false;
 			while (DateTime.UtcNow < until && !lost) {

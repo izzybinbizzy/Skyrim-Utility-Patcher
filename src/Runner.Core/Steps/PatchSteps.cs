@@ -123,6 +123,10 @@ public abstract class LauncherStep : IStep
 				for (var sw = System.Diagnostics.Stopwatch.StartNew(); Uia.Usable(go); Thread.Sleep(500)) {
 					a_ctx.Cancel.ThrowIfCancellationRequested();
 					UnknownBox(name, image);
+					// a run so short its button went grey and back between two looks has still written its output
+					if (Files.NewestWrite(outDir) > t0) {
+						break;
+					}
 					if (Exited(proc)) {
 						throw new StepFailedException($"{name} closed when {Uia.Name(go)} was pressed");
 					}
