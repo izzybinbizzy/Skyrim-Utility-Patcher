@@ -1777,6 +1777,8 @@ public static class Program
 		Check(order.IndexOf("cleansave") < order.IndexOf(LootStep.StepKey) && order.IndexOf(LootStep.StepKey) < order.IndexOf("synthesis"), "after the clean save, before the first tool");
 		Check(StepCatalog.OrderWarnings(["dyndolod", LootStep.StepKey]).Count == 1, "a tool before the sort is warned about");
 		Check(RunPreview.Build(setup, mo2, setup.EnabledSteps).Lines(_ => null).Any(l => l.Contains("LOOT sorts your plugins", StringComparison.Ordinal)), "the preview says so");
+	}
+
 	// a guided tool that wrote elsewhere leaves its output mod out of the run: not rebuilt, not set aside by Undo
 	static void T_AnOutputNothingWroteStaysThePlayers()
 	{
