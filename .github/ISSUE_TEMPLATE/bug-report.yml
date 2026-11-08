@@ -23,8 +23,8 @@ body:
   - type: textarea
     id: zip
     attributes:
-      label: The bug report zip
-      description: Drag the zip from "Make a bug report" here. Without it, paste the run's simple log (steps.txt) instead.
+      label: The bug report zip or log
+      description: Drag the zip from "Make a bug report" here. Without it, paste the run's simple log (steps.txt) instead. If the program never got as far as a run, say so here.
     validations:
       required: true
   - type: dropdown
