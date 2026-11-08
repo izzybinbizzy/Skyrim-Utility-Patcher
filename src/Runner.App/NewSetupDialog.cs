@@ -54,6 +54,17 @@ public static class NewSetupDialog
 		stack.Children.Add(findTools);
 		stack.Children.Add(new ScrollViewer { Content = toolRows, MaxHeight = 240, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Margin = new Thickness(0, 6, 0, 0) });
 
+		// what was found belongs to the Mod Organizer it was found in: its Add button must not write to one the player has left
+		void ForgetTools()
+		{
+			if (toolRows.Children.Count > 0) {
+				toolRows.Children.Clear();
+				note.Text = "";
+			}
+		}
+		exe.TextChanged += (_, _) => ForgetTools();
+		instance.SelectionChanged += (_, _) => ForgetTools();
+
 		// the instances this program can open: beside it (portable), and the global ones (filled again only for another program,
 		// so a picked instance and profile survive a click in and out of the box)
 		string? loaded = null;
@@ -130,6 +141,10 @@ public static class NewSetupDialog
 				var (exeText, inst) = (exe.Text.Trim(), InstanceDir());
 				var mo2 = Mo2Instance.Load(exeText, inst);
 				var rows = await Task.Run(() => ToolFinder.Find(mo2));
+				if (exe.Text.Trim() != exeText || InstanceDir() != inst) {
+					note.Text = "";
+					return;
+				}
 				foreach (var r in rows) {
 					var line = new DockPanel { Margin = new Thickness(0, 2, 0, 2) };
 					if (r.State == ToolFinder.Found.Missing) {

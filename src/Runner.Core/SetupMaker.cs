@@ -71,7 +71,9 @@ public static class SetupMaker
 		void Guided(string a_key, string a_output, Mo2Executable? a_entry)
 		{
 			if (a_entry != null) {
-				Add(a_key, false, new JsonObject { ["executable"] = a_entry.Title, ["image"] = Path.GetFileName(a_entry.Binary), ["output_mod"] = Out(a_output) });
+				// a script runs in Windows' command interpreter: that is the process to follow
+				var script = Path.GetExtension(a_entry.Binary) is { } x && (x.Equals(".bat", StringComparison.OrdinalIgnoreCase) || x.Equals(".cmd", StringComparison.OrdinalIgnoreCase));
+				Add(a_key, false, new JsonObject { ["executable"] = a_entry.Title, ["image"] = script ? "cmd.exe" : Path.GetFileName(a_entry.Binary), ["output_mod"] = Out(a_output) });
 			}
 		}
 		Guided("easynpc", "EasyNPC Merge", ByBinary(mo2, "EasyNPC.exe"));

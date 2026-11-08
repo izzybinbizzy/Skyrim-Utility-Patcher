@@ -108,6 +108,9 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 		return outList;
 	}
 
+	// a program anyone can be running: being new is not enough to make one the tool
+	public static bool IsShared(string a_image) => IsJava(a_image) || a_image.Equals("cmd.exe", StringComparison.OrdinalIgnoreCase);
+
 	public static bool IsJava(string a_image) => a_image.Equals("javaw.exe", StringComparison.OrdinalIgnoreCase) || a_image.Equals("java.exe", StringComparison.OrdinalIgnoreCase);
 
 	// this program started from Mod Organizer's Tools menu (his checklist 468) is its child, and never a program the run waits for
@@ -119,12 +122,14 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 	// read back in before anything else starts or it closes, or it would write its old lists over them
 	public bool CompanionOn { get; set; }
 	public bool HeldOpen { get; private set; }
+	// the companion did not answer and Mod Organizer closes as usual after all: the run's record must say so
+	public Action? CompanionGaveUp { get; set; }
 	public static TimeSpan CompanionPing { get; set; } = TimeSpan.FromSeconds(5);
 	public static TimeSpan CompanionRefresh { get; set; } = TimeSpan.FromMinutes(3);
 
 	void ReadBackIn(CancellationToken a_ct)
 	{
-		if (!Companion.Ask(Mo2, "refresh", CompanionRefresh, a_ct)) {
+		if (!Companion.Ask(Mo2, ProfileName, "refresh", CompanionRefresh, a_ct)) {
 			throw new StepFailedException($"Mod Organizer's companion did not read the lists back in within {CompanionRefresh.TotalMinutes:0} minutes - put your profile back, then switch off \"Keep Mod Organizer open\" in Settings");
 		}
 		HeldOpen = false;
@@ -205,7 +210,7 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 		return outList;
 	}
 
-	static bool InVfs(Process a_p)
+	public static bool InVfs(Process a_p)
 	{
 		try {
 			return a_p.Modules.Cast<ProcessModule>().Any(m => m.ModuleName.StartsWith("usvfs", StringComparison.OrdinalIgnoreCase));
@@ -494,22 +499,20 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 			WaitWhilePlayerUses(a_ct);
 		}
 		if (CompanionOn && RunningProbe == null) {
-			if (HeldOpen || Companion.Ask(Mo2, "ping", CompanionPing, a_ct)) {
+			if (HeldOpen || Companion.Ask(Mo2, ProfileName, "ping", CompanionPing, a_ct)) {
 				HeldOpen = true;
+				// what comes next must not build on the last tool's Root files
+				WaitForRootBuilder(a_ct);
 				return;
 			}
 			_log.Warn("Mod Organizer's companion does not answer, so Mod Organizer closes between the steps as usual (add the Tools menu entry in Settings, and start Mod Organizer once)");
 			CompanionOn = false;
+			CompanionGaveUp?.Invoke();
 		}
 		if (HeldOpen) {
 			ReadBackIn(a_ct);
 		}
-		// his checklist 443: Mod Organizer closed before Root Builder's clear would leave its files in the game folder
-		if (RunningProbe == null && Mo2.RootBuilderBuilds && !_rootBuilderStuck && !WaitForClear(Mo2.RootBuilderDeployed, a_ct)) {
-			// once: left over from a build the player made, it would cost this wait at every close of the run
-			_rootBuilderStuck = true;
-			_log.Warn($"Root Builder still has its files in the game folder after {RootBuilderWait.TotalMinutes:0} minutes - closing Mod Organizer all the same; it takes them out at its next start");
-		}
+		WaitForRootBuilder(a_ct);
 		_log.Detail("closing Mod Organizer");
 		_boxesBeforeClose = [.. Uia.Boxes(Pids()).Select(b => b.Text)];
 		var sw = Stopwatch.StartNew();
@@ -531,6 +534,16 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 		}
 		_log.Detail($"Mod Organizer closed after {sw.Elapsed.TotalSeconds:0} s");
 		Thread.Sleep(800);
+	}
+
+	// his checklist 443: Mod Organizer closed before Root Builder's clear would leave its files in the game folder
+	void WaitForRootBuilder(CancellationToken a_ct)
+	{
+		if (RunningProbe == null && Mo2.RootBuilderBuilds && !_rootBuilderStuck && !WaitForClear(Mo2.RootBuilderDeployed, a_ct)) {
+			// once: left over from a build the player made, it would cost this wait at every close of the run
+			_rootBuilderStuck = true;
+			_log.Warn($"Root Builder may still have its files in the game folder after {RootBuilderWait.TotalMinutes:0} minutes - going on all the same; it takes them out at Mod Organizer's next start");
+		}
 	}
 
 	public static TimeSpan RootBuilderWait { get; set; } = TimeSpan.FromMinutes(3);
@@ -655,7 +668,7 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 		Start(a_ct);
 		var old = Procs.Pids(a_image).ToHashSet();
 		// (Java is any Java program's: only a new process counts as the tool, below)
-		if (old.Count > 0 && !IsJava(a_image)) {
+		if (old.Count > 0 && !IsShared(a_image)) {
 			throw new StepFailedException($"{a_image} is already running (process {string.Join(", ", old)}) - close it first");
 		}
 		_log.Detail($"running {a_title} through Mod Organizer{(string.IsNullOrEmpty(a_args) ? "" : " with " + a_args)}");
@@ -680,7 +693,7 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 					started.Add($"(processes could not be listed: {e.Message})");
 				}
 			}
-			return FreshPid(a_image, old);
+			return FreshPid(a_image, old, IsShared(a_image) ? IsMo2s : null);
 		}
 		var startLimit = StartLimit(a_startTimeout ?? TimeSpan.FromMinutes(3));
 		var pid = LaunchTool(cmd, Watch, startLimit, a_ct) ?? throw new StepFailedException(
@@ -823,12 +836,35 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 
 	// hand MO2 one request and wait for the tool's process; a request MO2 lost (its "secondary process" box) is asked again
 	// once MO2 is ready - at most twice more
-	static int FreshPid(string a_image, HashSet<int> a_old)
+	// a_accept: a process of this image can also be somebody else's (Java), so being new is not enough
+	public static int FreshPid(string a_image, HashSet<int> a_old, Func<int, bool>? a_accept = null)
 	{
 		var procs = Procs.ByImage(a_image);
-		var pid = procs.Select(p => p.Id).FirstOrDefault(id => !a_old.Contains(id));
+		var pid = procs.Select(p => p.Id).FirstOrDefault(id => !a_old.Contains(id) && (a_accept == null || a_accept(id)));
 		procs.ForEach(p => p.Dispose());
 		return pid;
+	}
+
+	// started under Mod Organizer, or hooked into its virtual folder (the shell that started it may have ended). A process ends only by a PID this run started
+	bool IsMo2s(int a_pid)
+	{
+		var mo2 = Pids().ToHashSet();
+		var parents = new Dictionary<int, int>();
+		foreach (var (pid, parent) in Procs.Snapshot()) {
+			parents[pid] = parent;
+		}
+		var at = a_pid;
+		for (var up = 0; up < 8 && parents.TryGetValue(at, out var parent); ++up, at = parent) {
+			if (mo2.Contains(parent)) {
+				return true;
+			}
+		}
+		try {
+			using var p = Process.GetProcessById(a_pid);
+			return InVfs(p);
+		} catch (Exception e) when (e is ArgumentException or InvalidOperationException) {
+			return false;
+		}
 	}
 
 	public int? LaunchTool(string a_cmd, Func<int> a_freshPid, TimeSpan a_limit, CancellationToken a_ct)

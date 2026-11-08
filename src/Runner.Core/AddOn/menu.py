@@ -3,8 +3,9 @@
 Opens the program's window on the profile Mod Organizer shows. The program writes the line below when it adds this file; to take the entry
 out, delete this file from Mod Organizer's plugins folder.
 
-It is also the companion: a run that keeps Mod Organizer open (an option) writes "ask <id>.txt" into this plugin's data folder. "ping" is answered at
-once; "refresh" reads the mod and plugin lists back in, without saving them first, and is answered when that is over.
+It is also the companion: a run that keeps Mod Organizer open (an option) writes "ask <id>.txt" into this plugin's data folder, naming the instance and
+profile it runs on. Only that Mod Organizer answers. "ping" is answered at once; "refresh" reads the mod and plugin lists back in, without saving them
+first, and is answered when that is over.
 """
 
 import os
@@ -52,6 +53,10 @@ class Entry(mobase.IPluginTool):
             f.write("ok")
         os.replace(done + ".part", done)
 
+    def _mine(self, base, profile):
+        here = os.path.normcase(os.path.normpath(self._org.basePath()))
+        return here == os.path.normcase(os.path.normpath(base)) and profile == self._org.profileName()
+
     def _look(self):
         if self._refreshing:
             return
@@ -64,7 +69,10 @@ class Entry(mobase.IPluginTool):
             path = os.path.join(self._folder(), name)
             try:
                 with open(path, encoding="utf-8") as f:
-                    what = f.read().strip()
+                    what, base, profile = f.read().strip().split("\n")
+                # another Mod Organizer's question stays for that one to answer
+                if not self._mine(base, profile):
+                    continue
                 os.remove(path)
                 if what == "refresh":
                     self._refreshing = True
@@ -77,7 +85,7 @@ class Entry(mobase.IPluginTool):
                     self._org.refresh(False)
                     return
                 self._answer(ask_id)
-            except OSError:
+            except (OSError, ValueError):
                 self._refreshing = False
 
     def name(self):

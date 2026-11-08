@@ -132,9 +132,21 @@ public static class AddOns
 	// in the setup, as its file stands now
 	public static bool Allowed(Setup a_setup, AddOn a_addOn) => a_setup.Steps.Any(s => s.Key == a_addOn.Key && Setup.Str(s.Settings, "sha") == a_addOn.Hash);
 
+	// the mod this add-on's output would land on when that is a mod of the player's: a run moves an output's old files aside and replaces them. Its own
+	// output from before is no clash. Asked when the player allows it: a setup keeps the output's name from then on
+	public static string? OutputTaken(Mo2Instance a_mo2, Setup a_setup, AddOn a_addOn)
+	{
+		var name = SetupMaker.OutputName(Setup.Str(a_setup.Root, "outputPattern") ?? "{output} - {profile}", a_addOn.Output, a_setup.Profile);
+		if (a_setup.StepSettings(a_addOn.Key) is { } had && string.Equals(new StepSettings(had).OutputMod, name, StringComparison.OrdinalIgnoreCase)) {
+			return null;
+		}
+		var dir = a_mo2.ModDir(name);
+		return Directory.Exists(dir) && Directory.EnumerateFileSystemEntries(dir).Any(e => !Path.GetFileName(e).Equals("meta.ini", StringComparison.OrdinalIgnoreCase)) ? name : null;
+	}
+
 	// the add-on as a step of the setup, where its file says it goes (before texgen, where the LOD tools start, when it says nothing);
-	// allowed: its file's fingerprint is kept, and a file changed since is asked about again
-	public static void AddToSetup(JsonObject a_root, AddOn a_addOn, string a_profile)
+	// allowed: its file's fingerprint is kept, and a file changed since is asked about again. Returns what the player must hear when its two places cannot both hold
+	public static string? AddToSetup(JsonObject a_root, AddOn a_addOn, string a_profile)
 	{
 		var steps = a_root["steps"] as JsonArray ?? [];
 		var pattern = Setup.Str(a_root, "outputPattern") ?? "{output} - {profile}";
@@ -153,6 +165,9 @@ public static class AddOns
 			["settings"] = new JsonObject { ["file"] = a_addOn.File, ["sha"] = a_addOn.Hash, ["output_mod"] = SetupMaker.OutputName(pattern, a_addOn.Output, a_profile), ["deadline_min"] = a_addOn.Minutes },
 		});
 		a_root["steps"] = steps;
+		return after >= 0 && before >= 0 && before <= after
+			? $"{a_addOn.Name} asks to run after {StepCatalog.Name(a_addOn.After!)} and before {StepCatalog.Name(a_addOn.Before!)}, but this setup runs them the other way round. It runs right after {StepCatalog.Name(a_addOn.After!)}: check its place in the step list."
+			: null;
 	}
 }
 
@@ -194,6 +209,10 @@ public sealed class AddOnStep(string a_key) : IStep
 	{
 		var file = a_s.Req("file");
 		var addOn = AddOns.Read(file, ModDirOf(file)) ?? throw new StepFailedException("its add-on file has problems - Settings > ADD-ONS names them");
+		// the file as it stands now is what starts: changed since the pre-check, it is not what the player allowed
+		if (addOn.Hash != a_s.Str("sha") && Setup.Bool(a_ctx.Setup.Root, AddOns.NoAskSetting) != true) {
+			throw new StepFailedException("its add-on file changed since you allowed it: look at it again in Settings > ADD-ONS");
+		}
 		var output = a_s.OutputMod ?? throw new StepFailedException("no output mod is set");
 		var image = Path.GetFileName(addOn.ProgramPath);
 		var before = Runner.OverwriteFiles(a_ctx);
@@ -212,17 +231,25 @@ public sealed class AddOnStep(string a_key) : IStep
 		a_ctx.SetAfter(output);
 	}
 
-	// what the tool wrote into overwrite, each file at its own place in the output mod; a tool that wrote nothing, or not the file it promised, failed
-	public static void Collect(RunContext a_ctx, string a_step, string a_mod, string? a_makes, IReadOnlyDictionary<string, DateTime> a_before, bool a_nothingIsFine = false)
+	// what the tool wrote into overwrite, each file at its own place in the output mod; a tool that wrote nothing, or not the file it promised, failed.
+	// Returns whether the output mod now holds what the tool made
+	public static bool Collect(RunContext a_ctx, string a_step, string a_mod, string? a_makes, IReadOnlyDictionary<string, DateTime> a_before, bool a_nothingIsFine = false)
 	{
 		var ow = a_ctx.Mo2.OverwriteDir;
 		// overwrite\Root is Root Builder's, whatever ran
 		var root = Path.Combine(ow, "Root");
 		var fresh = Runner.OverwriteFiles(a_ctx).Where(n => (!a_before.TryGetValue(n.Key, out var t) || t != n.Value) && !Files.IsUnder(n.Key, root)).Select(n => n.Key).ToList();
 		if (fresh.Count == 0) {
+			// a tool told to write into the output mod itself: Mod Organizer's virtual folder passes that through
+			if (a_makes != null && a_ctx.Journal.Step(a_step)?.Started is { } since && Path.Combine(a_ctx.Mo2.ModDir(a_mod), a_makes) is var inMod && File.Exists(inMod) && File.GetLastWriteTime(inMod) >= since) {
+				a_ctx.Log.Detail($"{StepCatalog.Name(a_step)} wrote {a_makes} straight into {a_mod}");
+				return true;
+			}
 			if (a_nothingIsFine) {
-				a_ctx.Log.Detail($"{StepCatalog.Name(a_step)} wrote nothing into overwrite");
-				return;
+				var said = $"{StepCatalog.Name(a_step)} wrote nothing through Mod Organizer, so what it made is where you told it to go. {a_mod} stays as it was.";
+				a_ctx.Log.Warn(said);
+				a_ctx.Log.Simple("Note: " + said);
+				return false;
 			}
 			throw new StepFailedException($"{StepCatalog.Name(a_step)} wrote nothing");
 		}
@@ -236,5 +263,6 @@ public sealed class AddOnStep(string a_key) : IStep
 			File.Move(f, dst, true);
 		}
 		a_ctx.Log.Detail($"{fresh.Count} file(s) moved from overwrite into {a_mod}");
+		return true;
 	}
 }

@@ -52,8 +52,10 @@ public sealed partial class Mo2Instance
 		GameName = Get("General", "gameName");
 		SelectedProfile = Get("General", "selected_profile");
 		Language = Get("Settings", "language");
+		// on unless the ini says otherwise: Mod Organizer writes a plugin's setting only once it has changed, and Root Builder's own default is on
 		RootBuilderBuilds = Directory.Exists(Path.Combine(Path.GetDirectoryName(a_exe)!, "plugins", "rootbuilder")) &&
-			Get("Plugins", @"RootBuilder\autobuild").Equals("true", StringComparison.OrdinalIgnoreCase);
+			!Get("Plugins", @"RootBuilder\autobuild").Equals("false", StringComparison.OrdinalIgnoreCase) &&
+			!Get("Plugins", @"RootBuilder\enabled").Equals("false", StringComparison.OrdinalIgnoreCase);
 		var exes = new List<Mo2Executable>();
 		if (a_sections.TryGetValue("customExecutables", out var ce)) {
 			_ = int.TryParse(ce.GetValueOrDefault("size"), out var n);
@@ -100,6 +102,16 @@ public sealed partial class Mo2Instance
 	public IEnumerable<string> Profiles() =>
 		Directory.Exists(ProfilesDir) ? Directory.GetDirectories(ProfilesDir).Select(Path.GetFileName).OfType<string>().Order() : [];
 
+	// how Root Builder names a folder for a path or a version (the add-on's path_safe says the same)
+	public static string RootBuilderFolderName(string a_text)
+	{
+		var name = a_text.Replace(' ', '_').Replace('.', '_');
+		foreach (var unsafeChar in "<>:|*\\/?\"") {
+			name = name.Replace(unsafeChar.ToString(), "", StringComparison.Ordinal);
+		}
+		return name;
+	}
+
 	// The instance of ModOrganizer.exe: a ModOrganizer.ini beside the exe (portable), else the global instance the exe last
 	// used (%LOCALAPPDATA%\ModOrganizer\<name>, named in its own ModOrganizer.ini by the user's pick - a_instance).
 	// its files in the game folder now? Root Builder keeps BuildData.json in its data folder from a build until its clear
@@ -107,9 +119,17 @@ public sealed partial class Mo2Instance
 	{
 		var data = Path.Combine(Path.GetDirectoryName(Exe)!, "plugins", "data", "RootBuilder");
 		try {
-			return Directory.Exists(data) && Directory.EnumerateFiles(data, "BuildData.json", SearchOption.AllDirectories).Any();
+			if (!Directory.Exists(data)) {
+				return false;
+			}
+			// its folder for this game and version: a mark left by another copy or version says nothing about this one
+			var game = Path.Combine(GameDir, "SkyrimSE.exe");
+			var version = File.Exists(game) ? System.Diagnostics.FileVersionInfo.GetVersionInfo(game).FileVersion ?? "" : "";
+			var mine = Path.Combine(data, RootBuilderFolderName(GameDir), RootBuilderFolderName(version));
+			return Directory.Exists(mine) ? File.Exists(Path.Combine(mine, "BuildData.json")) : Directory.EnumerateFiles(data, "BuildData.json", SearchOption.AllDirectories).Any();
 		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
-			return false;
+			// not known: never read as cleared, so the wait runs to its limit and says so
+			return true;
 		}
 	}
 

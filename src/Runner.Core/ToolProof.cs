@@ -63,10 +63,9 @@ public static class ToolProof
 		var control = new Mo2Control(mo2, a_setup.Profile, a_log) { AllowCloseTheirs = true };
 		control.Close(null, a_ct);
 		var profile = new Profile(mo2, a_setup.Profile, () => control.Running);
-		var toolMod = StepKit.ToolMod(mo2, profile, title);
-		if (toolMod != null) {
-			StepKit.NoPluginIn(mo2, toolMod, tool);
-			profile.SetMods([toolMod], [], a_log);
+		// a test changes nothing in the profile (a run has a record to put a switch back from; this has none)
+		if (StepKit.ToolMod(mo2, profile, title) is { } toolMod) {
+			return new Result(a_look.Step, false, $"{tool}: not opened - its program is in the mod \"{toolMod}\", which is switched off in this profile. A run switches it on for itself; tick it to test the tool here.");
 		}
 		try {
 			using var proc = control.RunExecutable(title, image, null, a_ct, TimeSpan.FromMinutes(5));
@@ -115,11 +114,8 @@ public static class ToolProof
 			StepKit.CloseTool(control, image, a_log);
 			try {
 				control.Close(null, CancellationToken.None);
-				if (toolMod != null) {
-					profile.SetMods([], [toolMod], a_log);
-				}
-			} catch (Exception e) when (e is Mo2BusyException or IOException or UnauthorizedAccessException or InvalidOperationException or KeyNotFoundException) {
-				a_log.Warn($"Mod Organizer could not be closed{(toolMod == null ? "" : $", so the mod \"{toolMod}\" stays on")} ({e.Message})");
+			} catch (Exception e) when (e is Mo2BusyException or IOException or UnauthorizedAccessException or InvalidOperationException) {
+				a_log.Warn($"Mod Organizer could not be closed ({e.Message})");
 			}
 		}
 	}

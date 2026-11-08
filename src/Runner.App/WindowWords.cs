@@ -46,7 +46,7 @@ public static class WindowWords
 
 	public static void Use(IReadOnlyDictionary<string, string> a_words)
 	{
-		s_words = a_words.Where(p => p.Value.Trim() != "").ToDictionary(p => p.Key, p => p.Value, StringComparer.Ordinal);
+		s_words = a_words.Where(p => !string.IsNullOrWhiteSpace(p.Value)).ToDictionary(p => p.Key, p => p.Value, StringComparer.Ordinal);
 		s_english = new(StringComparer.Ordinal);
 		foreach (var (english, word) in s_words) {
 			s_english.TryAdd(word, english);
@@ -72,6 +72,10 @@ public static class WindowWords
 		if (name == English) {
 			return "";
 		}
+		// a name only: this file is read at every start, and what it names must stay in the languages folder
+		if (!GoodName(name)) {
+			return $"the language {name} is no language's name: the window stays in English";
+		}
 		var file = Path.Combine(Folder, name + ".json");
 		try {
 			if (!File.Exists(file)) {
@@ -86,6 +90,8 @@ public static class WindowWords
 			return $"the language file {name} could not be read ({e.Message}): the window stays in English";
 		}
 	}
+
+	public static bool GoodName(string a_name) => a_name.Trim().Length > 0 && a_name == Path.GetFileName(a_name) && a_name is not ("." or "..");
 
 	public static void OnEveryWindow() =>
 		EventManager.RegisterClassHandler(typeof(Window), FrameworkElement.LoadedEvent, new RoutedEventHandler((a_s, _) => Tree((Window)a_s)));
@@ -109,6 +115,9 @@ public static class WindowWords
 			case ContentControl c when Free(ContentControl.ContentProperty) && c.Content is string s && !string.IsNullOrWhiteSpace(s):
 				Do(s, w => c.Content = w);
 				break;
+			case HeaderedItemsControl h when Free(HeaderedItemsControl.HeaderProperty) && h.Header is string hs && !string.IsNullOrWhiteSpace(hs):
+				Do(hs, w => h.Header = w);
+				break;
 		}
 		if (a_root is FrameworkElement fe) {
 			if (Free(FrameworkElement.ToolTipProperty) && fe.ToolTip is string tip && !string.IsNullOrWhiteSpace(tip)) {
@@ -116,6 +125,10 @@ public static class WindowWords
 			}
 			if (Free(AutomationProperties.NameProperty) && AutomationProperties.GetName(fe) is { Length: > 0 } name) {
 				Do(name, w => AutomationProperties.SetName(fe, w));
+			}
+			// a context menu is no logical child of what it opens on
+			if (fe.ContextMenu is { } menu) {
+				Walk(menu, a_seen);
 			}
 		}
 		foreach (var child in LogicalTreeHelper.GetChildren(a_root).OfType<DependencyObject>().ToList()) {
@@ -143,13 +156,19 @@ public static class WindowWords
 		Directory.CreateDirectory(Folder);
 		var file = Path.Combine(Folder, a_name + ".json");
 		var words = new SortedDictionary<string, string>(StringComparer.Ordinal);
-		if (File.Exists(file) && Read(Files.ReadSharedText(file), out _) is { } had) {
+		if (File.Exists(file)) {
+			// a translator's work is never replaced by an empty file
+			var had = Read(Files.ReadSharedText(file), out var problem) ?? throw new InvalidDataException($"{file} does not read ({problem}): fix it or move it first, so your work is kept");
 			foreach (var (k, v) in had) {
-				words[k] = v;
+				words[k] = v ?? "";
 			}
 		}
 		foreach (var s in Seen(a_root)) {
 			words.TryAdd(s, "");
+		}
+		// two English texts with one translation read back as one: the language in use still has both
+		foreach (var k in s_words.Keys) {
+			words.TryAdd(k, "");
 		}
 		Files.WriteAtomic(file, JsonSerializer.Serialize(words, new JsonSerializerOptions { WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping }));
 		return file;

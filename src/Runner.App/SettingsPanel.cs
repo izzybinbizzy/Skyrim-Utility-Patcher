@@ -360,7 +360,7 @@ public static class SettingsPanel
 				var file = WindowWords.WriteTemplate(a_w);
 				a_vm.Say("Made: " + file, "good");
 				MainViewModel.OpenFolder(WindowWords.Folder);
-			} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+			} catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException) {
 				a_vm.Say("The language file could not be made: " + e.Message, "bad");
 			}
 		};
@@ -458,14 +458,21 @@ public static class SettingsPanel
 		var addOnRows = new StackPanel();
 		var lookAddOns = new Button { Content = "Look for add-ons in this profile", Style = (Style)a_w.FindResource("Ghost"), Margin = new Thickness(0, 0, 8, 0) };
 		var checkAddOn = new Button { Content = "Check my add-on file ...", Style = (Style)a_w.FindResource("Ghost"), ToolTip = "For modders: says in plain words what is wrong with an add-on file" };
-		lookAddOns.Click += (_, _) => {
+		lookAddOns.Click += async (_, _) => {
 			addOnRows.Children.Clear();
 			if (a_vm.Setup is not { } current) {
 				return;
 			}
+			lookAddOns.IsEnabled = false;
 			try {
-				var mo2 = Mo2Instance.Load(current.Mo2Exe, current.Mo2Instance);
-				var found = AddOns.Find(mo2, new Profile(mo2, current.Profile, () => true));
+				// a long mod list on a slow disk: off the window's thread
+				var (mo2, found) = await Task.Run(() => {
+					var there = Mo2Instance.Load(current.Mo2Exe, current.Mo2Instance);
+					return (there, AddOns.Find(there, new Profile(there, current.Profile, () => true)));
+				});
+				if (a_vm.Setup != current) {
+					return;
+				}
 				addOnNote.Text = found.Count == 0 ? "No ticked mod of this profile holds an add-on." : $"{found.Count} add-on file(s) in this profile's ticked mods.";
 				foreach (var hit in found) {
 					var row = new DockPanel { Margin = new Thickness(0, 2, 0, 2) };
@@ -476,13 +483,25 @@ public static class SettingsPanel
 								a_vm.Say("Save or undo your changes first.", "warn");
 								return;
 							}
+							if (AddOns.OutputTaken(mo2, current, addOn) is { } taken) {
+								a_vm.Say($"{addOn.Name} would write into your mod {taken}, and a run replaces what its output holds. Rename that mod to use this add-on.", "bad");
+								return;
+							}
 							if (Setup.Bool(current.Root, AddOns.NoAskSetting) != true && !Ask.Show(a_w, "Add this add-on?", addOn.Says, "Allow it", "Not now")) {
 								return;
 							}
-							AddOns.AddToSetup(current.Root, addOn, current.Profile);
+							// the box can stay open while a run starts: a run's plan is what its preview showed
+							if (a_vm.SetupInUse) {
+								a_vm.Say("A run is using this setup: add it when the run is done.", "warn");
+								return;
+							}
+							var order = AddOns.AddToSetup(current.Root, addOn, current.Profile);
 							current.Save();
 							a_vm.LoadSetups(current.File);
 							a_w.ShowPanel("settings", true);
+							if (order != null) {
+								a_vm.Say(order, "warn");
+							}
 						};
 						DockPanel.SetDock(allow, Dock.Right);
 						row.Children.Add(allow);
@@ -494,6 +513,8 @@ public static class SettingsPanel
 				}
 			} catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException) {
 				a_vm.Say("The add-ons could not be looked for: " + e.Message, "bad");
+			} finally {
+				lookAddOns.IsEnabled = true;
 			}
 		};
 		checkAddOn.Click += (_, _) => {

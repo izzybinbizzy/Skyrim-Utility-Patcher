@@ -31,6 +31,9 @@ public sealed class RunContext
 	public Dictionary<string, string> CleanSaveExtraOff { get; set; } = [];
 	public string Mo2Dir => Path.GetDirectoryName(Mo2.Exe)!;
 
+	// this step made nothing of its output mod (a guided tool wrote elsewhere): the mod is not this run's, so a put-back and Undo leave it as it was
+	public bool OutputUntouched { get; set; }
+
 	public void SetAfter(params string[] a_mods) => PendingEnable.AddRange(a_mods);
 
 	// what a step does now, for the window: saved at most once a second (a command-line tool prints thousands of lines); a

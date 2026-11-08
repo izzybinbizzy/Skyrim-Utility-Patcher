@@ -1777,6 +1777,114 @@ public static class Program
 		Check(order.IndexOf("cleansave") < order.IndexOf(LootStep.StepKey) && order.IndexOf(LootStep.StepKey) < order.IndexOf("synthesis"), "after the clean save, before the first tool");
 		Check(StepCatalog.OrderWarnings(["dyndolod", LootStep.StepKey]).Count == 1, "a tool before the sort is warned about");
 		Check(RunPreview.Build(setup, mo2, setup.EnabledSteps).Lines(_ => null).Any(l => l.Contains("LOOT sorts your plugins", StringComparison.Ordinal)), "the preview says so");
+	// a guided tool that wrote elsewhere leaves its output mod out of the run: not rebuilt, not set aside by Undo
+	static void T_AnOutputNothingWroteStaysThePlayers()
+	{
+		using var f = new FakeMo2();
+		StepRegistry.Replace(new FakeStep("easynpc", (ctx, s) => ctx.OutputUntouched = true));
+		f.WriteSetup(("easynpc", new JsonObject { ["output_mod"] = "Output A" }));
+		Equal(RunState.Finished, Runner.Run(new RunRequest(f.SetupFile, f.Data)).State, "the run finished");
+		var j = Journal.All(Runner.RunsDir(f.Data)).First();
+		Check(!j.Built.Contains("Output A"), "not called built");
+		Check(ProfileOf(f).IsOn("Output A"), "as it was before the run");
+		Check(!RunUndo.LeftSomething(j), "and nothing for Undo to take");
+		Check(File.Exists(Path.Combine(f.Mods, "Output A", "OutA.esp")), "its files where they were");
+	}
+
+	// a file put back is as it was, its time too: in overwrite a new time would read as the step's own file
+	static void T_AFilePutBackKeepsItsTime()
+	{
+		using var f = new FakeMo2();
+		f.WriteSetup(("acmos", []));
+		var ctx = StepContext(f, "acmos");
+		var file = Path.Combine(f.Overwrite, "kept.ini");
+		File.WriteAllText(file, "before");
+		var then = new DateTime(2020, 1, 2, 3, 4, 5, DateTimeKind.Utc);
+		File.SetLastWriteTimeUtc(file, then);
+		StepKit.KeepFile(ctx, file);
+		File.WriteAllText(file, "changed");
+		Equal(0, StepKit.PutFilesBack(ctx, file).Count, "put back");
+		Equal("before", File.ReadAllText(file), "its words");
+		Equal(then, File.GetLastWriteTimeUtc(file), "and its time");
+	}
+
+	// a program anyone can be running counts as the tool only when it is Mod Organizer's; a script's own program is the command interpreter
+	static void T_ASharedProgramCountsOnlyWhenItIsMo2s()
+	{
+		Check(Mo2Control.IsShared("javaw.exe") && Mo2Control.IsShared("CMD.EXE") && !Mo2Control.IsShared("Reqtificator.exe"), "which programs are anyone's");
+		using var ping = Process.Start(new ProcessStartInfo("ping", "-n 30 127.0.0.1") { CreateNoWindow = true, UseShellExecute = false, RedirectStandardOutput = true })!;
+		try {
+			Equal(0, Mo2Control.FreshPid("PING.EXE", [], _ => false), "somebody else's is not the tool");
+			Equal(ping.Id, Mo2Control.FreshPid("PING.EXE", [], id => id == ping.Id), "its own is");
+		} finally {
+			ping.Kill();
+			ping.WaitForExit();
+		}
+		using var f = new FakeMo2();
+		var bat = Path.Combine(f.Root, "tools", "Reqtificator.bat");
+		Directory.CreateDirectory(Path.GetDirectoryName(bat)!);
+		File.WriteAllText(bat, "");
+		var ini = Path.Combine(f.Instance, "ModOrganizer.ini");
+		File.WriteAllText(ini, ToolFinder.WithExecutable(File.ReadAllText(ini), "Reqtificator", bat, ""));
+		Equal("cmd.exe", Setup.Str(SetupMaker.Make(f.Exe, f.Instance, "Test", "made", f.Data).Steps.Single(s => s.Key == "reqtificator").Settings, "image"), "a script is followed through its interpreter");
+		// a Java tool's version is Java's, not the tool's: not known, and never read as up to date
+		var java = Path.Combine(f.Root, "tools", "javaw.exe");
+		File.WriteAllText(java, "");
+		File.WriteAllText(ini, ToolFinder.WithExecutable(File.ReadAllText(ini), "Java Tool", java, ""));
+		Equal("", ToolUpdates.Yours(Mo2Instance.Load(f.Exe, f.Instance), new StepSettings(new JsonObject { ["executable"] = "Java Tool" })).Version, "no version from Java");
+	}
+
+	// Root Builder's folder for this game and version decides; a mark left by another copy says nothing about this one
+	static void T_RootBuilderIsAskedAboutThisGame()
+	{
+		Equal("CGamesSkyrim_SE", Mo2Instance.RootBuilderFolderName(@"C:\Games\Skyrim SE"), "named as Root Builder names it");
+		Equal("1_6_1170_0", Mo2Instance.RootBuilderFolderName("1.6.1170.0"), "a version too");
+		using var f = new FakeMo2();
+		var mo2 = Mo2Instance.Load(f.Exe, f.Instance);
+		var data = Path.Combine(Path.GetDirectoryName(f.Exe)!, "plugins", "data", "RootBuilder");
+		var other = Path.Combine(data, "another copy", "1_5_97_0");
+		Directory.CreateDirectory(other);
+		File.WriteAllText(Path.Combine(other, "BuildData.json"), "{}");
+		Check(mo2.RootBuilderDeployed(), "no folder for this game yet: any mark counts");
+		var mine = Path.Combine(data, Mo2Instance.RootBuilderFolderName(mo2.GameDir));
+		Directory.CreateDirectory(mine);
+		Check(!mo2.RootBuilderDeployed(), "its own folder holds none: another copy's mark says nothing");
+		File.WriteAllText(Path.Combine(mine, "BuildData.json"), "{}");
+		Check(mo2.RootBuilderDeployed(), "its own mark does");
+	}
+
+	// a language file: a value left empty stays English, a name is only a name, and a file that does not read is not replaced
+	static void T_ALanguageFileCannotHarmTheWindow()
+	{
+		ToolRunner.App.WindowWords.Use(new Dictionary<string, string> { ["Start"] = "Starten", ["Empty"] = null!, ["Blank"] = "  " });
+		ToolRunner.App.WindowWords.Use(new Dictionary<string, string>());
+		Check(ToolRunner.App.WindowWords.GoodName("Deutsch") && ToolRunner.App.WindowWords.GoodName("My language"), "a name");
+		foreach (var bad in new[] { @"..\outside", "a/b", @"C:\x", "..", ".", " " }) {
+			Check(!ToolRunner.App.WindowWords.GoodName(bad), "no language's name: " + bad);
+		}
+		var name = "a test " + Guid.NewGuid().ToString("N")[..8];
+		var mine = Path.Combine(ToolRunner.App.WindowWords.Folder, name + ".json");
+		Directory.CreateDirectory(ToolRunner.App.WindowWords.Folder);
+		File.WriteAllText(mine, "{ broken");
+		try {
+			Exception? failed = null;
+			var t = new Thread(() => {
+				try {
+					Throws<InvalidDataException>(() => ToolRunner.App.WindowWords.WriteTemplate(new System.Windows.Controls.StackPanel(), name), "a file that does not read stops it");
+				} catch (Exception e) {
+					failed = e;
+				}
+			});
+			t.SetApartmentState(ApartmentState.STA);
+			t.Start();
+			t.Join();
+			if (failed != null) {
+				throw failed;
+			}
+			Equal("{ broken", File.ReadAllText(mine), "a translator's file that does not read is left as it is");
+		} finally {
+			File.Delete(mine);
+		}
 	}
 
 	// a command whose program path is quoted (a path with spaces) runs as written - cmd's own quoting, not Windows' escaping
@@ -4626,8 +4734,14 @@ public static class Program
 		Equal(RootBuilderAddOn.State.NoRootBuilder, RootBuilderAddOn.StateOf(plain), "and no add-on to offer");
 		var plugins = Path.Combine(Path.GetDirectoryName(f.Exe)!, "plugins");
 		Directory.CreateDirectory(Path.Combine(plugins, "rootbuilder"));
+		Check(Mo2Instance.Load(f.Exe, f.Instance).RootBuilderBuilds, "nothing in the ini: Root Builder's own default, its automatic build on");
+		var iniFile = Path.Combine(f.Instance, "ModOrganizer.ini");
+		var noPlugins = File.ReadAllText(iniFile);
+		File.WriteAllText(iniFile, noPlugins + "[Plugins]\r\nRootBuilder\\autobuild=false\r\n");
 		Check(!Mo2Instance.Load(f.Exe, f.Instance).RootBuilderBuilds, "its automatic build off: it builds only when the player asks");
-		File.AppendAllText(Path.Combine(f.Instance, "ModOrganizer.ini"), "[Plugins]\r\nRootBuilder\\autobuild=true\r\n");
+		File.WriteAllText(iniFile, noPlugins + "[Plugins]\r\nRootBuilder\\enabled=false\r\n");
+		Check(!Mo2Instance.Load(f.Exe, f.Instance).RootBuilderBuilds, "the plugin switched off in Mod Organizer: nothing builds");
+		File.WriteAllText(iniFile, noPlugins + "[Plugins]\r\nRootBuilder\\autobuild=true\r\n");
 		var mo2 = Mo2Instance.Load(f.Exe, f.Instance);
 		Check(mo2.RootBuilderBuilds, "its automatic build on");
 		Check(!mo2.RootBuilderDeployed(), "nothing built yet");
@@ -4758,6 +4872,13 @@ public static class Program
 		var setup = f.WriteSetup(("landscapefixer", new JsonObject()));
 		Equal(RunState.Finished, Runner.Run(new RunRequest(f.SetupFile, f.Data)).State, "off: the run finished");
 		Check(seen == Prefs + TweaksBefore, "off: nothing changes");
+		foreach (var on in new[] { "LocalSettings=true", "LocalSettings = true", "  localsettings=TRUE " }) {
+			Check(QuietGame.IsLocalSettings(on), "the setting however it is spaced: " + on);
+		}
+		Check(!QuietGame.IsLocalSettings("LocalSettings=false") && !QuietGame.IsLocalSettings("NotLocalSettings=true") && !QuietGame.IsLocalSettings("[General]"), "and no other line");
+		Check(!QuietGame.IsGog(f.Game), "a game with no GOG library is not GOG's, whatever its folder");
+		File.WriteAllText(Path.Combine(f.Game, "Galaxy64.dll"), "");
+		Check(QuietGame.IsGog(f.Game), "one with it is, whatever its folder");
 		setup.Root["quietGame"] = true;
 		setup.Save(f.SetupFile);
 		Equal(RunState.Finished, Runner.Run(new RunRequest(f.SetupFile, f.Data)).State, "on: the run finished");
@@ -4824,6 +4945,18 @@ public static class Program
 		Check(AddOns.InSetup(setup, addOn) && AddOns.Allowed(setup, addOn), "the old copy was allowed");
 		var changedNow = AddOns.Find(mo2, ProfileOf(f)).Single().AddOn!;
 		Check(AddOns.InSetup(setup, changedNow) && !AddOns.Allowed(setup, changedNow), "so Settings offers it again");
+		// the real step: what starts is what was allowed
+		f.WriteSetup((addOn.Key, setup.Steps[2].Settings.DeepClone().AsObject()));
+		Throws<StepFailedException>(() => step.Run(StepContext(f, addOn.Key), settings), "changed after the pre-check: it does not start");
+		var other = f.WriteSetup(("synthesis", new JsonObject()), ("pgpatcher", new JsonObject()), ("texgen", new JsonObject()), ("playsave", new JsonObject()));
+		// an output name that is one of the player's mods
+		Check(AddOns.OutputTaken(mo2, other, changedNow) == null, "a name nobody has");
+		f.Mod("My Patcher Output - Test", ("Theirs.esp", false, []));
+		Equal("My Patcher Output - Test", AddOns.OutputTaken(mo2, other, changedNow), "a mod of the player's is named, never replaced");
+		// its two places cannot both hold
+		Check(AddOns.AddToSetup(other.Root, changedNow with { After = "synthesis", Before = "pgpatcher" }, "Test") == null, "both can hold");
+		Check(AddOns.AddToSetup(other.Root, changedNow with { After = "pgpatcher", Before = "synthesis" }, "Test") is { } clash && clash.Contains("the other way round", StringComparison.Ordinal), "both cannot: the player is told");
+		Directory.Delete(Path.Combine(f.Mods, "My Patcher Output - Test"), true);
 		AddOns.AddToSetup(setup.Root, changedNow, "Test");
 		Check(AddOns.Allowed(setup, changedNow), "and allowing it again takes the new file");
 		settings = new StepSettings(setup.Steps.Single(s => s.Key == addOn.Key).Settings);
@@ -4941,7 +5074,7 @@ public static class Program
 		using var f = new FakeMo2();
 		var mo2 = Mo2Instance.Load(f.Exe, f.Instance);
 		var folder = Path.Combine(Path.GetDirectoryName(f.Exe)!, "plugins", "data", "SkyrimUtilityPatcher");
-		Check(!Companion.Ask(mo2, "ping", TimeSpan.FromMilliseconds(150), CancellationToken.None), "nobody there: no answer");
+		Check(!Companion.Ask(mo2, "Test", "ping", TimeSpan.FromMilliseconds(150), CancellationToken.None), "nobody there: no answer");
 		Equal(0, Directory.GetFiles(folder).Length, "and nothing left behind");
 		using var stop = new CancellationTokenSource();
 		var heard = new List<string>();
@@ -4956,12 +5089,13 @@ public static class Program
 				Thread.Sleep(10);
 			}
 		});
-		Check(Companion.Ask(mo2, "refresh", TimeSpan.FromSeconds(20), CancellationToken.None), "it answers");
+		Check(Companion.Ask(mo2, "Test", "refresh", TimeSpan.FromSeconds(20), CancellationToken.None), "it answers");
 		stop.Cancel();
 		answering.Wait();
-		Equal("refresh", heard.Single(), "what was asked");
+		Equal($"refresh\n{mo2.BaseDir}\nTest", heard.Single(), "what was asked, and of which Mod Organizer");
 		Equal(0, Directory.GetFiles(folder).Length, "and nothing left behind");
 		var entry = Mo2MenuEntry.Text(@"D:\Tools\Skyrim Utility Patcher.exe");
+		Check(entry.Contains("self._mine(base, profile)", StringComparison.Ordinal), "the plugin answers only for its own instance and profile");
 		Check(entry.Contains("onNextRefresh", StringComparison.Ordinal) && entry.Contains("refresh(False)", StringComparison.Ordinal), "the plugin reads the lists back in, without saving its own over them");
 		Check(!Mo2MenuEntry.Present(mo2), "no entry yet");
 		Mo2MenuEntry.Add(mo2, @"D:\Tools\Skyrim Utility Patcher.exe");

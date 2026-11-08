@@ -19,7 +19,7 @@ except ImportError:
     from PyQt5.QtCore import QCoreApplication, QTimer
     from PyQt5.QtWidgets import QInputDialog, QLineEdit, QMessageBox
 
-from .core import Core, rb_data_dir
+from .core import Core, Refused, rb_data_dir, sup_running
 
 NAME = "RootBuilderProfiles"
 TITLE = "Root Builder Profiles"
@@ -31,6 +31,7 @@ class RootBuilderProfiles(mobase.IPluginTool):
         self._org = None
         self._core = None
         self._retries = 0
+        self._ran_on = (None, None)
         self._busy = False
 
     # ---- MO2 plugin identity ----------------------------------------------------------------
@@ -50,7 +51,7 @@ class RootBuilderProfiles(mobase.IPluginTool):
         return self.description()
 
     def version(self):
-        return mobase.VersionInfo(1, 4, 0)
+        return mobase.VersionInfo(1, 4, 1)
 
     def icon(self):
         try:
@@ -92,7 +93,7 @@ class RootBuilderProfiles(mobase.IPluginTool):
         organizer.onFinishedRun(lambda app, code: self._later(self._after_run))
         organizer.onProfileChanged(lambda old, new: self._later(self._check_game))
         organizer.onUserInterfaceInitialized(lambda window: self._later(self._startup))
-        self._say(f"loaded (version 1.4.0), profile '{organizer.profileName()}'")
+        self._say(f"loaded (version 1.4.1), profile '{organizer.profileName()}'")
         return True
 
     def _say(self, line):
@@ -125,6 +126,8 @@ class RootBuilderProfiles(mobase.IPluginTool):
         try:
             self._core = self._make_core()
             self._core.first_start()  # idempotent; must run before anything moves, whichever step comes first
+            self._core.finish_reset()
+            self._tick_owed()
             fn()
         except Exception:
             self._say("ERROR\n" + traceback.format_exc())
@@ -139,8 +142,12 @@ class RootBuilderProfiles(mobase.IPluginTool):
 
     # ---- 1: after a program closes ---------------------------------------------------------
     def _after_run(self):
-        if not self._setting("movechanges"):
+        moving = self._setting("movechanges")
+        if not moving and not self._setting("checkgame"):
             return
+        # a retry below can outlast a profile switch: this run's changes stay this run's
+        if self._retries == 0:
+            self._ran_on = (self._org.profileName(), self._ticked_mods())
         if self._core.build_deployed():
             # Root Builder has not cleared yet (or autobuild is off) - look again a few times, then leave it.
             if self._retries < 10:
@@ -151,16 +158,33 @@ class RootBuilderProfiles(mobase.IPluginTool):
                 self._retries = 0
             return
         self._retries = 0
-        # 1.2.0: the ticked mods decide what is this profile's change (ENB leftovers never land in a non-ENB profile's mod)
-        mod, moved, created = self._core.move_changes(self._org.profileName(), self._ticked_mods())
-        if moved and created:
-            self._org.refresh(True)
-            self._org.onNextRefresh(lambda: self._tick(mod), True)
+        if moving and self._ran_on[1] is None:
+            self._say("the mod list could not be read: overwrite\\Root is left as it is until the next look")
+        elif moving:
+            # 1.2.0: the ticked mods decide what is this profile's change (ENB leftovers never land in a non-ENB profile's mod)
+            self._core.move_changes(*self._ran_on)
+            self._tick_owed()
         self._check_game()
 
-    def _tick(self, mod):
+    def _tick_owed(self):
+        owed = self._core.tick_owed()
+        # a run's lists are its own until it ends: the tick waits, and it comes at the next look after that
+        if not owed or sup_running():
+            return
+        profile, mod = owed
+        if not (Path(self._org.modsPath()) / mod).is_dir():
+            self._core.tick_done()
+        elif self._org.profileName() == profile:
+            self._org.refresh(True)
+            self._org.onNextRefresh(lambda: self._tick(mod, True), True)
+        else:
+            self._say(f"'{mod}' is ticked when '{profile}' is the profile again")
+
+    def _tick(self, mod, owed=False):
         try:
             self._org.modList().setActive(mod, True)
+            if owed:
+                self._core.tick_done()
             self._say(f"ticked '{mod}' in profile '{self._org.profileName()}'")
         except Exception:
             self._say("could not tick " + mod + "\n" + traceback.format_exc())
@@ -177,7 +201,11 @@ class RootBuilderProfiles(mobase.IPluginTool):
             # 1.1.1: a live deploy or a running game leaves ticked mods' Root files in the game folder - never judged then
             self._say(f"game folder check skipped: {reason}")
             return
-        known, strays = self._core.scan_game(self._ticked_mods())
+        ticked = self._ticked_mods()
+        if ticked is None:
+            self._say("game folder check skipped: the mod list could not be read")
+            return
+        known, strays = self._core.scan_game(ticked)
         files = {**known, **strays}
         if not files:
             return
@@ -187,7 +215,7 @@ class RootBuilderProfiles(mobase.IPluginTool):
         copies = self._core.copies_of_mod_roots(files)
         if copies:
             ckey = ["copies"] + sorted(k.lower() for k in copies)
-            if state.get("declined") != ckey:
+            if state.get("declined copies") != ckey:
                 names = "\n".join(f"{rel}   (from '{copies[rel]}')" for rel in sorted(copies)[:10]) + ("\n..." if len(copies) > 10 else "")
                 answer = QMessageBox.question(None, TITLE, self.tr(
                     f"Your game folder holds {len(copies)} file(s) that are exact copies of files in a mod's Root folder - "
@@ -199,7 +227,7 @@ class RootBuilderProfiles(mobase.IPluginTool):
                                                  reset_snapshot=any(rel in known for rel in copies))
                     QMessageBox.information(None, TITLE, self.tr(f"Done: {n} leftover file(s) removed from the game folder."))
                 else:
-                    state["declined"] = ckey
+                    state["declined copies"] = ckey
                     self._core.save_state(state)
                     self._say(f"{len(copies)} leftover copies of mods' Root files: he said no - not asked again until they change")
             for rel in copies:
@@ -227,7 +255,12 @@ class RootBuilderProfiles(mobase.IPluginTool):
             self._say("no mod name given - nothing moved")
             return
         reset = any(k in known for k in files)
-        created, copied = self._core.adopt(files, mod, reset_snapshot=reset)
+        try:
+            created, copied = self._core.adopt(files, mod, reset_snapshot=reset)
+        except Refused as e:
+            self._say(str(e))
+            QMessageBox.warning(None, TITLE, str(e))
+            return
         if created:
             self._org.refresh(True)
             self._org.onNextRefresh(lambda: self._tick(mod), True)
@@ -236,7 +269,7 @@ class RootBuilderProfiles(mobase.IPluginTool):
             + (self.tr(" The new mod is ticked in this profile - tick it in any other profile that should use this preset.") if created else ""))
 
     def _ticked_mods(self):
-        """The mods ticked in the current profile: MO2's own list, else the profile's modlist.txt."""
+        """The mods ticked in the current profile: MO2's own list, else the profile's modlist.txt; None when neither reads."""
         try:
             ml = self._org.modList()
             active = int(mobase.ModState.ACTIVE)
@@ -247,8 +280,8 @@ class RootBuilderProfiles(mobase.IPluginTool):
             text = (Path(self._org.profilePath()) / "modlist.txt").read_text(encoding="utf-8", errors="replace")
             return [line[1:].rstrip("\r\n") for line in text.splitlines() if line.startswith("+")]
         except Exception:
-            self._say("ticked mods: modlist.txt could not be read either - no file counts as provided\n" + traceback.format_exc())
-            return []
+            self._say("ticked mods: modlist.txt could not be read either\n" + traceback.format_exc())
+            return None
 
     def _ask_name(self):
         default = time.strftime("Preset from game folder %Y-%m-%d")
@@ -268,11 +301,16 @@ class RootBuilderProfiles(mobase.IPluginTool):
         def run():
             state = self._core.load_state() or {}
             state.pop("declined", None)
+            state.pop("declined copies", None)
             self._core.save_state(state)
             if self._core.busy_reason():
                 QMessageBox.information(None, TITLE, self.tr("Root Builder has files in the game folder right now (or the game or a Skyrim Utility Patcher run is going) - let it end first."))
                 return
-            known, strays = self._core.scan_game(self._ticked_mods())
+            ticked = self._ticked_mods()
+            if ticked is None:
+                QMessageBox.information(None, TITLE, self.tr("The mod list could not be read just now - try again."))
+                return
+            known, strays = self._core.scan_game(ticked)
             if not known and not strays:
                 QMessageBox.information(None, TITLE, self.tr("The game folder holds no preset files that a mod does not own."))
                 return

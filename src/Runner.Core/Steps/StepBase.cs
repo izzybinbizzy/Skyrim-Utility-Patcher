@@ -166,6 +166,8 @@ public static class StepKit
 					}
 				} else {
 					Files.WriteAtomic(k.Path, File.ReadAllBytes(k.Backup));
+					// as it was, its time too: a file in overwrite with a new time reads as the step's own
+					File.SetLastWriteTimeUtc(k.Path, File.GetLastWriteTimeUtc(k.Backup));
 				}
 				k.Done = true;
 				a_ctx.Log.Detail($"{Path.GetFileName(k.Path)} put back as it was");

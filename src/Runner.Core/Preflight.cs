@@ -90,24 +90,11 @@ public static class Preflight
 		return outList;
 	}
 
-	// started by Mod Organizer (as one of its executables): our own parent is ModOrganizer.exe or its virtual-folder helper
+	// started as one of Mod Organizer's executables: it hooks its virtual folder into those. A window its Tools menu opened is only its child, and runs as any other
 	static bool InsideMo2()
 	{
-		var me = Environment.ProcessId;
-		var snap = Procs.Snapshot();
-		var parent = snap.FirstOrDefault(p => p.Pid == me).Parent;
-		for (int depth = 0; depth < 4 && parent != 0; ++depth) {
-			try {
-				using var p = Process.GetProcessById(parent);
-				if (p.ProcessName.Equals("ModOrganizer", StringComparison.OrdinalIgnoreCase) || p.ProcessName.StartsWith("usvfs", StringComparison.OrdinalIgnoreCase)) {
-					return true;
-				}
-			} catch (ArgumentException) {
-				return false;
-			}
-			parent = snap.FirstOrDefault(p => p.Pid == parent).Parent;
-		}
-		return false;
+		using var me = Process.GetCurrentProcess();
+		return Mo2Control.InVfs(me);
 	}
 }
 

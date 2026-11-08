@@ -17,6 +17,7 @@ add-on covers them without touching Root Builder's code:
 """
 
 import ctypes
+import errno
 import hashlib
 import json
 import os
@@ -90,6 +91,25 @@ def sha1(path):
     return h.hexdigest()
 
 
+def move_file(src, dest):
+    """Into place, whether or not the two folders share a drive: the source goes only once the copy is proven equal."""
+    size = src.stat().st_size
+    try:
+        os.replace(src, dest)
+    except OSError as e:
+        if e.errno != errno.EXDEV and getattr(e, "winerror", None) != 17:
+            raise
+        part = dest.with_name(dest.name + ".part")
+        shutil.copy2(src, part)
+        if sha1(part) != sha1(src):
+            part.unlink(missing_ok=True)
+            raise OSError(f"the copy of {src.name} is not equal to it")
+        os.replace(part, dest)
+        src.unlink()
+    if not dest.exists() or dest.stat().st_size != size:
+        raise OSError(f"move failed for {dest.name}")
+
+
 def files_under(root):
     """Every file under root as {relative path with backslashes: absolute Path}."""
     root = Path(root)
@@ -125,8 +145,11 @@ GAME_IMAGES = ("SkyrimSE.exe", "skse64_loader.exe")
 
 def game_running(images=GAME_IMAGES):
     try:
-        out = subprocess.run(["tasklist", "/NH", "/FO", "CSV"], capture_output=True, text=True,
-                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), timeout=20).stdout.lower()
+        done = subprocess.run(["tasklist", "/NH", "/FO", "CSV"], capture_output=True, text=True,
+                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), timeout=20)
+        if done.returncode != 0:
+            return True
+        out = done.stdout.lower()
         return any(f'"{i.lower()}"' in out for i in images)
     except Exception:
         return True  # cannot tell - treat as running, so nothing is moved or reported
@@ -150,6 +173,10 @@ def recycle(paths):
     op.fFlags = 0x40 | 0x10 | 0x4 | 0x400  # ALLOWUNDO | NOCONFIRMATION | SILENT | NOERRORUI
     result = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op))
     return result == 0 and not op.fAnyOperationsAborted
+
+
+class Refused(RuntimeError):
+    """Nothing was changed, and the message says why in the player's terms."""
 
 
 class Core:
@@ -179,6 +206,43 @@ class Core:
         tmp = self.state_file.with_suffix(".tmp")
         tmp.write_text(json.dumps(state, indent=1), encoding="utf-8")
         os.replace(tmp, self.state_file)
+
+    def reset_snapshot(self):
+        """Root Builder's snapshot of the game folder set aside, so its next build records the clean folder (otherwise it would restore
+        what just left, for every profile). Noted first: a file held now is finished at the next look."""
+        state = self.load_state() or {}
+        state["reset snapshot"] = True
+        self.save_state(state)
+        self.finish_reset()
+
+    def finish_reset(self):
+        state = self.load_state() or {}
+        # Root Builder's clear needs its snapshot while a build is deployed
+        if not state.get("reset snapshot") or self.busy_reason():
+            return
+        stamp = time.strftime("%Y-%m-%d %H-%M-%S")
+        try:
+            for name in ("GameData.json", "Backup"):
+                src = self.rb_dir / name
+                if src.exists():
+                    dest = self.rb_dir / f"{Path(name).stem} before Root Builder Profiles {stamp}{Path(name).suffix}"
+                    os.replace(src, dest)
+                    self.say(f"Root Builder's {name} set aside as '{dest.name}' (it makes a fresh one on its next build)")
+        except OSError as e:
+            self.say(f"Root Builder's snapshot could not be set aside yet ({e}) - tried again at the next look")
+            return
+        state.pop("reset snapshot")
+        self.save_state(state)
+
+    def tick_owed(self):
+        """[profile, mod] when a new Root Changes mod still has to be ticked, else None. It stays until the tick is done, so a move
+        that failed half way, or a profile switch before the tick, does not leave the mod's files unused."""
+        return (self.load_state() or {}).get("tick")
+
+    def tick_done(self):
+        state = self.load_state() or {}
+        if state.pop("tick", None) is not None:
+            self.save_state(state)
 
     def first_start(self):
         """First time: what is in overwrite\\Root now stays where it is (we never take files the user put there)."""
@@ -275,14 +339,13 @@ class Core:
                 "[General]\nmodid=0\nversion=\ninstallationFile=\nnotes=\"Files the game or a preset menu wrote into the game "
                 f"folder while profile '{profile}' ran. Made by Root Builder Profiles; deployed by Root Builder for this profile only.\"\n",
                 encoding="utf-8")
+            state["tick"] = [profile, mod]
+            self.save_state(state)
         moved = 0
         for rel, src in todo.items():
             dest = mod_dir / "Root" / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
-            size = src.stat().st_size
-            os.replace(src, dest)
-            if not dest.exists() or dest.stat().st_size != size:
-                raise OSError(f"move failed for {rel}")
+            move_file(src, dest)
             legacy.pop(rel.lower(), None)
             moved += 1
         state["legacy"] = legacy
@@ -308,10 +371,7 @@ class Core:
         for rel, src in files.items():
             dest = here / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
-            size = src.stat().st_size
-            os.replace(src, dest)
-            if not dest.exists() or dest.stat().st_size != size:
-                raise OSError(f"set-aside failed for {rel}")
+            move_file(src, dest)
         self.last_leftovers = len(files)
         self.say(f"set aside {len(files)} file(s) that are not '{profile}''s change into '{LEFTOVERS}\\{here.name}' (ticked nowhere):")
         for rel in list(files)[:8]:
@@ -320,12 +380,16 @@ class Core:
     # ---- 2: the game folder ------------------------------------------------------------------
     def game_files(self):
         out = {}
-        for rel, p in files_under(self.game).items():
-            low = rel.lower()
-            top = low.split("\\", 1)[0]
-            if top in self.exclusions or low in self.exclusions:
-                continue
-            out[rel] = p
+        for dirpath, dirs, names in os.walk(self.game):
+            here = Path(dirpath)
+            at_top = here == self.game
+            if at_top:
+                dirs[:] = [d for d in dirs if d.lower() not in self.exclusions]
+            for name in names:
+                full = here / name
+                rel = str(full.relative_to(self.game))
+                if rel.lower() not in self.exclusions and not (at_top and name.lower() in self.exclusions):
+                    out[rel] = full
         return out
 
     def scan_game(self, ticked_mods=()):
@@ -416,13 +480,8 @@ class Core:
             raise RuntimeError(f"{len(left)} file(s) are still in the game folder (first: {left[0]})")
         for top in {Path(rel).parts[0] for rel in files if len(Path(rel).parts) > 1}:
             remove_empty_dirs(self.game / top, keep_root=False)
-        stamp = time.strftime("%Y-%m-%d %H-%M-%S")
-        for name in (("GameData.json", "Backup") if reset_snapshot else ()):
-            src = self.rb_dir / name
-            if src.exists():
-                dest = self.rb_dir / f"{Path(name).stem} before Root Builder Profiles {stamp}{Path(name).suffix}"
-                os.replace(src, dest)
-                self.say(f"leftovers: Root Builder's {name} set aside as '{dest.name}' (it makes a fresh one on its next build)")
+        if reset_snapshot:
+            self.reset_snapshot()
         self.say(f"leftovers: {len(files)} copy/copies of mods' Root files recycled from the game folder: "
                  + ", ".join(sorted(files)[:6]))
         return len(files)
@@ -441,37 +500,48 @@ class Core:
             raise RuntimeError(f"{len(copies)} file(s) are copies of mods' Root files, not a preset (first: {first} from "
                                f"'{copies[first]}') - nothing was moved")
         mod_dir = self.mods / mod
+        clash = sorted(rel for rel, src in files.items() if (mod_dir / "Root" / rel).exists() and sha1(mod_dir / "Root" / rel) != sha1(src))
+        if clash:
+            raise Refused(f"'{mod}' already holds a different {clash[0]}" + (f" and {len(clash) - 1} more" if len(clash) > 1 else "") +
+                          ". Nothing was moved: name another mod, or move those files out of it first.")
         created = not mod_dir.exists()
         if created:
             mod_dir.mkdir(parents=True)
             (mod_dir / "meta.ini").write_text(
                 "[General]\nmodid=0\nversion=\ninstallationFile=\nnotes=\"Preset files moved out of the game folder by "
                 "Root Builder Profiles. Root Builder deploys them for the profiles that tick this mod.\"\n", encoding="utf-8")
-        copied = 0
-        for rel, src in files.items():
-            dest = mod_dir / "Root" / rel
-            if dest.exists() and sha1(dest) == sha1(src):
-                continue
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dest)
-            copied += 1
-        bad = [rel for rel, src in files.items() if sha1(mod_dir / "Root" / rel) != sha1(src)]
-        if bad:
-            raise RuntimeError(f"{len(bad)} copies are not equal to the game folder's (first: {bad[0]}) - nothing was removed")
-        self.say(f"adopt: {len(files)} file(s) in '{mod}' proven equal ({copied} copied now)")
-        if not recycle(files.values()):
-            raise RuntimeError("the Recycle Bin refused the game folder files - check the game folder")
+        made = []
+        try:
+            for rel, src in files.items():
+                dest = mod_dir / "Root" / rel
+                if dest.exists() and sha1(dest) == sha1(src):
+                    continue
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                made.append(dest)
+                shutil.copy2(src, dest)
+            bad = [rel for rel, src in files.items() if sha1(mod_dir / "Root" / rel) != sha1(src)]
+            if bad:
+                raise RuntimeError(f"{len(bad)} copies are not equal to the game folder's (first: {bad[0]}) - nothing was removed")
+            copied = len(made)
+            self.say(f"adopt: {len(files)} file(s) in '{mod}' proven equal ({copied} copied now)")
+            if not recycle(files.values()):
+                raise RuntimeError("the Recycle Bin refused the game folder files - check the game folder")
+        except Exception:
+            # every game folder file still there: nothing half done stays, so the next look does not take these copies for a mod's leftovers
+            if all(p.exists() for p in files.values()):
+                for dest in made:
+                    dest.unlink(missing_ok=True)
+                remove_empty_dirs(mod_dir, keep_root=True)
+                if created:
+                    (mod_dir / "meta.ini").unlink(missing_ok=True)
+                    remove_empty_dirs(mod_dir, keep_root=False)
+            raise
         left = [rel for rel, p in files.items() if p.exists()]
         if left:
             raise RuntimeError(f"{len(left)} file(s) are still in the game folder (first: {left[0]})")
         for top in {Path(rel).parts[0] for rel in files if len(Path(rel).parts) > 1}:
             remove_empty_dirs(self.game / top, keep_root=False)
-        stamp = time.strftime("%Y-%m-%d %H-%M-%S")
-        for name in (("GameData.json", "Backup") if reset_snapshot else ()):
-            src = self.rb_dir / name
-            if src.exists():
-                dest = self.rb_dir / f"{Path(name).stem} before Root Builder Profiles {stamp}{Path(name).suffix}"
-                os.replace(src, dest)
-                self.say(f"adopt: Root Builder's {name} set aside as '{dest.name}' (it makes a fresh one on its next build)")
+        if reset_snapshot:
+            self.reset_snapshot()
         self.say(f"adopt: {len(files)} file(s) recycled from the game folder")
         return created, copied

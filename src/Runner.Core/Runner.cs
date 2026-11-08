@@ -149,6 +149,10 @@ public static class Runner
 		};
 		forThisRun = control;
 		journal.Mo2KeptOpen = control.CompanionOn;
+		control.CompanionGaveUp = () => {
+			journal.Mo2KeptOpen = false;
+			journal.Save();
+		};
 		var ctx = new RunContext {
 			Setup = setup, Mo2 = mo2, Profile = profile, Control = control, Log = log, Journal = journal, Cancel = cts.Token,
 			BackupFolder = journal.BackupDir, Guide = a_guide?.Invoke(journal) ?? new FileGuide(journal, commands.TakeContinue, commands.ClearContinue),
@@ -247,6 +251,7 @@ public static class Runner
 					made = RunStep(ctx, ps);
 				} finally {
 					journal.InGameAfter = false;
+					journal.NeedsRestore = journal.Kept.Any(k => !k.Done);
 					journal.Save();
 				}
 				if (!made) {
@@ -524,6 +529,7 @@ public static class Runner
 	{
 		var r = a_ctx.Journal.Step(a_s.Key)!;
 		var step = StepRegistry.For(a_s.Key);
+		a_ctx.OutputUntouched = false;
 		a_ctx.Log.Say("");
 		a_ctx.Log.Say($"=== {StepCatalog.Name(a_s.Key)} ===");
 		a_ctx.Log.Simple($"{a_ctx.Journal.Steps.IndexOf(r) + 1}/{a_ctx.Journal.Steps.Count} {StepCatalog.Name(a_s.Key)} started");
@@ -575,7 +581,7 @@ public static class Runner
 			MoveNewOverwrite(a_ctx, overwriteBefore);
 			return false;
 		}
-		foreach (var m in new[] { new StepSettings(a_s.Settings).OutputMod }.OfType<string>().Concat(a_ctx.PendingEnable)) {
+		foreach (var m in new[] { a_ctx.OutputUntouched ? null : new StepSettings(a_s.Settings).OutputMod }.OfType<string>().Concat(a_ctx.PendingEnable)) {
 			StepKit.MarkReplaced(a_ctx, m);
 			if (!a_ctx.Journal.Built.Contains(m)) {
 				a_ctx.Journal.Built.Add(m);

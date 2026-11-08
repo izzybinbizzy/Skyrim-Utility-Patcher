@@ -38,7 +38,9 @@ public static class Schedule
 		foreach (var n in names) {
 			var (c, xml) = Schtasks("/Query", "/TN", n, "/XML");
 			if (c != 0) {
+				// one of our names whose program could not be read: the player looks at it, it is not deleted unread
 				clean = false;
+				left.Add(n);
 			} else if (StartsOurs(xml)) {
 				if (Schtasks("/Delete", "/TN", n, "/F").Code == 0) {
 					removed.Add(n);
