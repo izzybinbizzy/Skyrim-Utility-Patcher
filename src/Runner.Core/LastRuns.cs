@@ -28,7 +28,7 @@ public static class LastRuns
 	public static Dictionary<string, (Ran? Latest, Ran? LastDone)> Of(IEnumerable<Journal> a_runs, string a_setupFile)
 	{
 		var found = new Dictionary<string, (Ran? Latest, Ran? LastDone)>(StringComparer.Ordinal);
-		foreach (var j in a_runs.Where(j => string.Equals(j.SetupFile, a_setupFile, StringComparison.OrdinalIgnoreCase)).OrderByDescending(j => j.Started)) {
+		foreach (var j in a_runs.Where(j => !j.Undone && string.Equals(j.SetupFile, a_setupFile, StringComparison.OrdinalIgnoreCase)).OrderByDescending(j => j.Started)) {
 			foreach (var s in j.Steps.Where(s => s.Started != null && s.State is not (StepState.Pending or StepState.Skipped))) {
 				var ran = new Ran(j.Started, j.Folder, s.Name, s.State, s.Started!.Value, s.Ended, s.Note, s.Output);
 				found.TryGetValue(s.Key, out var had);

@@ -92,7 +92,7 @@ public partial class App : Application
 		// window's thread (a failure leaves it; it can start nothing that is not there)
 		_ = Task.Run(() => {
 			try {
-				Schedule.RemoveLeftovers();
+				Schedule.RemoveLeftoversOnce(AppPaths.Data);
 			} catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) {
 			}
 		});

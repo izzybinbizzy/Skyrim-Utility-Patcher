@@ -16,7 +16,7 @@ namespace ToolRunner.App;
 // exit 0 = finished / clean, 1 = failed / refused, 2 = stopped, 3 = bad arguments, 4 = (updates) a tool has a newer version
 public static class Cli
 {
-	public static bool Handles(string[] a_args) => a_args.Length > 0 && a_args[0] is "run" or "retry" or "queue" or "check" or "preview" or "lod" or "restore" or "stop" or "stop-after" or "import" or "updates" or "changes" or "bugreport" or "share" or "--help" or "-h" or "/?";
+	public static bool Handles(string[] a_args) => a_args.Length > 0 && a_args[0] is "run" or "retry" or "queue" or "check" or "preview" or "lod" or "restore" or "stop" or "stop-after" or "import" or "updates" or "changes" or "bugreport" or "share" or "undo" or "--help" or "-h" or "/?";
 
 	static string? Opt(string[] a_args, string a_name)
 	{
@@ -30,7 +30,7 @@ public static class Cli
 		// runs at a set time are gone: a task an older version left is cleared on the command line too (a player who never
 		// opens the window), before the command itself
 		try {
-			Schedule.RemoveLeftovers();
+			Schedule.RemoveLeftoversOnce(AppPaths.Data);
 		} catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) {
 		}
 		try {
@@ -42,6 +42,7 @@ public static class Cli
 				"preview" => Preview(a_args),
 				"lod" => Lod(a_args),
 				"restore" => RestoreCmd(a_args),
+				"undo" => UndoCmd(a_args),
 				"stop" or "stop-after" => Stop(a_args[0]),
 				"import" => Import(a_args),
 				"updates" => Updates(a_args),
@@ -63,7 +64,7 @@ public static class Cli
 
 	static int Help()
 	{
-		Console.WriteLine("Skyrim Utility Patcher - run | retry | queue | check | preview | lod | restore | stop | stop-after | updates | changes | import | bugreport | share   (see the readme)");
+		Console.WriteLine("Skyrim Utility Patcher - run | retry | queue | check | preview | lod | restore | undo | stop | stop-after | updates | changes | import | bugreport | share   (see the readme)");
 		return 0;
 	}
 
@@ -280,6 +281,24 @@ public static class Cli
 			Console.WriteLine($"{r.When.ToString("yyyy-MM-dd HH:mm", InvariantCulture)}  {r.Mod}: {r.What}  [{(r.Profiles.Count == 0 ? "Mod Organizer" : string.Join(", ", r.Profiles))}]  {r.Who}");
 		}
 		return 0;
+	}
+
+	// the setup's last run that left anything undone: undo --setup <file>
+	static int UndoCmd(string[] a_args)
+	{
+		if (Opt(a_args, "--setup") is not { } s) {
+			Console.WriteLine("undo needs --setup <file>");
+			return 3;
+		}
+		var setup = Path.GetFullPath(s);
+		var j = Journal.All(AppPaths.Runs).Where(j => !j.Undone && (j.Unfinished || RunUndo.LeftSomething(j)) && string.Equals(j.SetupFile, setup, StringComparison.OrdinalIgnoreCase)).OrderByDescending(j => j.Started).FirstOrDefault();
+		if (j == null) {
+			Console.WriteLine("nothing to undo: this setup has no run that changed anything");
+			return 0;
+		}
+		var r = Runner.Undo(j);
+		Console.WriteLine(r.Verdict);
+		return r.State == RunState.Restored ? 0 : 1;
 	}
 
 	static int RestoreCmd(string[] a_args)

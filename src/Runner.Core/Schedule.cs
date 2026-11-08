@@ -21,22 +21,62 @@ public static class Schedule
 	}
 
 	// every such task removed -> their names (only those a_only lets through, for the test)
-	public static List<string> RemoveLeftovers(Func<string, bool>? a_only = null)
+	public static List<string> RemoveLeftovers(Func<string, bool>? a_only = null) => Sweep(a_only).Removed;
+
+	// Clean: the list was read and every task of ours in it went
+	static (List<string> Removed, bool Clean) Sweep(Func<string, bool>? a_only = null)
 	{
 		var removed = new List<string>();
 		var (code, csv) = Schtasks("/Query", "/FO", "CSV", "/NH");
 		if (code != 0) {
-			return removed;
+			return (removed, false);
 		}
+		var clean = true;
 		var names = csv.Split('\n').Select(l => l.Trim()).Where(l => l.StartsWith('"') && l.IndexOf('"', 1) > 1)
 			.Select(l => l[1..l.IndexOf('"', 1)].TrimStart('\\')).Distinct().Where(IsOurs).Where(n => a_only == null || a_only(n)).ToList();
 		foreach (var n in names) {
 			var (c, xml) = Schtasks("/Query", "/TN", n, "/XML");
-			if (c == 0 && StartsOurs(xml) && Schtasks("/Delete", "/TN", n, "/F").Code == 0) {
-				removed.Add(n);
+			if (c != 0) {
+				clean = false;
+			} else if (StartsOurs(xml)) {
+				if (Schtasks("/Delete", "/TN", n, "/F").Code == 0) {
+					removed.Add(n);
+				} else {
+					clean = false;
+				}
 			}
 		}
-		return removed;
+		return (removed, clean);
+	}
+
+	public const string ClearedMarker = "old timed runs cleared.txt";
+
+	public const string TriedMarker = "old timed runs tried.txt";
+	public static TimeSpan TryEvery { get; set; } = TimeSpan.FromDays(1);
+
+	// once per data folder: Windows' task list can take half a minute to read, and nothing makes such a task any more. Only a clean pass
+	// leaves the marker - a list that could not be read or a task that would not go is tried again, at most once a day (a command waits for it)
+	public static void RemoveLeftoversOnce(string a_dataDir, Func<bool>? a_sweep = null)
+	{
+		var marker = Path.Combine(a_dataDir, ClearedMarker);
+		var tried = Path.Combine(a_dataDir, TriedMarker);
+		if (File.Exists(marker) || (File.Exists(tried) && DateTime.UtcNow - File.GetLastWriteTimeUtc(tried) < TryEvery)) {
+			return;
+		}
+		try {
+			Directory.CreateDirectory(a_dataDir);
+			Files.WriteAtomic(tried, DateTime.Now.ToString("O", InvariantCulture));
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+			// not kept: the next start looks again
+		}
+		if (!(a_sweep?.Invoke() ?? Sweep().Clean)) {
+			return;
+		}
+		try {
+			Files.WriteAtomic(marker, DateTime.Now.ToString("O", InvariantCulture));
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+			// not kept: the next start looks again
+		}
 	}
 
 	// a harmless task under a given name (the test's own, a year ahead), so RemoveLeftovers can be proven against Windows itself

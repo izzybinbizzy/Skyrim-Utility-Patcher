@@ -38,6 +38,8 @@ public static class Program
 		SystemChecks.CloudFolders = () => [];
 		SystemChecks.ProgramFolders = () => [];
 		SystemChecks.IsNetwork = _ => false;
+		InGame.FreeBytes = _ => 1L << 50;
+		SystemChecks.SteamRunning = () => false;
 		var tests = typeof(Program).GetMethods(System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)
 			.Where(m => m.Name.StartsWith("T_", StringComparison.Ordinal) && m.Name.Contains(filter, StringComparison.OrdinalIgnoreCase)).OrderBy(m => m.MetadataToken);
 		foreach (var t in tests) {
@@ -738,7 +740,275 @@ public static class Program
 		Check(p.IsOn("Output A") && p.IsOn("Output B") && p.IsOn("Needs B"), "built outputs on, everything else as before");
 		Equal(before, f.Text("loadorder.txt"), "the load order byte for byte");
 		Check(File.Exists(Path.Combine(f.Mods, "Output A", "new.txt")), "the new output is in its mod");
-		Check(Directory.GetFiles(Path.Combine(f.Backups), "OutA.esp", SearchOption.AllDirectories).Length == 1, "the old output is in the backup");
+		var zips = Directory.GetFiles(f.Backups, RunUndo.OutputsZip, SearchOption.AllDirectories);
+		Check(zips.Length == 1, "the old outputs are packed in the backup");
+		using var packed = System.IO.Compression.ZipFile.OpenRead(zips[0]);
+		Check(packed.Entries.Any(e => e.Name == "OutA.esp"), "the old output is in it");
+	}
+
+	// his checklist 454: a finished run's old outputs are packed, its folder gone; undoing the run puts each output and the lists back,
+	// sets the new outputs aside (never erased), takes out an output the run made new, keeps what the player changed; it can be done once,
+	// only to the last run on that profile and those outputs; a switched-off pack keeps the folder
+	static void T_TheLastRunCanBeUndone()
+	{
+		using var f = new FakeMo2();
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => WriteOutput(ctx, "landscapefixer", "Output A", "OutA.esp")));
+		StepRegistry.Replace(new FakeStep("synthesis", (ctx, s) => {
+			ctx.Profile.EnsureMod("Brand New", ctx.Log);
+			File.WriteAllText(Path.Combine(f.Mods, "Brand New", "fresh.txt"), "made by the run");
+			ctx.Journal.Built.Add("Brand New");
+			ctx.Journal.Added.Add("Brand New");
+			ctx.Journal.Save();
+		}));
+		f.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A" }), ("synthesis", new JsonObject()));
+		var before = f.Text("loadorder.txt");
+		var oldBytes = File.ReadAllBytes(Path.Combine(f.Mods, "Output A", "OutA.esp"));
+		Equal(RunState.Finished, Runner.Run(new RunRequest(f.SetupFile, f.Data)).State, "the run finished");
+		var j = Journal.All(Runner.RunsDir(f.Data)).First();
+		Check(File.Exists(Path.Combine(j.BackupDir, RunUndo.OutputsZip)) && !Directory.Exists(Path.Combine(j.BackupDir, RunUndo.OutputsFolder)), "packed: the zip there, the folder gone");
+		Check(File.Exists(Path.Combine(f.Mods, "Output A", "new.txt")), "(the new output in its mod)");
+		// the player changes something after the run
+		var list = Path.Combine(f.ProfileDir, "modlist.txt");
+		File.WriteAllText(list, File.ReadAllText(list).Replace("+Base Mod", "-Base Mod", StringComparison.Ordinal));
+		var r = Runner.Undo(Journal.Load(j.Folder));
+		Equal(RunState.Restored, r.State, "undone: " + r.Verdict);
+		Check(!File.Exists(Path.Combine(f.Mods, "Output A", "new.txt")), "the new output left its mod");
+		Check(File.ReadAllBytes(Path.Combine(f.Mods, "Output A", "OutA.esp")).SequenceEqual(oldBytes), "the old output is back, byte for byte");
+		Check(File.Exists(Path.Combine(j.BackupDir, "undone", "Output A", "new.txt")), "the new output is set aside, never erased");
+		Check(File.Exists(Path.Combine(j.BackupDir, "undone", "Brand New", "fresh.txt")), "so is one the run made new");
+		var p = ProfileOf(f);
+		Check(!p.States().ContainsKey("Brand New") && !Directory.Exists(Path.Combine(f.Mods, "Brand New")), "an output the run made new is out of the mod list and the mods folder");
+		Check(!p.IsOn("Base Mod"), "what the player changed since is kept");
+		Check(p.IsOn("Output A") && p.IsOn("Output B"), "the rest as before the run");
+		Equal(before, f.Text("loadorder.txt"), "the load order as before");
+		var again = Runner.Undo(Journal.Load(j.Folder));
+		Check(again.Verdict.Contains("undone already", StringComparison.Ordinal), "only once: " + again.Verdict);
+		Check(ToolRunner.App.Cli.Handles(["undo"]), "the command line takes it, and does not open the window instead");
+		Check(LastRuns.Of(Journal.All(Runner.RunsDir(f.Data)), f.SetupFile).Count == 0, "an undone run no longer counts as a step's last run");
+		// an older run cannot be undone past a newer one that changed the same profile or outputs; a later run that changed nothing is in nobody's way
+		Journal J(string a_id, int a_days, string? a_setup = null, string a_profile = "P", string[]? a_built = null, RunState a_state = RunState.Finished) =>
+			new() { Id = a_id, Folder = Path.Combine(Runner.RunsDir(f.Data), a_id), SetupFile = a_setup ?? f.SetupFile, Profile = a_profile, Started = DateTime.Now.AddDays(a_days), State = a_state, Built = [.. a_built ?? ["Output A"]] };
+		var older = J("older", -1);
+		bool Blocked(Journal a_later) => RunUndo.WhyNot(older, [older, a_later])?.Contains("last run", StringComparison.Ordinal) == true;
+		Check(Blocked(J("newer", 0)), "only the last run");
+		Check(!Blocked(J("empty", 0, a_built: [], a_state: RunState.Failed)), "a later run that built nothing is in nobody's way");
+		Check(Blocked(J("cut off", 0, a_built: [], a_state: RunState.Running)), "a later run that did not finish is");
+		Check(Blocked(J("other setup", 0, "other.json")), "so is another setup's run on the same profile");
+		Check(Blocked(J("other profile", 0, "other.json", "Q")), "or on another profile with one of the same outputs");
+		Check(!Blocked(J("elsewhere", 0, "other.json", "Q", ["Output Z"])), "another setup's run elsewhere is not");
+		var sameFolder = J("same folder", 0, "other.json", "Q", ["Output Z"]);
+		sameFolder.Parked.Add(new ParkRecord { Mod = "tool", From = @"D:\Tools\out", To = "x", Replaced = true, IsFolder = true, Moved = true });
+		older.Parked.Add(new ParkRecord { Mod = "tool", From = "D:/Tools/out/", To = "y", Replaced = true, IsFolder = true, Moved = true });
+		Check(Blocked(sameFolder), "one that moved the same tool folder is");
+		sameFolder.Parked[0].Moved = false;
+		Check(!Blocked(sameFolder), "not one whose move of it never ended");
+		older.Parked.Clear();
+		var typed = J("typed otherwise", 0, "other.json");
+		typed.Mo2Exe = "D:/MO2/ModOrganizer.exe";
+		older.Mo2Exe = @"D:\MO2\ModOrganizer.exe";
+		older.Built = ["Output Y"];
+		typed.Mo2Instance = "D:/MO2/Instance/";
+		older.Mo2Instance = @"D:\MO2\Instance";
+		Check(Blocked(typed), "a Mod Organizer typed another way is the same one");
+		// a portable instance left unset in one setup, named in the other
+		var named = J("named", 0, "other.json");
+		named.Mo2Exe = @"D:\Portable\ModOrganizer.exe";
+		named.Mo2Instance = @"D:\Portable";
+		older.Mo2Exe = @"D:\Portable\ModOrganizer.exe";
+		older.Mo2Instance = null;
+		Check(Blocked(named), "a portable instance named in one setup and not the other is the same one");
+		// a pack that is switched off keeps the folder
+		var dir = Path.Combine(f.Root, "pack test");
+		Directory.CreateDirectory(Path.Combine(dir, RunUndo.OutputsFolder, "Mod"));
+		File.WriteAllText(Path.Combine(dir, RunUndo.OutputsFolder, "Mod", "a.txt"), "a");
+		RunUndo.Pack(dir, RunLog.Null);
+		Check(File.Exists(Path.Combine(dir, RunUndo.OutputsZip)), "packed");
+		RunUndo.Unpack(dir);
+		Equal("a", File.ReadAllText(Path.Combine(dir, RunUndo.OutputsFolder, "Mod", "a.txt")), "unpacked whole");
+		Check(!File.Exists(Path.Combine(dir, RunUndo.OutputsZip)), "the zip gone after it");
+		// a folder that will not go once the zip is whole: said as packed, and the zip brings everything back
+		var held = Path.Combine(f.Root, "pack held");
+		Directory.CreateDirectory(Path.Combine(held, RunUndo.OutputsFolder, "Mod"));
+		File.WriteAllText(Path.Combine(held, RunUndo.OutputsFolder, "Mod", "a.txt"), "a");
+		File.WriteAllText(Path.Combine(held, RunUndo.OutputsFolder, "Mod", "b.txt"), "b");
+		using (var log = new RunLog(held)) {
+			using (new FileStream(Path.Combine(held, RunUndo.OutputsFolder, "Mod", "a.txt"), FileMode.Open, FileAccess.Read, FileShare.Read)) {
+				RunUndo.Pack(held, log);
+			}
+		}
+		Check(File.ReadAllText(Path.Combine(held, "log.txt")).Contains("are packed", StringComparison.Ordinal), "said as packed, not as left unpacked");
+		RunUndo.Unpack(held);
+		Check(File.ReadAllText(Path.Combine(held, RunUndo.OutputsFolder, "Mod", "b.txt")) == "b" && File.ReadAllText(Path.Combine(held, RunUndo.OutputsFolder, "Mod", "a.txt")) == "a", "and the zip brings both back");
+	}
+
+	// the backup an undo needs stays, however few runs are kept; a switched-off pack keeps the folder; a file a step changed in place goes back on its own, and the rest of that mod stays
+	static void T_AnUndoFindsWhatItNeeds()
+	{
+		using var f = new FakeMo2();
+		var built = true;
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => {
+			if (built) {
+				WriteOutput(ctx, "landscapefixer", "Output A", "OutA.esp");
+			}
+		}));
+		var setup = f.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A" }));
+		setup.Root["keepBackups"] = 1;
+		setup.Root["zipBackups"] = false;
+		setup.Save(f.SetupFile);
+		Equal(RunState.Finished, Runner.Run(new RunRequest(f.SetupFile, f.Data)).State, "the run that built");
+		var first = Journal.All(Runner.RunsDir(f.Data)).First();
+		Check(Directory.Exists(Path.Combine(first.BackupDir, RunUndo.OutputsFolder)) && !File.Exists(Path.Combine(first.BackupDir, RunUndo.OutputsZip)), "a pack switched off: the folder stays");
+		built = false;
+		var noOutput = f.WriteSetup(("landscapefixer", new JsonObject()));
+		noOutput.Root["keepBackups"] = 1;
+		noOutput.Save(f.SetupFile);
+		Thread.Sleep(1100);
+		Equal(RunState.Finished, Runner.Run(new RunRequest(f.SetupFile, f.Data)).State, "a run that built nothing");
+		Check(Directory.Exists(first.BackupDir), "the backup an undo needs is not pushed out by it");
+
+		using var g = new FakeMo2();
+		var inMod = Path.Combine(g.Mods, "Output A", "road.dds");
+		File.WriteAllText(inMod, "plain");
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => {
+			StepKit.KeepFile(ctx, inMod);
+			File.WriteAllText(inMod, "painted");
+			StepKit.Settled(ctx, [inMod]);
+			ctx.Journal.Built.Add("Output A");
+			ctx.Journal.Save();
+		}));
+		g.WriteSetup(("landscapefixer", new JsonObject()));
+		Equal(RunState.Finished, Runner.Run(new RunRequest(g.SetupFile, g.Data)).State, "a step that changed a file in place");
+		var r = Runner.Undo(Journal.All(Runner.RunsDir(g.Data)).First());
+		Equal(RunState.Restored, r.State, "undone: " + r.Verdict);
+		Equal("plain", File.ReadAllText(inMod), "that file is back");
+		Check(File.Exists(Path.Combine(g.Mods, "Output A", "OutA.esp")), "and the rest of the mod stays where it was");
+	}
+
+	// an undo cut off half way (a file held open) can be pressed again: what the first press put back stays, what it set aside stays
+	static void T_AnUndoCutOffCanBePressedAgain()
+	{
+		using var f = new FakeMo2();
+		File.WriteAllText(Path.Combine(f.Mods, "Output A", "old.txt"), "old A");
+		File.WriteAllText(Path.Combine(f.Mods, "Output B", "old.txt"), "old B");
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => WriteOutput(ctx, "landscapefixer", "Output A", "OutA.esp")));
+		StepRegistry.Replace(new FakeStep("synthesis", (ctx, s) => WriteOutput(ctx, "synthesis", "Output B", "OutB.esp")));
+		f.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A" }), ("synthesis", new JsonObject { ["output_mod"] = "Output B" }));
+		Equal(RunState.Finished, Runner.Run(new RunRequest(f.SetupFile, f.Data)).State, "the run finished");
+		var j = Journal.All(Runner.RunsDir(f.Data)).First();
+		var undone = Path.Combine(j.BackupDir, "undone");
+		// an undo walks from the last step back: B goes first, then A's new output is held open
+		using (new FileStream(Path.Combine(f.Mods, "Output A", "new.txt"), FileMode.Open, FileAccess.Read, FileShare.None)) {
+			Equal(RunState.Failed, Runner.Undo(Journal.Load(j.Folder)).State, "the first press stops at the held file");
+		}
+		Equal("old B", File.ReadAllText(Path.Combine(f.Mods, "Output B", "old.txt")), "B is back after the first press");
+		var cut = Journal.Load(j.Folder);
+		Check(cut.Unfinished && cut.State == RunState.Failed && cut.Verdict.Contains("half way", StringComparison.Ordinal), "a half-undone run counts as not finished, and says so");
+		Equal<string?>(null, RunUndo.WhyNot(cut, [cut]), "and it can always be ended");
+		Check(Runner.Run(new RunRequest(f.SetupFile, f.Data)).State != RunState.Finished && Journal.All(Runner.RunsDir(f.Data)).Count() == 1, "so nothing new starts on it");
+		// the window's put-back ends it
+		var second = Runner.Restore(Journal.Load(j.Folder));
+		Equal(RunState.Restored, second.State, "the second press: " + second.Verdict);
+		Check(second.Verdict.StartsWith("undone", StringComparison.Ordinal) && !Journal.Load(j.Folder).Unfinished, "it is undone, and over");
+		Equal("old B", File.ReadAllText(Path.Combine(f.Mods, "Output B", "old.txt")), "B's old output is not taken for the run's");
+		Check(!File.Exists(Path.Combine(f.Mods, "Output B", "new.txt")) && File.Exists(Path.Combine(undone, "Output B", "new.txt")), "B's new output stays set aside");
+		Equal("old A", File.ReadAllText(Path.Combine(f.Mods, "Output A", "old.txt")), "A is back after the second");
+		Check(!File.Exists(Path.Combine(f.Mods, "Output A", "new.txt")) && Directory.GetFiles(undone, "new.txt", SearchOption.AllDirectories).Length == 2, "and its new output set aside too");
+	}
+
+	// an undo cut off once the old mod list is back: the list no longer shows what the player changed, the run's record does
+	static void T_AnUndoCutOffKeepsThePlayersChange()
+	{
+		using var f = new FakeMo2();
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => WriteOutput(ctx, "landscapefixer", "Output A", "OutA.esp")));
+		f.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A" }));
+		Equal(RunState.Finished, Runner.Run(new RunRequest(f.SetupFile, f.Data)).State, "the run finished");
+		var j = Journal.All(Runner.RunsDir(f.Data)).First();
+		var list = Path.Combine(f.ProfileDir, "modlist.txt");
+		File.WriteAllText(list, File.ReadAllText(list).Replace("+Base Mod", "-Base Mod", StringComparison.Ordinal));
+		var plugins = Path.Combine(f.ProfileDir, "plugins.txt");
+		File.WriteAllText(plugins, File.ReadAllText(plugins).Replace("*BaseMod.esp", "BaseMod.esp", StringComparison.Ordinal));
+		// the mod list is written back before the plugin list, which is held open here
+		using (new FileStream(plugins, FileMode.Open, FileAccess.Read, FileShare.Read)) {
+			Equal(RunState.Failed, Runner.Undo(Journal.Load(j.Folder)).State, "the first press stops at the plugin list");
+		}
+		var second = Runner.Undo(Journal.Load(j.Folder));
+		Equal(RunState.Restored, second.State, "the second press: " + second.Verdict);
+		Check(!ProfileOf(f).IsOn("Base Mod"), "what the player changed is kept");
+		// a backup that does not read has changed nothing, so nothing is held up
+		using var g = new FakeMo2();
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => WriteOutput(ctx, "landscapefixer", "Output A", "OutA.esp")));
+		g.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A" }));
+		Equal(RunState.Finished, Runner.Run(new RunRequest(g.SetupFile, g.Data)).State, "another run finished");
+		var run = Journal.All(Runner.RunsDir(g.Data)).First();
+		File.WriteAllText(Path.Combine(run.BackupDir, RunUndo.OutputsZip), "not a zip");
+		Equal(RunState.Failed, Runner.Undo(Journal.Load(run.Folder)).State, "the zip does not read");
+		Check(!Journal.Load(run.Folder).Unfinished, "and the profile is not held up by it");
+	}
+
+	// two steps writing one output each keep what they wrote; a tool folder's label never passes for a mod of that name; what a move that
+	// failed left in a tool folder is never taken for the run's
+	static void T_AnUndoKeepsEveryOutputAside()
+	{
+		using var f = new FakeMo2();
+		var tool = Path.Combine(f.Root, "tool out");
+		var other = Path.Combine(f.Root, "other tool out");
+		var heldDir = Path.Combine(f.Root, "held tool out");
+		var half = Path.Combine(f.Root, "half tool out");
+		foreach (var d in new[] { tool, other, heldDir }) {
+			Directory.CreateDirectory(d);
+			File.WriteAllText(Path.Combine(d, "tool old.txt"), "old");
+		}
+		File.WriteAllText(Path.Combine(f.Mods, "Output A", "old.txt"), "old A");
+		void Second(RunContext a_ctx, string a_text) => File.WriteAllText(Path.Combine(a_ctx.Mo2.ModDir("Output A"), "new.txt"), a_text);
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => {
+			WriteOutput(ctx, "landscapefixer", "Output A", "OutA.esp");
+			Second(ctx, "first");
+		}));
+		StepRegistry.Replace(new FakeStep("synthesis", (ctx, s) => {
+			WriteOutput(ctx, "synthesis", "Output A", "OutA.esp");
+			Second(ctx, "second");
+			StepKit.ParkDir(ctx, tool, "brand new");
+			File.WriteAllText(Path.Combine(tool, "tool new.txt"), "made by the run");
+			StepKit.ParkDir(ctx, other, "base mod");
+			ctx.Profile.EnsureMod("Brand New", ctx.Log);
+			File.WriteAllText(Path.Combine(f.Mods, "Brand New", "fresh.txt"), "made by the run");
+			ctx.Journal.Built.Add("Brand New");
+			ctx.Journal.Added.Add("Brand New");
+			using (new FileStream(Path.Combine(heldDir, "tool old.txt"), FileMode.Open, FileAccess.Read, FileShare.None)) {
+				try {
+					StepKit.ParkDir(ctx, heldDir, "held");
+					Check(false, "a held folder does not move");
+				} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+					Check(!ctx.Journal.Parked.Any(p => p.Mod == "held"), "a move that moved nothing is not on record");
+				}
+			}
+			// a move across drives that stopped half way: its record, and the two halves
+			Directory.CreateDirectory(half);
+			File.WriteAllText(Path.Combine(half, "rest.txt"), "rest");
+			var moved = Path.Combine(ctx.BackupFolder, "outputs", "half");
+			Directory.CreateDirectory(moved);
+			File.WriteAllText(Path.Combine(moved, "moved.txt"), "moved");
+			ctx.Journal.Parked.Add(new ParkRecord { Mod = "half", From = half, To = moved, Replaced = true, IsFolder = true });
+			ctx.Journal.Save();
+		}));
+		f.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A" }), ("synthesis", new JsonObject()));
+		Equal(RunState.Finished, Runner.Run(new RunRequest(f.SetupFile, f.Data)).State, "the run finished");
+		var j = Journal.All(Runner.RunsDir(f.Data)).First();
+		var list = Path.Combine(f.ProfileDir, "modlist.txt");
+		File.WriteAllText(list, File.ReadAllText(list).Replace("+Base Mod", "-Base Mod", StringComparison.Ordinal));
+		var r = Runner.Undo(Journal.Load(j.Folder));
+		Equal(RunState.Restored, r.State, "undone: " + r.Verdict);
+		var undone = Path.Combine(j.BackupDir, "undone");
+		var kept = Directory.GetFiles(undone, "new.txt", SearchOption.AllDirectories).Select(File.ReadAllText).Order(StringComparer.Ordinal).ToList();
+		Equal("first|second", string.Join("|", kept), "both steps' files are kept");
+		Equal("old A", File.ReadAllText(Path.Combine(f.Mods, "Output A", "old.txt")), "the old output is back");
+		Equal(1, Directory.GetFiles(undone, "fresh.txt", SearchOption.AllDirectories).Length, "a mod with a tool folder's name is set aside all the same");
+		Check(!ProfileOf(f).States().ContainsKey("Brand New"), "and taken out");
+		Check(!ProfileOf(f).IsOn("Base Mod"), "the player's change to a mod named like a tool folder's label is kept");
+		Check(File.Exists(Path.Combine(tool, "tool old.txt")) && !File.Exists(Path.Combine(tool, "tool new.txt")), "the tool's folder is as it was");
+		Equal(1, Directory.GetFiles(undone, "tool new.txt", SearchOption.AllDirectories).Length, "what the run left in it is set aside");
+		Check(File.Exists(Path.Combine(heldDir, "tool old.txt")) && Directory.GetFiles(undone, "tool old.txt", SearchOption.AllDirectories).Length == 0, "what a failed move touched stays where it is");
+		Check(File.Exists(Path.Combine(half, "rest.txt")) && File.Exists(Path.Combine(half, "moved.txt")), "the halves of a move that stopped come together again");
 	}
 
 	// ------------------------------------------------------------------ what MO2 changed (his ask 2026-10-27)
@@ -1362,7 +1632,8 @@ public static class Program
 		Check(File.Exists(Path.Combine(f.Mods, "Output A", "Docs", "Bashed Patch, 0.txt")), "its log went with it, at its own place");
 		Check(!File.Exists(Path.Combine(f.Overwrite, "Bashed Patch, 0.esp")), "nothing of the patch left in overwrite");
 		Check(File.Exists(Path.Combine(f.Overwrite, "unrelated.ini")), "another file in overwrite is not taken");
-		Check(Directory.GetFiles(f.Backups, "OutA.esp", SearchOption.AllDirectories).Length == 1, "the old output is in the backup");
+		using var packed = System.IO.Compression.ZipFile.OpenRead(Directory.GetFiles(f.Backups, RunUndo.OutputsZip, SearchOption.AllDirectories).Single());
+		Check(packed.Entries.Any(e => e.Name == "OutA.esp"), "the old output is in the backup");
 	}
 
 	// the player pressed Done without building: the step fails and the old output comes back
@@ -3917,6 +4188,215 @@ public static class Program
 		Equal<Toggle?>(null, StepKit.ToolModOn(ctx, new StepSettings(new JsonObject { ["executable"] = "SKSE" })), "nothing to switch for a program outside the mods folder");
 		Equal("Plugin Tool", string.Join(",", StepKit.ToolMods(ctx, new StepSettings(new JsonObject { ["executable"] = "Tool2", ["enable_during"] = new JsonArray("Plugin Tool") }))),
 			"a mod the setup itself names for the step is its own choice, plugin or not - and still switched on, for the steps that do not read that list");
+	}
+
+	// his checklist 464: before the first step that loads a save the player's saves are copied into the run's backup - saves and co-saves,
+	// nothing else, once a run, the original untouched; the setup can switch it off; no room, no folder, a Stop or a copy that cannot be
+	// made never stops the run or leaves a part behind
+	static void T_TheSavesAreCopiedBeforeAnInGameStep()
+	{
+		using var f = new FakeMo2();
+		File.WriteAllText(Path.Combine(f.ProfileDir, "settings.ini"), "[General]\r\nLocalSaves=true\r\n");
+		var p = ProfileOf(f);
+		var saves = InGame.SavesDir(p);
+		Directory.CreateDirectory(saves);
+		File.WriteAllText(Path.Combine(saves, "Save1.ess"), "save");
+		File.WriteAllText(Path.Combine(saves, "Save1.skse"), "co-save");
+		File.WriteAllText(Path.Combine(saves, "notes.txt"), "not a save");
+		var setup = f.WriteSetup(("cleansave", new JsonObject()));
+		var mo2 = Mo2Instance.Load(f.Exe, f.Instance);
+		var j = new Journal { Id = "saves", Folder = Path.Combine(Runner.RunsDir(f.Data), "0000 saves"), SetupFile = setup.File, SetupName = setup.Name, Profile = "Test", Started = DateTime.Now };
+		Directory.CreateDirectory(j.Folder);
+		using var log = new RunLog(j.Folder);
+		var backup = Path.Combine(f.Backups, "saves run");
+		var ctx = new RunContext { Setup = setup, Mo2 = mo2, Profile = p, Control = new Mo2Control(mo2, "Test", log), Log = log, Journal = j,
+			Cancel = CancellationToken.None, BackupFolder = backup };
+		var copy = InGame.CopySaves(ctx);
+		Check(copy != null && File.Exists(Path.Combine(copy, "Save1.ess")) && File.Exists(Path.Combine(copy, "Save1.skse")), "the saves and their co-saves are copied");
+		Check(!File.Exists(Path.Combine(copy!, "notes.txt")), "nothing else");
+		Check(File.Exists(Path.Combine(saves, "Save1.ess")), "the original stays");
+		Check(!Directory.Exists(copy + ".part"), "no part left");
+		File.WriteAllText(Path.Combine(saves, "Save2.ess"), "made in the run's game");
+		Equal(copy, InGame.CopySaves(ctx), "once a run");
+		Check(!File.Exists(Path.Combine(copy!, "Save2.ess")), "a later save is no part of the copy");
+		setup.Root["copySaves"] = false;
+		Directory.Delete(copy!, true);
+		Equal<string?>(null, InGame.CopySaves(ctx), "switched off in the setup: nothing copied");
+		setup.Root["copySaves"] = true;
+		// not enough room beside what the run needs: said, nothing copied, and the run goes on
+		var keepFree = InGame.FreeBytes;
+		try {
+			InGame.FreeBytes = _ => 0;
+			Equal<string?>(null, InGame.CopySaves(ctx), "no room: no copy");
+			Check(!Directory.Exists(Path.Combine(backup, InGame.SavesCopyFolder + ".part")), "no part left");
+		} finally {
+			InGame.FreeBytes = keepFree;
+		}
+		// a Stop during the copy leaves no part behind
+		using var stop = new CancellationTokenSource();
+		stop.Cancel();
+		var stopping = new RunContext { Setup = setup, Mo2 = mo2, Profile = p, Control = ctx.Control, Log = log, Journal = j, Cancel = stop.Token, BackupFolder = backup };
+		Throws<OperationCanceledException>(() => InGame.CopySaves(stopping), "a Stop ends the copy");
+		Check(!Directory.Exists(Path.Combine(backup, InGame.SavesCopyFolder + ".part")), "and leaves no part behind");
+		// the backup folder cannot be made (a file stands where it should be): said, and the run goes on
+		Directory.Delete(backup, true);
+		File.WriteAllText(backup, "a file in the way");
+		Equal<string?>(null, InGame.CopySaves(ctx), "a copy that cannot be made never stops the run");
+		File.Delete(backup);
+		// no saves folder: said, and the run goes on
+		Directory.Delete(saves, true);
+		Equal<string?>(null, InGame.CopySaves(ctx), "no saves folder: nothing to copy");
+		Check(Files.ReadSharedText(log.TextPath!).Contains("no saves folder", StringComparison.Ordinal), "and the log says so");
+	}
+
+	// his checklist 438: Steam's own record of the game says whether it is updating it (refused), has an update waiting (a warning)
+	// or is done (nothing); a copy outside a steamapps folder, or with no record, has nothing to read
+	static void T_SteamUpdatingTheGameIsSeen()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "SUP steam " + Guid.NewGuid().ToString("N"));
+		var game = Path.Combine(root, "steamapps", "common", "Skyrim Special Edition");
+		Directory.CreateDirectory(game);
+		var manifest = Path.Combine(root, "steamapps", "appmanifest_489830.acf");
+		try {
+			Equal(0, SystemChecks.SteamUpdate(game, true).Count(), "no record: nothing to read");
+			void State(int a_flags) => File.WriteAllText(manifest, "\"AppState\"\n{\n\t\"appid\"\t\t\"489830\"\n\t\"installdir\"\t\t\"Skyrim Special Edition\"\n\t\"StateFlags\"\t\t\"" + a_flags + "\"\n}\n");
+			State(4);
+			Equal(0, SystemChecks.SteamUpdate(game, true).Count(), "fully installed: nothing to say");
+			State(1048580);
+			Check(SystemChecks.SteamUpdate(game, true).Single().Blocking, "downloading: the run does not start");
+			var closed = SystemChecks.SteamUpdate(game, false).Single();
+			Check(!closed.Blocking && closed.Text.Contains("half written", StringComparison.Ordinal), "Steam closed in the middle of it: a warning that says so");
+			State(1026);
+			Check(!SystemChecks.SteamUpdate(game, true).Single().Blocking, "an update queued: a warning");
+			State(1542);
+			Check(!SystemChecks.SteamUpdate(game, true).Single().Blocking, "an update paused on purpose: a warning, the run may start");
+			State(6);
+			Check(!SystemChecks.SteamUpdate(game, true).Single().Blocking, "an update waiting: a warning");
+			Equal(0, SystemChecks.SteamUpdate(Path.Combine(root, "Game Root"), true).Count(), "a copy outside steamapps: nothing to read");
+			Directory.CreateDirectory(Path.Combine(root, "steamapps", "common", "Other Copy"));
+			Equal(0, SystemChecks.SteamUpdate(Path.Combine(root, "steamapps", "common", "Other Copy"), true).Count(), "another folder in the same library: the record is not of it");
+			Equal(1, SystemChecks.SteamUpdate(game + Path.DirectorySeparatorChar, true).Count(), "a trailing slash reads the same (the update still waiting)");
+		} finally {
+			Directory.Delete(root, true);
+		}
+	}
+
+	// his checklist 458: what holds a teleport - a beast form or a mount that cannot be left stops the step in the end; a kill move, a
+	// conversation, a menu or a scene are waited out and go on, so a wrong reading never fails a run; nothing held = no wait
+	static void T_WhatHoldsATeleportIsKnown()
+	{
+		InGame.PlayerState S(bool a_mounted = false, bool a_beast = false, bool a_menu = false, bool a_controlsOff = false, bool a_busy = false) =>
+			new(a_mounted, a_beast, a_menu, a_controlsOff, a_busy);
+		Check(InGame.WhatHoldsTeleport(S()) == null, "free to go");
+		Check(InGame.WhatHoldsTeleport(S(a_beast: true)) is { Stop: true }, "a beast form stops in the end");
+		Check(InGame.WhatHoldsTeleport(S(a_mounted: true)) is { Stop: true }, "a mount that cannot be left stops in the end");
+		Check(InGame.WhatHoldsTeleport(S(a_menu: true)) is { Stop: false }, "a conversation or menu is waited out and goes on");
+		Check(InGame.WhatHoldsTeleport(S(a_controlsOff: true)) is { Stop: false }, "a scene too");
+		Check(InGame.WhatHoldsTeleport(S(a_busy: true)) is { Stop: false }, "a kill move or bleeding out too");
+		Check(InGame.WhatHoldsTeleport(S(a_beast: true, a_menu: true))?.Why.Contains("werewolf", StringComparison.Ordinal) == true, "the most serious is named");
+		Check(InGame.IsBeastRace("0x000CDD84", null), "the werewolf race");
+		Check(InGame.IsBeastRace("0x0200283a", "0x0200283A"), "the vampire lord race as the game resolved it, any letter case");
+		Check(!InGame.IsBeastRace("0x00013746", "0x0200283A") && !InGame.IsBeastRace("0x0300283A", "0x0200283A") && !InGame.IsBeastRace(null, null),
+			"a normal race, the same low digits at another slot, or nothing are no beast");
+		// the wait itself
+		var keep = (InGame.TeleportWait, InGame.TeleportShortWait, InGame.TeleportPoll, InGame.DismountEvery);
+		try {
+			InGame.TeleportWait = InGame.TeleportShortWait = TimeSpan.FromMilliseconds(30);
+			InGame.TeleportPoll = TimeSpan.FromMilliseconds(5);
+			InGame.DismountEvery = TimeSpan.FromHours(1);
+			var asked = 0;
+			void Dismount() => ++asked;
+			Equal<string?>(null, InGame.WaitUntilFree(() => S(), Dismount, RunLog.Null, CancellationToken.None), "nothing holds it: go on");
+			var reads = 0;
+			Equal<string?>(null, InGame.WaitUntilFree(() => S(a_mounted: ++reads == 1), Dismount, RunLog.Null, CancellationToken.None), "off the mount: go on");
+			Equal(1, asked, "asked to get off once");
+			Check(InGame.WaitUntilFree(() => S(a_beast: true), Dismount, RunLog.Null, CancellationToken.None)?.Contains("werewolf", StringComparison.Ordinal) == true, "a form that does not end: the step stops, named");
+			asked = 0;
+			Check(InGame.WaitUntilFree(() => S(a_mounted: true), Dismount, RunLog.Null, CancellationToken.None)?.Contains("mount", StringComparison.Ordinal) == true, "a mount that cannot be left: the same");
+			Equal(1, asked, "and it is not asked again and again");
+			Equal<string?>(null, InGame.WaitUntilFree(() => S(a_menu: true), Dismount, RunLog.Null, CancellationToken.None), "a menu that does not close: waited out, then on");
+			// holds that keep taking turns end too
+			InGame.TeleportWait = InGame.TeleportShortWait = TimeSpan.FromMilliseconds(200);
+			var turn = 0;
+			var turns = System.Diagnostics.Stopwatch.StartNew();
+			InGame.WaitUntilFree(() => ++turn % 2 == 0 ? S(a_menu: true) : S(a_mounted: true), Dismount, RunLog.Null, CancellationToken.None);
+			Check(turns.Elapsed >= InGame.TeleportWait * 2, "only the wait's own end stops holds that take turns");
+			// a form that begins just before that end still gets its own time
+			InGame.TeleportWait = InGame.TeleportShortWait = TimeSpan.FromMilliseconds(500);
+			var flip = 0;
+			var late = System.Diagnostics.Stopwatch.StartNew();
+			Equal<string?>(null, InGame.WaitUntilFree(() => late.ElapsedMilliseconds < 900 ? (++flip % 2 == 0 ? S(a_menu: true) : S(a_controlsOff: true)) : late.ElapsedMilliseconds < 1200 ? S(a_beast: true) : S(), Dismount, RunLog.Null, CancellationToken.None), "it ends in time: go on");
+			// each hold has its own limit: a menu after a long form still gets its time
+			InGame.TeleportWait = TimeSpan.FromSeconds(5);
+			InGame.TeleportShortWait = TimeSpan.FromMilliseconds(30);
+			var clock = System.Diagnostics.Stopwatch.StartNew();
+			Equal<string?>(null, InGame.WaitUntilFree(() => clock.ElapsedMilliseconds < 60 ? S(a_beast: true) : clock.ElapsedMilliseconds < 80 ? S(a_menu: true) : S(), Dismount, RunLog.Null, CancellationToken.None), "both end: go on");
+			Check(clock.ElapsedMilliseconds >= 80, "the menu was waited out, not passed on the form's time");
+			using var stop = new CancellationTokenSource();
+			stop.Cancel();
+			Throws<OperationCanceledException>(() => InGame.WaitUntilFree(() => S(a_menu: true), Dismount, RunLog.Null, stop.Token), "a Stop ends the wait");
+		} finally {
+			(InGame.TeleportWait, InGame.TeleportShortWait, InGame.TeleportPoll, InGame.DismountEvery) = keep;
+		}
+	}
+
+	// his checklist 459: a save that did not happen is said in the player's words, and names the way forward (the real proof of the force
+	// is in-game, on the full run's list)
+	static void T_ASaveThatDidNotHappenIsSaid()
+	{
+		var first = InGame.SaveNotMade("Skyrim Utility Patcher - clean save", false);
+		Check(first.Contains("clean save", StringComparison.Ordinal) && first.Contains("may be blocking saves", StringComparison.Ordinal) && first.Contains("Force the save", StringComparison.Ordinal),
+			"names the save, the likely cause and the setting: " + first);
+		var forced = InGame.SaveNotMade("x", true);
+		Check(forced.Contains("switched back on", StringComparison.Ordinal) && !forced.Contains("Force the save", StringComparison.Ordinal) && forced.Contains("guided", StringComparison.Ordinal),
+			"after the force: what is left to do, not the same advice again: " + forced);
+		Check(InGame.SaveWait <= TimeSpan.FromMinutes(5), "a blocked save is said, never waited on for long");
+	}
+
+	// the old timed runs' tasks are looked for once per data folder (Windows' task list took 35 s at every start); only a clean pass
+	// leaves the marker
+	static void T_OldTimedRunsAreLookedForOnce()
+	{
+		var dir = Path.Combine(Path.GetTempPath(), "SUP once " + Guid.NewGuid().ToString("N"));
+		var looks = 0;
+		try {
+			Schedule.RemoveLeftoversOnce(dir, () => { ++looks; return false; });
+			Equal(1, looks, "the first start looks");
+			Check(!File.Exists(Path.Combine(dir, Schedule.ClearedMarker)), "a pass that was not clean leaves no marker");
+			Schedule.RemoveLeftoversOnce(dir, () => { ++looks; return true; });
+			Equal(1, looks, "but a command is not held up by it again the same day");
+			File.SetLastWriteTimeUtc(Path.Combine(dir, Schedule.TriedMarker), DateTime.UtcNow - Schedule.TryEvery - TimeSpan.FromMinutes(1));
+			Schedule.RemoveLeftoversOnce(dir, () => { ++looks; return true; });
+			Equal(2, looks, "a day later it looks again");
+			Check(File.Exists(Path.Combine(dir, Schedule.ClearedMarker)), "a clean pass leaves it");
+			Schedule.RemoveLeftoversOnce(dir, () => { ++looks; return true; });
+			Equal(2, looks, "and no start looks after that");
+		} finally {
+			if (Directory.Exists(dir)) {
+				Directory.Delete(dir, true);
+			}
+		}
+	}
+
+	// his checklist 456: only what each tool's own document says - DynDOLOD.esp and Occlusion.esp last, Occlusion.esp after DynDOLOD.esp,
+	// PG_1.esp last but for those, the Bashed Patch before them, DynDOLOD.esm the last master; Synthesis, PGPatcher.esp and Landscape
+	// Fixer have no documented place; always a warning
+	static void T_OutputPluginsAreCheckedAgainstTheirDocuments()
+	{
+		List<Issue> C(params string[] a_order) => PluginPlaces.Check(a_order);
+		Equal(0, C("Skyrim.esm", "DynDOLOD.esm", "Some.esp", "Bashed Patch, 0.esp", "Synthesis.esp", "PG_1.esp", "DynDOLOD.esp", "Occlusion.esp").Count, "LOOT's own order is clean");
+		Equal(0, C("Some.esp", "Other.esp").Count, "none of them ticked: nothing to say");
+		Equal(0, C("PGPatcher.esp", "LandscapeFixer.esp", "Synthesis.esp", "Some.esp").Count, "no documented place: never warned");
+		Check(C("DynDOLOD.esp", "Occlusion.esp").Count == 0 && C("Occlusion.esp", "DynDOLOD.esp").Single().Text.Contains("right after", StringComparison.Ordinal), "Occlusion.esp after DynDOLOD.esp");
+		var late = C("DynDOLOD.esp", "Late Mod.esp");
+		Check(late.Single().Text.Contains("Late Mod.esp", StringComparison.Ordinal) && !late[0].Blocking, "a plugin after DynDOLOD.esp is named, and only warned about");
+		Check(C("PG_1.esp", "Late Mod.esp").Single().Text.Contains("PGPatcher", StringComparison.Ordinal), "a plugin after PG_1.esp");
+		Equal(0, C("PG_1.esp", "PG_2.esp", "DynDOLOD.esp", "Occlusion.esp").Count, "PG plugins and the DynDOLOD outputs after them are fine");
+		Check(C("PG_1.esp", "PG_2.esp", "Bashed Patch, 1.esp").Single().Text.StartsWith("Bashed Patch, 1.esp", StringComparison.Ordinal), "the Bashed Patch, any number of it, after those that must load last: named once");
+		Equal(0, C("Bashed Patch, 0.esp", "Some.esp").Count, "a plugin after the Bashed Patch may say it must load last: not warned");
+		Check(C("DynDOLOD.esm", "Late.esm").Single().Text.Contains("Late.esm", StringComparison.Ordinal), "a master after DynDOLOD.esm");
+		Check(C("DynDOLOD.esm", "Late.esl").Single().Text.Contains("Late.esl", StringComparison.Ordinal), "a light master after it too");
+		Equal(0, C("Early.esm", "DynDOLOD.esm", "Some.esp").Count, "plugins after DynDOLOD.esm are fine");
 	}
 
 	static void T_EveryToolStepHasItsHelpPage()

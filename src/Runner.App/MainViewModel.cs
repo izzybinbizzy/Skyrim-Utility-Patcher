@@ -847,6 +847,27 @@ public sealed partial class MainViewModel : Observable
 		LoadHistory();
 	}
 
+	// his checklist 454: the setup's last run undone, from the History drawer (its own copy of the record, as Restore)
+	public async Task Undo(string a_folder)
+	{
+		if (Restoring) {
+			return;
+		}
+		Restoring = true;
+		Say("Undoing the run ...", "warn");
+		try {
+			var r = await Task.Run(() => Runner.Undo(Journal.Load(a_folder))).ConfigureAwait(true);
+			Say(r.Verdict, r.State == RunState.Restored ? "good" : "bad");
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidOperationException or ArgumentException or System.Text.Json.JsonException) {
+			Say("The run could not be undone: " + e.Message, "bad");
+		} finally {
+			Restoring = false;
+		}
+		Poll();
+		LoadHistory();
+		_ = LoadLastRuns();
+	}
+
 	bool _checking;
 
 	async Task Check()

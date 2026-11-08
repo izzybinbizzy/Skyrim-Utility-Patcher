@@ -40,11 +40,17 @@ public sealed class StepRecord
 public sealed class ParkRecord
 {
 	public string Step { get; set; } = "";
+	// the mod; for a tool's own folder (IsFolder) only a label, which may read like some mod's name and is never taken for one
 	public string Mod { get; set; } = "";
 	public string From { get; set; } = "";
 	public string To { get; set; } = "";
 	public bool Replaced { get; set; }
 	public bool PutBack { get; set; }
+	public bool IsFolder { get; set; }
+	// an undo has moved what stood at From aside: pressed again after a failure, it never takes what it put back there for the run's
+	public bool SetAside { get; set; }
+	// a tool's folder is all in the backup: until then what stands at From is what the move left, never the run's own
+	public bool Moved { get; set; }
 }
 
 // a file outside the mods that a step changes for its run (a tool's settings, DynDOLOD's preset, NGIO's flag): its old bytes
@@ -54,6 +60,8 @@ public sealed class KeptFile
 	public string Path { get; set; } = "";
 	public string? Backup { get; set; }
 	public bool Done { get; set; }
+	// changed in place for good (no park record covers it): an undo puts this file back on its own
+	public bool Settled { get; set; }
 }
 
 // The run record on disk: everything needed to put the profile back after a crash, a Stop now or a power cut, and what
@@ -82,6 +90,8 @@ public sealed class Journal
 	public List<string> Retire { get; set; } = [];
 	public List<string> Added { get; set; } = [];
 	public List<ParkRecord> Parked { get; set; } = [];
+	[JsonIgnore]
+	public IEnumerable<string> ParkedMods => Parked.Where(p => !p.IsFolder).Select(p => p.Mod);
 	public List<KeptFile> Kept { get; set; } = [];
 	// the marker left where the player stood before the clean save's teleport (the save to play takes them back to it)
 	public string? ReturnMarker { get; set; }
@@ -139,8 +149,15 @@ public sealed class Journal
 
 	// set when putting the profile back failed (e.g. a file locked): the window keeps offering Restore until it worked
 	public bool NeedsRestore { get; set; }
+	// the player undid this run (his checklist 454): its outputs are no longer in the profile
+	public bool Undone { get; set; }
+	// an undo began and has not ended: outputs and lists may be half way, so nothing new starts until it is pressed again (or the
+	// window's put-back, which ends it). What the player had changed is kept here - once the old list is back, it no longer shows it
+	public bool Undoing { get; set; }
+	public Dictionary<string, char>? UndoTheirs { get; set; }
+	public Dictionary<string, bool>? UndoMarks { get; set; }
 
-	public bool Unfinished => State == RunState.Running || NeedsRestore;
+	public bool Unfinished => State == RunState.Running || NeedsRestore || Undoing;
 
 	// the save to play is being made: the run's profile is already put back (it is not Unfinished - nothing to restore), but its
 	// game still runs, so the window keeps it as the running run (Stop and the close guard reach it)
