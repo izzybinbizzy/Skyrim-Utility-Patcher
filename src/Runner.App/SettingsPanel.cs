@@ -61,8 +61,7 @@ public static class SettingsPanel
 		["grass"] = [("stall_min", JsonValueKind.Number, "10"), ("min_files", JsonValueKind.Number, "100")],
 		["pgpatcher"] = [("pglite_check", JsonValueKind.False, "off")],
 		["dyndolod"] = [("no_terrain_underside", JsonValueKind.False, "off"), ("preset", JsonValueKind.String, "none")],
-		["snowfixer"] = [("min_files", JsonValueKind.Number, "3")],
-		["autoblend"] = [("min_files", JsonValueKind.Number, "3")],
+		["landscapefixer"] = [("min_files", JsonValueKind.Number, "3")],
 		["synthesis"] = [("build_min", JsonValueKind.Number, "15")],
 	};
 

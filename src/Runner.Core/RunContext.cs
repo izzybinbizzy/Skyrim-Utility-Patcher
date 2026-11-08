@@ -120,6 +120,7 @@ public sealed class Toggle : IDisposable
 		}
 		a_ctx.Control.Close(null, a_ct);
 		_snap = a_ctx.Profile.Snapshot();
+		_oursBefore = a_ctx.Profile.OursNow();
 		if (en.Count > 0 || dis.Count > 0) {
 			a_ctx.Log.Detail($"mods for {a_label}:");
 			try {
@@ -128,10 +129,13 @@ public sealed class Toggle : IDisposable
 			} catch {
 				// half switched: the order files back byte for byte at once, as the put-back promises
 				a_ctx.Profile.Restore(_snap);
+				a_ctx.Profile.OursBack(_oursBefore);
 				throw;
 			}
 		}
 	}
+
+	readonly Dictionary<string, char>? _oursBefore;
 
 	public void Dispose()
 	{
@@ -142,6 +146,7 @@ public sealed class Toggle : IDisposable
 			throw;
 		}
 		_ctx.Profile.Restore(_snap);
+		_ctx.Profile.OursBack(_oursBefore);
 	}
 }
 

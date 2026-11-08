@@ -152,6 +152,17 @@ public static class Runner
 			log.Warn($"{StepCatalog.Name(w.Step)}: {w.Text}");
 		}
 		Native.KeepAwake(true);
+		// Stop ends this run's own game and tools at once - only a process it started, still the same process (started after
+		// this run began - a PID can be reused), and never Mod Organizer itself (the put-back closes that the normal way)
+		commands.OnStop = () => {
+			foreach (var pid in control.Started.ToList()) {
+				if (Procs.StartTime(pid) is { } t && t >= journal.Started.ToUniversalTime().AddSeconds(-2) &&
+				    !Procs.Image(pid).Equals("ModOrganizer.exe", StringComparison.OrdinalIgnoreCase)) {
+					log.Warn($"Stop: ending {Procs.Image(pid)} (process {pid}), started by this run");
+					Procs.KillTree(pid);
+				}
+			}
+		};
 		commands.Start();
 		Dictionary<string, byte[]>? snap0 = null;
 		var total = Stopwatch.StartNew();
@@ -163,7 +174,14 @@ public static class Runner
 			foreach (var cmd in setup.BeforeRun) {
 				Hook(log, cmd, "before the run");
 			}
-			control.Close();
+			// the one close of an MO2 the player opened that the player asked for: pressing Start (the preview says MO2 closes);
+			// from here on an MO2 the player opens is waited for, never closed (Mo2Control.WaitForTheirs)
+			control.AllowCloseTheirs = true;
+			try {
+				control.Close();
+			} finally {
+				control.AllowCloseTheirs = false;
+			}
 			NoteChanges(mo2, a_req.DataDir, RunWho(journal), log);
 			BackupProfile(ctx);
 			foreach (var s in todo) {
@@ -173,6 +191,7 @@ public static class Runner
 			}
 			journal.Added = [.. profile.Added];
 			snap0 = profile.Snapshot();
+			profile.WatchForOthers();
 			journal.SaveSnapshot(snap0);
 			journal.Save();
 
@@ -583,13 +602,44 @@ public static class Runner
 	public static void PutBack(RunContext a_ctx, Dictionary<string, byte[]>? a_snap)
 	{
 		a_ctx.Control.Close();
+		// what the player changed in Mod Organizer while the run went on (a mod ticked, unticked or installed) is kept, never
+		// undone by the put-back - except on the mods this run owns (its outputs and the mods it replaces), which it decides
+		var own = a_ctx.Journal.Added.Concat(a_ctx.Journal.Built).Concat(a_ctx.Journal.Retire).Concat(a_ctx.Journal.Parked.Select(p => p.Mod))
+			.ToHashSet(StringComparer.OrdinalIgnoreCase);
+		var theirs = a_ctx.Profile.ChangedByOthers().Where(p => !own.Contains(p.Key)).ToDictionary(p => p.Key, p => p.Value, StringComparer.OrdinalIgnoreCase);
 		if (a_snap != null && a_snap.Count > 0) {
 			a_ctx.Log.Say("the profile as it was before the run, with this run's finished outputs on:");
 			foreach (var a in a_ctx.Journal.Added) {
 				a_ctx.Profile.Added.Add(a);
 			}
+			var before = Profile.StatesOf(a_snap);
+			// a mod the player installed during the run keeps its line (its state is set again below)
+			foreach (var m in theirs.Keys.Where(m => !before.ContainsKey(m))) {
+				a_ctx.Profile.Added.Add(m);
+			}
 			a_ctx.Profile.Restore(a_snap);
+			if (theirs.Count > 0) {
+				var listed = a_ctx.Profile.States();
+				var on = theirs.Where(p => p.Value == '+' && listed.ContainsKey(p.Key)).Select(p => p.Key).ToList();
+				var off = theirs.Where(p => p.Value == '-' && listed.ContainsKey(p.Key)).Select(p => p.Key).ToList();
+				a_ctx.Log.Warn($"you changed {theirs.Count} mod(s) in Mod Organizer during the run - kept as you left them: " +
+					string.Join(", ", theirs.Select(p => (p.Value == '+' ? "on " : "off ") + p.Key)));
+				a_ctx.Profile.SetMods(on, off, a_ctx.Log);
+				a_ctx.Profile.ActivatePlugins(on);
+				a_ctx.Profile.DeactivatePlugins(off);
+			}
 		}
+		// an output left empty (its step failed, was stopped, or never ran) never stays in the mod list
+		foreach (var a in a_ctx.Journal.Added.ToList()) {
+			try {
+				if (a_ctx.Profile.TakeOutEmptyOutput(a, a_ctx.BackupFolder, a_ctx.Log)) {
+					a_ctx.Journal.Added.Remove(a);
+				}
+			} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+				a_ctx.Log.Warn($"{a}: is empty but could not be taken out ({e.Message})");
+			}
+		}
+		a_ctx.Journal.Save();
 		var st = a_ctx.Profile.States();
 		// replaced by this run for good, or its old output still in the backup (off only while it is out)
 		var retire = a_ctx.Journal.Retire.Concat(a_ctx.Journal.Parked.Where(p => !p.Replaced && !p.PutBack).Select(p => p.Mod))
@@ -785,6 +835,10 @@ public sealed class Commands(Journal a_journal, CancellationTokenSource a_cts) :
 
 	public bool Stopped { get; private set; }
 
+	// what a Stop does at once, beside cancelling the run: ends the game and tools this run started (his 2026-11-06 find:
+	// "the stop now button does not work" - a cancel alone waited for the step's next look, and a game kept compiling)
+	public Action? OnStop { get; set; }
+
 	public static string Dir(string a_runFolder) => Path.Combine(a_runFolder, "commands");
 
 	public static void Send(string a_runFolder, string a_command)
@@ -812,6 +866,10 @@ public sealed class Commands(Journal a_journal, CancellationTokenSource a_cts) :
 		if (File.Exists(Path.Combine(d, "stop.txt")) && !Stopped) {
 			Stopped = true;
 			_cts.Cancel();
+			try {
+				OnStop?.Invoke();
+			} catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception or IOException) {
+			}
 		}
 		if (File.Exists(Path.Combine(d, "stop after.txt")) && !_j.StopAfterStep) {
 			// no save here: this is a timer thread, and the run's own thread saves the record often

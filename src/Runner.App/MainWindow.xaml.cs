@@ -424,9 +424,41 @@ public partial class MainWindow : Window
 		}
 	}
 
+	bool _stopping;
+	bool _closeNow;
+
+	// the window goes once the run has stopped and put the profile back; a run that does not stop in 10 minutes keeps the window
+	async Task CloseWhenStopped(Journal a_run)
+	{
+		var until = DateTime.Now.AddMinutes(10);
+		while (DateTime.Now < until && Engine.Active() is { } j && string.Equals(j.Folder, a_run.Folder, StringComparison.OrdinalIgnoreCase)) {
+			await Task.Delay(1000);
+		}
+		_stopping = false;
+		if (Engine.Active() is { } still && string.Equals(still.Folder, a_run.Folder, StringComparison.OrdinalIgnoreCase)) {
+			_vm.Say("The run did not stop in 10 minutes, so the window stays open. Press Stop now again.", "bad");
+			return;
+		}
+		_closeNow = true;
+		Close();
+	}
+
 	protected override void OnClosing(System.ComponentModel.CancelEventArgs a_e)
 	{
 		if (!LeaveSettings()) {
+			a_e.Cancel = true;
+		} else if (!_closeNow && Engine.Active() is { } run) {
+			// a run never goes on unseen behind a closed window (it closed his Mod Organizer a minute after the window went):
+			// closing stops it - the tool closed, the profile put back - or the window stays open
+			if (_stopping) {
+				_vm.Say("Still stopping the run - the window closes once your profile is back.", "warn");
+			} else if (Ask.Show(this, "A run is going", "Closing the window stops the run: the tool it is running is closed and your profile put back, " +
+				"as with Stop now. The window closes once that is done.", "Stop the run and close", "Keep the window open")) {
+				Commands.Send(run.Folder, "stop");
+				_vm.Say("Stopping the run - the window closes once your profile is back.", "warn");
+				_stopping = true;
+				_ = CloseWhenStopped(run);
+			}
 			a_e.Cancel = true;
 		}
 		base.OnClosing(a_e);

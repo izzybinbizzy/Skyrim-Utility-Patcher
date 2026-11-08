@@ -1,7 +1,7 @@
 namespace ToolRunner;
 
 // Every step the runner knows: its key in a setup, its plain name, what it is for, and the researched default order
-// (his pick 2026-10-27, sources in the project handoff: dyndolod.info and the SnowFixer / AutoBlend / PGPatcher authors).
+// (his pick 2026-10-27, sources in the project handoff: dyndolod.info and the Landscape Fixer / PGPatcher authors).
 public sealed record StepInfo(string Key, string Name, string About, bool InGame = false, bool NeedsMo2 = true);
 
 public static class StepCatalog
@@ -11,8 +11,7 @@ public static class StepCatalog
 		new("cleansave", "Clean save", "DynDOLOD's clean save: switched off in game, your place noted, to QASmoke, saved; the old outputs off; loaded, saved.", InGame: true),
 		new("wryebash", "Wrye Bash", "Builds the Bashed Patch - guided: Wrye Bash has no unattended mode, so you build it and press Done."),
 		new("synthesis", "Synthesis", "Runs the saved Synthesis pipeline."),
-		new("snowfixer", "SnowFixer", "Patches every snow mesh and record into one plugin."),
-		new("autoblend", "AutoBlend", "Patches landscape meshes to blend instead of cut."),
+		new("landscapefixer", "Landscape Fixer", "Snow and blend fixes for the game's landscape meshes, in one plugin."),
 		new("pgpatcher", "PGPatcher", "Patches meshes and plugins for parallax, complex material and PBR textures."),
 		new("xlodgen", "xLODGen", "Terrain LOD for every worldspace."),
 		new("acmos", "ACMOS Road Generator", "Paints roads into the fresh terrain LOD."),
@@ -38,8 +37,8 @@ public static class StepCatalog
 		("cleansave", "xlodgen", "the clean save is made before any output is rebuilt"),
 		("synthesis", "dyndolod", "DynDOLOD should be generated after every other patch (dyndolod.info)"),
 		("wryebash", "dyndolod", "DynDOLOD should be generated after every other patch (dyndolod.info)"),
-		("snowfixer", "pgpatcher", "SnowFixer's author: SnowFixer, then AutoBlend, then PGPatcher"),
-		("autoblend", "pgpatcher", "AutoBlend's author: AutoBlend output must come before PGPatcher"),
+		("landscapefixer", "pgpatcher", "Landscape Fixer's author: run it before PGPatcher, xLODGen, TexGen and DynDOLOD"),
+		("landscapefixer", "dyndolod", "Landscape Fixer's author: run it before PGPatcher, xLODGen, TexGen and DynDOLOD"),
 		("pgpatcher", "texgen", "PGPatcher must run before TexGen and DynDOLOD (dyndolod.info)"),
 		("pgpatcher", "dyndolod", "PGPatcher must run before TexGen and DynDOLOD (dyndolod.info)"),
 		("pgpatcher", "treelodgen", "TreeLODGen names its models by what PGPatcher changed"),

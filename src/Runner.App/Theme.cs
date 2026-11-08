@@ -164,6 +164,7 @@ public static class Theme
 			}
 		}
 		Current = a_name;
+		WindowFrame.PaintAll();
 		if (a_keep) {
 			try {
 				Files.WriteAtomic(ChoiceFile, a_name);
@@ -303,4 +304,54 @@ public static class Theme
 			Application.Current.ThemeMode = new ThemeMode(a_mode);
 		}
 	}
+}
+
+// Windows draws every window's title bar and border itself: each one is painted in the theme's colors (Windows 11 takes them;
+// an older Windows keeps its own frame), when a window opens and again whenever the theme changes
+public static partial class WindowFrame
+{
+	[System.Runtime.InteropServices.LibraryImport("dwmapi.dll")]
+	private static partial int DwmSetWindowAttribute(nint a_hwnd, int a_attr, ref int a_value, int a_size);
+
+	const int DarkTitle = 20;
+	const int BorderColor = 34;
+	const int CaptionColor = 35;
+	const int TitleTextColor = 36;
+
+	public static void PaintEveryWindowOnOpen() =>
+		EventManager.RegisterClassHandler(typeof(Window), FrameworkElement.LoadedEvent, new RoutedEventHandler((a_s, _) => Paint((Window)a_s)));
+
+	public static void PaintAll()
+	{
+		if (Application.Current == null) {
+			return;
+		}
+		foreach (Window w in Application.Current.Windows) {
+			Paint(w);
+		}
+	}
+
+	public static void Paint(Window a_w)
+	{
+		var hwnd = new System.Windows.Interop.WindowInteropHelper(a_w).Handle;
+		if (hwnd == 0) {
+			return;
+		}
+		var back = a_w.Background as SolidColorBrush ?? Brushes2.Get("Bg") as SolidColorBrush;
+		Set(hwnd, DarkTitle, Application.Current.ThemeMode.Value == "Light" ? 0 : 1);
+		if (back != null) {
+			Set(hwnd, CaptionColor, Ref(back.Color));
+		}
+		if (Brushes2.Get("Line") is SolidColorBrush line) {
+			Set(hwnd, BorderColor, Ref(line.Color));
+		}
+		if (Brushes2.Get("Text") is SolidColorBrush text) {
+			Set(hwnd, TitleTextColor, Ref(text.Color));
+		}
+	}
+
+	// a Windows color is 0x00BBGGRR
+	public static int Ref(Color a_c) => a_c.R | (a_c.G << 8) | (a_c.B << 16);
+
+	static void Set(nint a_hwnd, int a_attr, int a_value) => _ = DwmSetWindowAttribute(a_hwnd, a_attr, ref a_value, sizeof(int));
 }

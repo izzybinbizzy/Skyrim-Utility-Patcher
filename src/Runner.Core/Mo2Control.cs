@@ -228,9 +228,50 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 			WaitForLeftovers(a_ct);
 			_log.Detail($"starting Mod Organizer (profile {ProfileName})");
 			_mo2LaunchedAt = DateTime.UtcNow;
-			Launch($"{Quote(Mo2.Exe)}{Instance} -p {Quote(ProfileName)}", Path.GetDirectoryName(Mo2.Exe)!);
+			_ownMo2.Add(Launch($"{Quote(Mo2.Exe)}{Instance} -p {Quote(ProfileName)}", Path.GetDirectoryName(Mo2.Exe)!));
 		}
 		WaitReady(a_ct);
+	}
+
+	// the Mod Organizer processes this run started itself - any other one is the player's (his 2026-11-06 find: "the tool keeps
+	// trying to fight you when you're doing something in mo2 even though it's running"). The player's is never closed mid-run:
+	// the run says so and waits for the player to close it (UserWait), then goes on; only the run's very first close, which the
+	// player asked for by pressing Start, may close it (AllowCloseTheirs)
+	readonly HashSet<int> _ownMo2 = [];
+
+	public bool AllowCloseTheirs { get; set; }
+
+	public static TimeSpan UserWait { get; set; } = TimeSpan.FromMinutes(30);
+
+	public Func<List<int>>? TheirsProbe { get; set; }
+
+	public List<int> TheirMo2() => TheirsProbe?.Invoke() ?? Pids().Where(p => !_ownMo2.Contains(p)).ToList();
+
+	// true while the run waits for the player's own Mod Organizer to close (the window shows it)
+	public bool WaitingForPlayer { get; private set; }
+
+	void WaitForTheirs(CancellationToken a_ct)
+	{
+		var theirs = TheirMo2();
+		if (theirs.Count == 0) {
+			return;
+		}
+		_log.Warn($"Mod Organizer was opened outside this run (process {string.Join(", ", theirs)}) - it is never closed under you. " +
+			$"Close it when you are done and the run goes on by itself (it waits up to {UserWait.TotalMinutes:0} minutes; Stop ends the run safely)");
+		WaitingForPlayer = true;
+		try {
+			var w = Stopwatch.StartNew();
+			while (TheirMo2().Count > 0) {
+				a_ct.ThrowIfCancellationRequested();
+				if (w.Elapsed > UserWait) {
+					throw new Mo2BusyException($"the Mod Organizer you opened stayed open for {UserWait.TotalMinutes:0} minutes - the run stopped here without touching it; close it, then run again from this step");
+				}
+				a_ct.WaitHandle.WaitOne(Poll);
+			}
+		} finally {
+			WaitingForPlayer = false;
+		}
+		_log.Detail("the Mod Organizer you opened is closed - the run goes on");
 	}
 
 	// A second ModOrganizer.exe ("run -e <tool>", an nxm link) hands its request to the open one, which can take it only once it
@@ -347,6 +388,13 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 		if (RunningProbe == null && Unreadable().Count > 0) {
 			throw new Mo2BusyException("a Mod Organizer runs that this program cannot read (started as administrator?) - close it yourself, then start again");
 		}
+		// (a test that fakes MO2 with RunningProbe fakes the player's copy with TheirsProbe too, or it has none)
+		if (!AllowCloseTheirs && (RunningProbe == null || TheirsProbe != null)) {
+			WaitForTheirs(a_ct);
+			if (!IsRunning()) {
+				return;
+			}
+		}
 		var waited = Stopwatch.StartNew();
 		var told = false;
 		while (true) {
@@ -370,6 +418,11 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 			a_ct.ThrowIfCancellationRequested();
 			Thread.Sleep(5000);
 		}
+		// the player may be working in the run's own Mod Organizer (one per instance - a second start lands in this one): while it
+		// is in front and touched in the last PlayerQuiet, the close waits for the player to stop (never shuts a window under them)
+		if (RunningProbe == null) {
+			WaitWhilePlayerUses(a_ct);
+		}
 		_log.Detail("closing Mod Organizer");
 		var sw = Stopwatch.StartNew();
 		var limit = a_timeout ?? TimeSpan.FromMinutes(5);
@@ -392,6 +445,35 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 		Thread.Sleep(800);
 	}
 
+	readonly HashSet<string> _leftAlone = [];
+
+	public static TimeSpan PlayerQuiet { get; set; } = TimeSpan.FromSeconds(45);
+
+	public static bool PlayerUsing(IReadOnlyCollection<int> a_mo2Pids, int a_foregroundPid, TimeSpan a_sinceInput) =>
+		a_mo2Pids.Contains(a_foregroundPid) && a_sinceInput < PlayerQuiet;
+
+	void WaitWhilePlayerUses(CancellationToken a_ct)
+	{
+		var told = false;
+		var w = Stopwatch.StartNew();
+		while (PlayerUsing(Pids(), Native.ForegroundPid(), Native.SinceLastInput())) {
+			if (!told) {
+				_log.Warn($"you are using Mod Organizer - the run closes it once you have left it alone for {PlayerQuiet.TotalSeconds:0} seconds (or switched to another window)");
+				told = true;
+			}
+			if (w.Elapsed > UserWait) {
+				throw new Mo2BusyException($"Mod Organizer was in use for {UserWait.TotalMinutes:0} minutes - the run stopped here without closing it; run again from this step when you are done");
+			}
+			a_ct.ThrowIfCancellationRequested();
+			a_ct.WaitHandle.WaitOne(TimeSpan.FromSeconds(2));
+		}
+	}
+
+	// the questions and notices Mod Organizer itself shows when it closes - every Windows language says them in its own words, so
+	// the known shapes are read by their key words in English and by MO2's own one-button notice (an OK alone)
+	public static bool CloseBox(string a_text) =>
+		new[] { "quit", "exit", "close", "error", "failed", "warning", "notification" }.Any(w => a_text.Contains(w, StringComparison.OrdinalIgnoreCase));
+
 	// a box MO2 shows while closing: the downloads question is never answered Yes (Cancel, and closing stops); "programs are
 	// still running" gets Yes only when every one of them is this run's (else No - MO2 would end the player's own program); its
 	// Notifications window and its own Qt error boxes block the close - answered OK / Close
@@ -410,6 +492,14 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 					Uia.Press(no);
 				}
 				throw new Mo2BusyException($"Mod Organizer asked to end programs that are still running, among them yours ({string.Join(", ", theirs.Select(t => t.Image).Distinct())}) - answered No, left open: {Trim(box.Text)}");
+			}
+			// only the boxes MO2 itself shows on closing are answered (a quit question, its own error / notice); any other box
+			// may be the player's own work in MO2 and is left alone - the close then waits, and names it at its limit
+			if (!CloseBox(box.Text)) {
+				if (_leftAlone.Add(box.Text)) {
+					_log.Warn($"Mod Organizer shows a box this run does not answer - left for you: {Trim(box.Text)}");
+				}
+				continue;
 			}
 			var ok = Uia.Button(box.Element, "Yes", "OK", "Close", "Exit");
 			if (ok != null) {

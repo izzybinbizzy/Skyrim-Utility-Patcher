@@ -375,6 +375,35 @@ public static partial class InGame
 		}
 	}
 
+	// What the game shows right now, in plain words, for a step that is about to give up: this run's Windows boxes and, with
+	// DevBench, the open game menus and message box. A step never blames its own signal (a log, a cache) while something else is
+	// on screen - an unknown menu of another mod is named instead (his 2026-11-06 find: a mod's menu read as "no shader log").
+	public static string WhatTheGameShows(RunContext a_ctx, DateTime a_launched)
+	{
+		var parts = new List<string>();
+		try {
+			foreach (var b in RunBoxes(a_ctx, a_launched)) {
+				parts.Add($"a Windows box \"{b.Title}\": {(b.Text.Length > 200 ? b.Text[..200] + " ..." : b.Text)}");
+			}
+		} catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception or System.Runtime.InteropServices.COMException) {
+		}
+		try {
+			var list = a_ctx.DevBench.Call("menu", new { action = "list" }, 10);
+			var menus = (list["menus"] ?? list["open"] ?? list["openMenus"]) as JsonArray ?? [];
+			var names = menus.Select(m => m is JsonObject mo ? (mo["name"] ?? mo["menu"])?.ToString() : m?.ToString()).OfType<string>()
+				.Where(n => n != "" && n != "HUD Menu" && n != "Cursor Menu").ToList();
+			if (names.Count > 0) {
+				parts.Add("the game's open menus: " + string.Join(", ", names));
+			}
+			if (IsTrue(list["messageBoxOpen"])) {
+				var d = a_ctx.DevBench.Call("menu", new { action = "describe" }, 10);
+				parts.Add("a game message: " + string.Join(" ", new[] { "bodyText", "text", "message" }.Select(k => d[k]?.ToString() ?? "")).Trim());
+			}
+		} catch (Exception e) when (e is HttpRequestException or TaskCanceledException or InvalidOperationException or FormatException or System.Text.Json.JsonException) {
+		}
+		return parts.Count == 0 ? "" : string.Join("; ", parts);
+	}
+
 	// the boxes of THIS run's game and of an SKSE loader started since its launch - a game the player starts is never touched
 	static List<NativeBox> RunBoxes(RunContext a_ctx, DateTime a_launched)
 	{

@@ -327,11 +327,11 @@ public static class Program
 		f.Mod("PG", ("PGPatcher.esp", false, []));
 		f.Mod("Dyn", ("DynDOLOD.esm", true, []), ("DynDOLOD.esp", false, []), ("Occlusion.esp", false, []));
 		File.WriteAllText(Path.Combine(f.ProfileDir, "modlist.txt"), "+Dyn\r\n+PG\r\n+Base Mod\r\n+Master Mod\r\n");
-		File.WriteAllText(Path.Combine(f.ProfileDir, "plugins.txt"), "*Occlusion.esp\r\n*DynDOLOD.esp\r\n*DynDOLOD.esm\r\nPGPatcher.esp\r\n*MasterMod.esm\r\n*BaseMod.esp\r\n");
+		File.WriteAllText(Path.Combine(f.ProfileDir, "plugins.txt"), "*Occlusion.esp\r\n*DynDOLOD.esp\r\n*DynDOLOD.esm\r\nPGPatcher.esp\r\n*MasterMod.esm\r\n*BaseMod.esp\r\nPG_1.esp\r\n");
 		var p = ProfileOf(f);
-		p.PlacePlugins([new("PGPatcher.esp", "last_master", true), new("DynDOLOD.esm", "after:PGPatcher.esp"), new("DynDOLOD.esp", "end"), new("Occlusion.esp", "end")]);
+		p.PlacePlugins([new("PGPatcher.esp", "last_master", true), new("DynDOLOD.esm", "after:PGPatcher.esp"), new("DynDOLOD.esp", "end"), new("Occlusion.esp", "end"), new("PG_1.esp", "end", true)]);
 		var lines = f.Text("plugins.txt").Split("\r\n", StringSplitOptions.RemoveEmptyEntries);
-		Equal("*MasterMod.esm,*PGPatcher.esp,*DynDOLOD.esm,*BaseMod.esp,*DynDOLOD.esp,*Occlusion.esp", string.Join(",", lines), "placed and ticked");
+		Equal("*MasterMod.esm,*PGPatcher.esp,*DynDOLOD.esm,*BaseMod.esp,*DynDOLOD.esp,*Occlusion.esp,PG_1.esp", string.Join(",", lines), "placed and ticked, a plugin nothing provides left unticked");
 	}
 
 	static void T_ActivateNewMasterGoesToEndOfMasterBlock()
@@ -388,7 +388,7 @@ public static class Program
 	// ------------------------------------------------------------------ setups and order
 	static void T_OrderWarningsCatchTheOldOrder()
 	{
-		var old = new[] { "cleansave", "xlodgen", "acmos", "grass", "snowfixer", "autoblend", "pgpatcher", "treelodgen", "texgen", "dyndolod", "synthesis", "pandora", "shaders" };
+		var old = new[] { "cleansave", "xlodgen", "acmos", "grass", "landscapefixer", "pgpatcher", "treelodgen", "texgen", "dyndolod", "synthesis", "pandora", "shaders" };
 		var w = StepCatalog.OrderWarnings(old);
 		Check(w.Any(x => x.StartsWith("Synthesis runs after DynDOLOD", StringComparison.Ordinal)), "Synthesis after DynDOLOD is warned");
 		Equal(1, w.Count, "that one warning and no other: " + string.Join(" | ", w));
@@ -398,11 +398,11 @@ public static class Program
 	static void T_PlanOnlyFromUntil()
 	{
 		using var f = new FakeMo2();
-		var s = f.WriteSetup(("snowfixer", []), ("autoblend", []), ("pgpatcher", []), ("texgen", []));
-		Equal("autoblend", string.Join(",", Runner.Plan(s, "autoblend", null, null).Select(x => x.Key)), "only");
+		var s = f.WriteSetup(("landscapefixer", []), ("synthesis", []), ("pgpatcher", []), ("texgen", []));
+		Equal("synthesis", string.Join(",", Runner.Plan(s, "synthesis", null, null).Select(x => x.Key)), "only");
 		Equal("pgpatcher,texgen", string.Join(",", Runner.Plan(s, null, "pgpatcher", null).Select(x => x.Key)), "from");
-		Equal("snowfixer,autoblend", string.Join(",", Runner.Plan(s, null, null, "autoblend").Select(x => x.Key)), "until");
-		Throws<ArgumentException>(() => Runner.Plan(s, null, "texgen", "snowfixer"), "a range the wrong way round");
+		Equal("landscapefixer,synthesis", string.Join(",", Runner.Plan(s, null, null, "synthesis").Select(x => x.Key)), "until");
+		Throws<ArgumentException>(() => Runner.Plan(s, null, "texgen", "landscapefixer"), "a range the wrong way round");
 		Throws<ArgumentException>(() => Runner.Plan(s, "dyndolod", null, null), "a step the setup does not have");
 	}
 
@@ -410,14 +410,14 @@ public static class Program
 	static void T_NewGameLeavesOutTheSaveSteps()
 	{
 		using var f = new FakeMo2();
-		var s = f.WriteSetup(("cleansave", []), ("snowfixer", []), ("autoblend", []), ("playsave", []));
-		Equal("cleansave,snowfixer,autoblend,playsave", string.Join(",", Runner.Plan(s, null, null, null).Select(x => x.Key)), "an existing save: every step");
+		var s = f.WriteSetup(("cleansave", []), ("landscapefixer", []), ("synthesis", []), ("playsave", []));
+		Equal("cleansave,landscapefixer,synthesis,playsave", string.Join(",", Runner.Plan(s, null, null, null).Select(x => x.Key)), "an existing save: every step");
 		s.Root["newGame"] = true;
 		s.Save();
 		var ng = Setup.Load(f.SetupFile);
 		Check(ng.NewGame, "the tick is kept in the setup");
-		Equal("snowfixer,autoblend", string.Join(",", Runner.Plan(ng, null, null, null).Select(x => x.Key)), "a new game: the save steps left out");
-		Equal("snowfixer,autoblend", string.Join(",", ng.EnabledSteps.Select(x => x.Key)), "the check and the run see the same steps");
+		Equal("landscapefixer,synthesis", string.Join(",", Runner.Plan(ng, null, null, null).Select(x => x.Key)), "a new game: the save steps left out");
+		Equal("landscapefixer,synthesis", string.Join(",", ng.EnabledSteps.Select(x => x.Key)), "the check and the run see the same steps");
 		ArgumentException? refusal = null;
 		try {
 			Runner.Plan(ng, "cleansave", null, null);
@@ -431,7 +431,7 @@ public static class Program
 		Check(lines.Any(l => l.Contains("new game", StringComparison.Ordinal) && l.Contains("Clean save", StringComparison.Ordinal) && l.Contains("Save to play", StringComparison.Ordinal)),
 			"the preview says what is left out: " + string.Join(" | ", lines));
 		Check(!lines.Any(l => l.StartsWith("The game starts", StringComparison.Ordinal)), "and that the game does not start");
-		ng.Root["steps"]!.AsArray().OfType<JsonObject>().Where(o => Setup.Str(o, "step") is "snowfixer" or "autoblend").ToList().ForEach(o => o["on"] = false);
+		ng.Root["steps"]!.AsArray().OfType<JsonObject>().Where(o => Setup.Str(o, "step") is "landscapefixer" or "synthesis").ToList().ForEach(o => o["on"] = false);
 		Check(ng.Problems().Any(p => p.Contains("new game", StringComparison.Ordinal)), "only save steps on, on a new game: said plainly");
 	}
 
@@ -445,10 +445,10 @@ public static class Program
 	static void T_SetupSaveKeepsUnknownKeys()
 	{
 		using var f = new FakeMo2();
-		var s = f.WriteSetup(("snowfixer", new JsonObject { ["_note"] = "his note 🔁", ["custom"] = 3 }));
+		var s = f.WriteSetup(("landscapefixer", new JsonObject { ["_note"] = "his note 🔁", ["custom"] = 3 }));
 		var back = Setup.Load(f.SetupFile);
-		Equal("his note 🔁", Setup.Str(back.StepSettings("snowfixer")!, "_note"), "a note key kept");
-		Equal(3, Setup.Int(back.StepSettings("snowfixer")!, "custom"), "an unknown key kept");
+		Equal("his note 🔁", Setup.Str(back.StepSettings("landscapefixer")!, "_note"), "a note key kept");
+		Equal(3, Setup.Int(back.StepSettings("landscapefixer")!, "custom"), "an unknown key kept");
 		_ = s;
 	}
 
@@ -722,12 +722,12 @@ public static class Program
 	{
 		using var f = new FakeMo2();
 		var seenOff = false;
-		StepRegistry.Replace(new FakeStep("snowfixer", (ctx, s) => {
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => {
 			seenOff = !ctx.Profile.IsOn("Output A") && !ctx.Profile.IsOn("Output B");
-			WriteOutput(ctx, "snowfixer", "Output A", "OutA.esp");
+			WriteOutput(ctx, "landscapefixer", "Output A", "OutA.esp");
 		}));
-		StepRegistry.Replace(new FakeStep("autoblend", (ctx, s) => WriteOutput(ctx, "autoblend", "Output B", "OutB.esp")));
-		f.WriteSetup(("snowfixer", new JsonObject { ["output_mod"] = "Output A" }), ("autoblend", new JsonObject { ["output_mod"] = "Output B" }));
+		StepRegistry.Replace(new FakeStep("synthesis", (ctx, s) => WriteOutput(ctx, "synthesis", "Output B", "OutB.esp")));
+		f.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A" }), ("synthesis", new JsonObject { ["output_mod"] = "Output B" }));
 		var before = f.Text("loadorder.txt");
 		var r = Runner.Run(new RunRequest(f.SetupFile, f.Data));
 		Equal(RunState.Finished, r.State, "finished: " + r.Verdict);
@@ -889,8 +889,8 @@ public static class Program
 		// the player unticks a mod in MO2, then a run makes a new output mod
 		var list = Path.Combine(f.ProfileDir, "modlist.txt");
 		File.WriteAllText(list, File.ReadAllText(list).Replace("+Base Mod", "-Base Mod", StringComparison.Ordinal));
-		StepRegistry.Replace(new FakeStep("snowfixer", (ctx, s) => WriteOutput(ctx, "snowfixer", "New Output", "New.esp")));
-		f.WriteSetup(("snowfixer", new JsonObject { ["output_mod"] = "New Output" }));
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => WriteOutput(ctx, "landscapefixer", "New Output", "New.esp")));
+		f.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "New Output" }));
 		var r = Runner.Run(new RunRequest(f.SetupFile, f.Data));
 		Equal(RunState.Finished, r.State, "finished: " + r.Verdict);
 		var rows = Mo2Changes.Read(Mo2Changes.Dir(f.Data, mo2));
@@ -920,12 +920,12 @@ public static class Program
 		using var f = new FakeMo2();
 		var mo2 = Mo2Instance.Load(f.Exe, f.Instance);
 		Mo2Changes.Record(mo2, f.Data, Mo2Changes.Outside);
-		StepRegistry.Replace(new FakeStep("snowfixer", (ctx, s) => {
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => {
 			ctx.Journal.Pid = 999999;
 			ctx.Journal.Save();
 			throw new CrashForTest();
 		}));
-		f.WriteSetup(("snowfixer", new JsonObject { ["output_mod"] = "Output A" }));
+		f.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A" }));
 		try {
 			RunUntilCrash(f);
 		} catch (CrashForTest) {
@@ -941,17 +941,17 @@ public static class Program
 	static void T_FailedStepPutsItsOldOutputBack()
 	{
 		using var f = new FakeMo2();
-		StepRegistry.Replace(new FakeStep("snowfixer", (ctx, s) => WriteOutput(ctx, "snowfixer", "Output A", "OutA.esp")));
-		StepRegistry.Replace(new FakeStep("autoblend", (ctx, s) => {
-			StepKit.ParkMod(ctx, "autoblend", "Output B");
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => WriteOutput(ctx, "landscapefixer", "Output A", "OutA.esp")));
+		StepRegistry.Replace(new FakeStep("synthesis", (ctx, s) => {
+			StepKit.ParkMod(ctx, "synthesis", "Output B");
 			File.WriteAllText(Path.Combine(ctx.Mo2.ModDir("Output B"), "half.txt"), "half");
 			throw new StepFailedException("the tool crashed");
 		}));
 		StepRegistry.Replace(new FakeStep("pgpatcher", (ctx, s) => throw new InvalidOperationException("must not run")));
-		f.WriteSetup(("snowfixer", new JsonObject { ["output_mod"] = "Output A" }), ("autoblend", new JsonObject { ["output_mod"] = "Output B" }), ("pgpatcher", []));
+		f.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A" }), ("synthesis", new JsonObject { ["output_mod"] = "Output B" }), ("pgpatcher", []));
 		var r = Runner.Run(new RunRequest(f.SetupFile, f.Data));
 		Equal(RunState.Failed, r.State, "failed");
-		Check(r.Verdict.Contains("AutoBlend", StringComparison.Ordinal) && r.Verdict.Contains("the tool crashed", StringComparison.Ordinal), "the verdict names the step and why: " + r.Verdict);
+		Check(r.Verdict.Contains("Synthesis", StringComparison.Ordinal) && r.Verdict.Contains("the tool crashed", StringComparison.Ordinal), "the verdict names the step and why: " + r.Verdict);
 		Check(File.Exists(Path.Combine(f.Mods, "Output B", "OutB.esp")), "the old output is back in its mod");
 		Check(!File.Exists(Path.Combine(f.Mods, "Output B", "half.txt")), "the half-written output is moved out");
 		var p = ProfileOf(f);
@@ -963,14 +963,14 @@ public static class Program
 	static void T_StopAfterThisStep()
 	{
 		using var f = new FakeMo2();
-		StepRegistry.Replace(new FakeStep("snowfixer", (ctx, s) => {
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => {
 			Commands.Send(ctx.Journal.Folder, "stop after");
 			Thread.Sleep(1200);
-			WriteOutput(ctx, "snowfixer", "Output A", "OutA.esp");
+			WriteOutput(ctx, "landscapefixer", "Output A", "OutA.esp");
 		}));
 		var ran = false;
-		StepRegistry.Replace(new FakeStep("autoblend", (ctx, s) => ran = true));
-		f.WriteSetup(("snowfixer", new JsonObject { ["output_mod"] = "Output A" }), ("autoblend", []));
+		StepRegistry.Replace(new FakeStep("synthesis", (ctx, s) => ran = true));
+		f.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A" }), ("synthesis", []));
 		var r = Runner.Run(new RunRequest(f.SetupFile, f.Data));
 		Equal(RunState.Stopped, r.State, "stopped: " + r.Verdict);
 		Check(!ran, "the next step did not run");
@@ -980,8 +980,8 @@ public static class Program
 	static void T_StopNowIsSafe()
 	{
 		using var f = new FakeMo2();
-		StepRegistry.Replace(new FakeStep("snowfixer", (ctx, s) => {
-			StepKit.ParkMod(ctx, "snowfixer", "Output A");
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => {
+			StepKit.ParkMod(ctx, "landscapefixer", "Output A");
 			Commands.Send(ctx.Journal.Folder, "stop");
 			for (int i = 0; i < 50; ++i) {
 				ctx.Cancel.ThrowIfCancellationRequested();
@@ -989,7 +989,7 @@ public static class Program
 			}
 			throw new StepFailedException("the stop was not seen");
 		}));
-		f.WriteSetup(("snowfixer", new JsonObject { ["output_mod"] = "Output A" }));
+		f.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A" }));
 		var r = Runner.Run(new RunRequest(f.SetupFile, f.Data));
 		Equal(RunState.Stopped, r.State, "stopped: " + r.Verdict);
 		Check(File.Exists(Path.Combine(f.Mods, "Output A", "OutA.esp")), "the old output back");
@@ -1000,13 +1000,13 @@ public static class Program
 	{
 		using var f = new FakeMo2();
 		// a run that "crashed": the record says running, its owner is gone, outputs off, one output parked
-		StepRegistry.Replace(new FakeStep("snowfixer", (ctx, s) => {
-			StepKit.ParkMod(ctx, "snowfixer", "Output A");
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => {
+			StepKit.ParkMod(ctx, "landscapefixer", "Output A");
 			ctx.Journal.Pid = 999999;
 			ctx.Journal.Save();
 			throw new CrashForTest();
 		}));
-		f.WriteSetup(("snowfixer", new JsonObject { ["output_mod"] = "Output A" }));
+		f.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A" }));
 		try {
 			RunUntilCrash(f);
 		} catch (CrashForTest) {
@@ -1031,20 +1031,20 @@ public static class Program
 		var settings = Path.Combine(f.Root, "tool settings.json");
 		var flag = Path.Combine(f.Root, "flag.txt");
 		File.WriteAllText(settings, "his own");
-		StepRegistry.Replace(new FakeStep("snowfixer", (ctx, s) => {
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => {
 			StepKit.KeepFile(ctx, settings);
 			StepKit.KeepFile(ctx, flag);
 			File.WriteAllText(settings, "pointed at the output");
 			File.WriteAllText(flag, "");
 			throw new StepFailedException("the tool crashed");
 		}));
-		f.WriteSetup(("snowfixer", new JsonObject { ["output_mod"] = "Output A" }));
+		f.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A" }));
 		var r = Runner.Run(new RunRequest(f.SetupFile, f.Data));
 		Equal(RunState.Failed, r.State, "failed");
 		Equal("his own", File.ReadAllText(settings), "the changed file is back");
 		Check(!File.Exists(flag), "the file it made is gone again");
 
-		StepRegistry.Replace(new FakeStep("snowfixer", (ctx, s) => {
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => {
 			StepKit.KeepFile(ctx, settings);
 			File.WriteAllText(settings, "pointed at the output");
 			ctx.Journal.Pid = 999999;
@@ -1066,12 +1066,12 @@ public static class Program
 		using var f = new FakeMo2();
 		Directory.CreateDirectory(f.Overwrite);
 		File.WriteAllText(Path.Combine(f.Overwrite, "was there.ini"), "old");
-		StepRegistry.Replace(new FakeStep("snowfixer", (ctx, s) => {
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => {
 			Directory.CreateDirectory(Path.Combine(f.Overwrite, "meshes"));
 			File.WriteAllText(Path.Combine(f.Overwrite, "meshes", "half.nif"), "half");
 			throw new StepFailedException("the tool crashed");
 		}));
-		f.WriteSetup(("snowfixer", new JsonObject { ["output_mod"] = "Output A" }));
+		f.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A" }));
 		Runner.Run(new RunRequest(f.SetupFile, f.Data));
 		Check(!File.Exists(Path.Combine(f.Overwrite, "meshes", "half.nif")), "the step's new file left overwrite");
 		Check(File.Exists(Path.Combine(f.Overwrite, "was there.ini")), "what was there before stays");
@@ -1229,16 +1229,16 @@ public static class Program
 		File.WriteAllText(Path.Combine(tool, "notes.txt"), "not a settings file");
 		var changed = ToolSettings.Changed(before, ToolSettings.Scan([tool], []));
 		Equal(2, changed.Count, "the two settings files it wrote (not its log, not a text file, not one it left alone): " + string.Join(", ", changed));
-		f.WriteSetup(("snowfixer", new JsonObject { ["output_mod"] = "Output A", ["executable"] = "SomeTool" }));
+		f.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A", ["executable"] = "SomeTool" }));
 		var setup = Setup.Load(f.SetupFile);
-		var l = ToolSettings.Keep(setup, "snowfixer", "SomeTool", changed);
-		Equal(2, ToolSettings.Load(setup, "snowfixer")!.Files.Count, "kept with the setup");
+		var l = ToolSettings.Keep(setup, "landscapefixer", "SomeTool", changed);
+		Equal(2, ToolSettings.Load(setup, "landscapefixer")!.Files.Count, "kept with the setup");
 		// the player changes the tool by hand since: a run still uses the learned settings, and puts the player's back after
 		File.WriteAllText(settings, "{\"a\": 3}");
 		var seen = "";
-		StepRegistry.Replace(new FakeStep("snowfixer", (ctx, s) => {
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => {
 			seen = File.ReadAllText(settings);
-			WriteOutput(ctx, "snowfixer", "Output A", "OutA.esp");
+			WriteOutput(ctx, "landscapefixer", "Output A", "OutA.esp");
 		}));
 		var r = Runner.Run(new RunRequest(f.SetupFile, f.Data));
 		Equal(RunState.Finished, r.State, r.Verdict);
@@ -1257,7 +1257,7 @@ public static class Program
 		var runs = Runner.RunsDir(a_f.Data);
 		var j = new Journal { Id = "crash", Folder = Path.Combine(runs, "0000 crash"), SetupFile = Path.GetFullPath(a_f.SetupFile), SetupName = "Test", Profile = "Test",
 			Mo2Exe = s.Mo2Exe, Mo2Instance = s.Mo2Instance, BackupDir = Path.Combine(a_f.Backups, "crash"), Pid = Environment.ProcessId, Started = DateTime.Now,
-			State = RunState.Running, Steps = [new StepRecord { Key = "snowfixer", State = StepState.Running }] };
+			State = RunState.Running, Steps = [new StepRecord { Key = "landscapefixer", State = StepState.Running }] };
 		Directory.CreateDirectory(j.Folder);
 		var profile = new Profile(mo2, "Test", () => false);
 		j.SaveSnapshot(profile.Snapshot());
@@ -1266,7 +1266,7 @@ public static class Program
 		using var log = new RunLog(j.Folder);
 		var ctx = new RunContext { Setup = s, Mo2 = mo2, Profile = profile, Control = new Mo2Control(mo2, "Test", log), Log = log, Journal = j,
 			Cancel = CancellationToken.None, BackupFolder = j.BackupDir };
-		StepRegistry.For("snowfixer")!.Run(ctx, new StepSettings(s.StepSettings("snowfixer")!));
+		StepRegistry.For("landscapefixer")!.Run(ctx, new StepSettings(s.StepSettings("landscapefixer")!));
 	}
 
 	static void T_OneRunAtATime()
@@ -1274,11 +1274,11 @@ public static class Program
 		using var f = new FakeMo2();
 		using var hold = new ManualResetEventSlim();
 		using var started = new ManualResetEventSlim();
-		StepRegistry.Replace(new FakeStep("snowfixer", (ctx, s) => {
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => {
 			started.Set();
 			hold.Wait(10000);
 		}));
-		f.WriteSetup(("snowfixer", []));
+		f.WriteSetup(("landscapefixer", []));
 		var first = Task.Run(() => Runner.Run(new RunRequest(f.SetupFile, f.Data)));
 		started.Wait(10000);
 		var second = Task.Run(() => Runner.Run(new RunRequest(f.SetupFile, f.Data))).Result;
@@ -1291,15 +1291,15 @@ public static class Program
 	static void T_GuidedStepWaitsForContinue()
 	{
 		using var f = new FakeMo2();
-		StepRegistry.Replace(new FakeStep("snowfixer", (ctx, s) => {
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => {
 			var t = Task.Run(() => {
 				Thread.Sleep(800);
 				Commands.Send(ctx.Journal.Folder, "continue");
 			});
-			ctx.Guide.Ask("snowfixer", "do the thing", ctx.Cancel);
+			ctx.Guide.Ask("landscapefixer", "do the thing", ctx.Cancel);
 			t.Wait();
 		}));
-		f.WriteSetup(("snowfixer", []));
+		f.WriteSetup(("landscapefixer", []));
 		var r = Runner.Run(new RunRequest(f.SetupFile, f.Data));
 		Equal(RunState.Finished, r.State, "the guided step went on after Done: " + r.Verdict);
 	}
@@ -1346,8 +1346,8 @@ public static class Program
 	static void T_CommandWithAQuotedPathRuns()
 	{
 		using var f = new FakeMo2();
-		StepRegistry.Replace(new FakeStep("snowfixer", (ctx, s) => { }));
-		var s = f.WriteSetup(("snowfixer", []));
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => { }));
+		var s = f.WriteSetup(("landscapefixer", []));
 		var flag = Path.Combine(f.Root, "after ran.txt");
 		var cmd = Path.Combine(Environment.SystemDirectory, "cmd.exe");
 		s.Root["beforeRun"] = new JsonArray($"\"{cmd}\" /c exit 0");
@@ -1365,15 +1365,15 @@ public static class Program
 		using var f = new FakeMo2();
 		Waits.IdleForTests = TimeSpan.FromSeconds(8);
 		try {
-			StepRegistry.Replace(new FakeStep("snowfixer", (ctx, s) => {
+			StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => {
 				using var p = Process.Start(new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "ping.exe"), "-n 60 127.0.0.1") { CreateNoWindow = true, UseShellExecute = false })!;
 				try {
-					Waits.Tool(ctx, "snowfixer", p, TimeSpan.FromMinutes(2), () => Waits.Poll.Wait, a_progress: () => "SYNTHESIS  Run");
+					Waits.Tool(ctx, "landscapefixer", p, TimeSpan.FromMinutes(2), () => Waits.Poll.Wait, a_progress: () => "SYNTHESIS  Run");
 				} finally {
 					p.Kill();
 				}
 			}));
-			f.WriteSetup(("snowfixer", []));
+			f.WriteSetup(("landscapefixer", []));
 			var sw = Stopwatch.StartNew();
 			var r = Runner.Run(new RunRequest(f.SetupFile, f.Data));
 			Equal(RunState.Failed, r.State, r.Verdict);
@@ -1419,6 +1419,8 @@ public static class Program
 		Equal(@"-sse -o:""C:\New""", XLodGenStep.WithOutput("-sse -o:C:\\Old", @"C:\New"), "an unquoted one too");
 		Equal(@"-o:""C:\New"" -sse", XLodGenStep.WithOutput("-sse", @"C:\New"), "none there: put first");
 		Equal(@"-o:""C:\New""", XLodGenStep.WithOutput("", @"C:\New"), "no arguments at all");
+		Equal(@"-sse -d:""C:\Game Copy\Data""", XLodGenStep.WithData("-sse", @"C:\Game Copy"), "the game Mod Organizer runs named");
+		Equal(@"-sse -d:""E:\Mine""", XLodGenStep.WithData(@"-sse -d:""E:\Mine""", @"C:\Game Copy"), "a data folder the player set stays");
 	}
 
 	// the trial of 2026-10-31: xLODGen had moved its output into its own mod, so ACMOS read an empty scratch folder
@@ -1562,8 +1564,8 @@ public static class Program
 	static void T_AfterRunCommandFailingKeepsTheRunFinished()
 	{
 		using var f = new FakeMo2();
-		StepRegistry.Replace(new FakeStep("snowfixer", (ctx, s) => WriteOutput(ctx, "snowfixer", "Output A", "OutA.esp")));
-		var s = f.WriteSetup(("snowfixer", new JsonObject { ["output_mod"] = "Output A" }));
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => WriteOutput(ctx, "landscapefixer", "Output A", "OutA.esp")));
+		var s = f.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A" }));
 		var marker = Path.Combine(f.Root, "after ran.txt");
 		s.Root["afterRun"] = new JsonArray($"echo ran>>\"{marker}\" & exit /b 5", $"echo next>>\"{marker}\"");
 		s.Save();
@@ -1578,8 +1580,8 @@ public static class Program
 	static void T_BeforeRunCommandMustSucceed()
 	{
 		using var f = new FakeMo2();
-		StepRegistry.Replace(new FakeStep("snowfixer", (ctx, s) => throw new InvalidOperationException("must not run")));
-		var s = f.WriteSetup(("snowfixer", []));
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => throw new InvalidOperationException("must not run")));
+		var s = f.WriteSetup(("landscapefixer", []));
 		s.Root["beforeRun"] = new JsonArray("exit /b 3");
 		s.Save();
 		var before = f.Text("modlist.txt");
@@ -1591,8 +1593,8 @@ public static class Program
 	static void T_LowDiskRefused()
 	{
 		using var f = new FakeMo2();
-		StepRegistry.Replace(new FakeStep("snowfixer", (ctx, s) => throw new InvalidOperationException("must not run")));
-		var s = f.WriteSetup(("snowfixer", []));
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => throw new InvalidOperationException("must not run")));
+		var s = f.WriteSetup(("landscapefixer", []));
 		s.Root["minFreeGb"] = 1_000_000;
 		s.Save();
 		var r = Runner.Run(new RunRequest(f.SetupFile, f.Data));
@@ -1602,7 +1604,7 @@ public static class Program
 	static void T_MissingProfileRefused()
 	{
 		using var f = new FakeMo2();
-		var s = f.WriteSetup(("snowfixer", []));
+		var s = f.WriteSetup(("landscapefixer", []));
 		((JsonObject)s.Root["mo2"]!)["profile"] = "Nope";
 		s.Save();
 		var r = Runner.Run(new RunRequest(f.SetupFile, f.Data));
@@ -1989,11 +1991,11 @@ public static class Program
 	{
 		using var f = new FakeMo2();
 		var plugins = Path.Combine(f.ProfileDir, "plugins.txt");
-		StepRegistry.Replace(new FakeStep("snowfixer", (ctx, s) => {
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => {
 			File.AppendAllText(plugins, "Stray.esp\r\n");
 			File.SetAttributes(plugins, FileAttributes.ReadOnly);
 		}));
-		f.WriteSetup(("snowfixer", []));
+		f.WriteSetup(("landscapefixer", []));
 		try {
 			var r = Runner.Run(new RunRequest(f.SetupFile, f.Data));
 			Check(r.Verdict.Contains("could NOT be put back", StringComparison.Ordinal), "the failed put-back is said: " + r.Verdict);
@@ -2011,11 +2013,11 @@ public static class Program
 	static void T_RetiredModsStayOffAfterTheRun()
 	{
 		using var f = new FakeMo2();
-		StepRegistry.Replace(new FakeStep("snowfixer", (ctx, s) => {
-			WriteOutput(ctx, "snowfixer", "Output A", "OutA.esp");
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => {
+			WriteOutput(ctx, "landscapefixer", "Output A", "OutA.esp");
 			ctx.Journal.Retire.Add("Replaced");
 		}));
-		f.WriteSetup(("snowfixer", new JsonObject { ["output_mod"] = "Output A", ["replaces"] = new JsonArray("Replaced") }));
+		f.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A", ["replaces"] = new JsonArray("Replaced") }));
 		var r = Runner.Run(new RunRequest(f.SetupFile, f.Data));
 		Equal(RunState.Finished, r.State, r.Verdict);
 		var p = ProfileOf(f);
@@ -2029,13 +2031,13 @@ public static class Program
 	{
 		using var f = new FakeMo2();
 		FileStream? held = null;
-		StepRegistry.Replace(new FakeStep("snowfixer", (ctx, s) => {
-			StepKit.ParkMod(ctx, "snowfixer", "Output A");
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => {
+			StepKit.ParkMod(ctx, "landscapefixer", "Output A");
 			var parked = ctx.Journal.Parked.Last(p => p.Mod == "Output A");
 			held = new FileStream(Path.Combine(parked.To, "OutA.esp"), FileMode.Open, FileAccess.Read, FileShare.None);
 			throw new StepFailedException("the tool crashed");
 		}));
-		f.WriteSetup(("snowfixer", new JsonObject { ["output_mod"] = "Output A" }));
+		f.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A" }));
 		try {
 			var r = Runner.Run(new RunRequest(f.SetupFile, f.Data));
 			Equal(RunState.Failed, r.State, "failed");
@@ -2061,14 +2063,14 @@ public static class Program
 		using var f = new FakeMo2();
 		var live = Path.Combine(f.Root, "tool.ini");
 		File.WriteAllText(live, "mine=1");
-		f.WriteSetup(("snowfixer", new JsonObject { ["output_mod"] = "Output A", ["executable"] = "SomeTool" }));
+		f.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A", ["executable"] = "SomeTool" }));
 		var setup = Setup.Load(f.SetupFile);
-		ToolSettings.Keep(setup, "snowfixer", "SomeTool", [live]);
-		var rec = Path.Combine(ToolSettings.Folder(setup, "snowfixer"), "learned.json");
+		ToolSettings.Keep(setup, "landscapefixer", "SomeTool", [live]);
+		var rec = Path.Combine(ToolSettings.Folder(setup, "landscapefixer"), "learned.json");
 		var o = JsonNode.Parse(File.ReadAllText(rec))!.AsObject();
 		o["Files"]![0]!["Stored"] = @"..\..\..\..\Setups\Test.json";
 		File.WriteAllText(rec, o.ToJsonString());
-		StepRegistry.Replace(new FakeStep("snowfixer", (ctx, s) => throw new InvalidOperationException("must not run")));
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => throw new InvalidOperationException("must not run")));
 		var r = Runner.Run(new RunRequest(f.SetupFile, f.Data));
 		Equal(RunState.Failed, r.State, "refused");
 		Check(r.Verdict.Contains("outside their folder", StringComparison.Ordinal), "said why: " + r.Verdict);
@@ -2079,19 +2081,19 @@ public static class Program
 	static void T_PreviewSaysWhatARunDoes()
 	{
 		using var f = new FakeMo2();
-		f.WriteSetup(("snowfixer", new JsonObject { ["output_mod"] = "Output A" }),
-			("autoblend", new JsonObject { ["output_mod"] = "Output B", ["replaces"] = new JsonArray("Replaced") }));
+		f.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A" }),
+			("synthesis", new JsonObject { ["output_mod"] = "Output B", ["replaces"] = new JsonArray("Replaced") }));
 		var before = Profile.OrderFiles.Select(n => Path.Combine(f.ProfileDir, n)).Where(File.Exists).Select(File.ReadAllBytes).ToList();
 		var setup = Setup.Load(f.SetupFile);
 		var p = RunPreview.Build(setup, Mo2Instance.Load(f.Exe, f.Instance), Runner.Plan(setup, null, null, null));
 		Equal(2, p.Steps.Count, "two tools");
 		var off = p.OffForTheRun.ToDictionary(o => o.Mod, o => o.Why);
-		Check(off.TryGetValue("Output A", out var a) && a.Contains("SnowFixer", StringComparison.Ordinal), "Output A off, made by SnowFixer");
+		Check(off.TryGetValue("Output A", out var a) && a.Contains("Landscape Fixer", StringComparison.Ordinal), "Output A off, made by SnowFixer");
 		Check(off.ContainsKey("Output B") && off.ContainsKey("Replaced"), "Output B and the replaced mod off");
 		Check(off.TryGetValue("Needs B", out var nb) && nb.Contains("OutB.esp", StringComparison.Ordinal), "a mod needing Output B's plugin off with it, said why");
 		Check(!off.ContainsKey("Base Mod"), "nothing else");
 		Equal("Replaced", p.ReplacedForGood.Single(), "the replaced mod is kept off after");
-		var lines = p.Lines(k => k == "snowfixer" ? TimeSpan.FromMinutes(3) : null);
+		var lines = p.Lines(k => k == "landscapefixer" ? TimeSpan.FromMinutes(3) : null);
 		Check(lines.Any(l => l.Contains("usually 3 min", StringComparison.Ordinal)) && lines.Any(l => l.Contains("never timed", StringComparison.Ordinal)),
 			"the usual times and the untimed step: " + string.Join(" | ", lines));
 		var after = Profile.OrderFiles.Select(n => Path.Combine(f.ProfileDir, n)).Where(File.Exists).Select(File.ReadAllBytes).ToList();
@@ -2103,8 +2105,8 @@ public static class Program
 	static void T_OnlyTheLastBackupsAreKept()
 	{
 		using var f = new FakeMo2();
-		StepRegistry.Replace(new FakeStep("snowfixer", (ctx, s) => WriteOutput(ctx, "snowfixer", "Output A", "OutA.esp")));
-		var setup = f.WriteSetup(("snowfixer", new JsonObject { ["output_mod"] = "Output A" }));
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => WriteOutput(ctx, "landscapefixer", "Output A", "OutA.esp")));
+		var setup = f.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A" }));
 		setup.Root["keepBackups"] = 2;
 		setup.Save();
 		for (var d = 1; d <= 4; ++d) {
@@ -2176,7 +2178,15 @@ public static class Program
 			Check(!Directory.Exists(Path.Combine(parent, Brand.Name + " Data")), "nothing moved");
 			p.Kill();
 			p.WaitForExit();
-			Equal(Path.Combine(parent, Brand.Name + " Data"), DataFolder.Adopt(parent, " Data"), "it ended: the folder is taken over");
+			// the check looks at the whole PC: 2026-11-04 a full run failed here once while the test alone passed - most likely
+			// another old-name program for a moment (a second test run beside this one; not measured) - waited for up to 10 s
+			var now = Path.Combine(parent, Brand.Name + " Data");
+			var got = DataFolder.Adopt(parent, " Data");
+			for (var i = 0; i < 20 && got != now; i++) {
+				Thread.Sleep(500);
+				got = DataFolder.Adopt(parent, " Data");
+			}
+			Equal(now, got, "it ended: the folder is taken over");
 		} finally {
 			if (!p.HasExited) {
 				p.Kill();
@@ -2333,7 +2343,7 @@ public static class Program
 		Check(dyn.Any(h => h.Mod == "Static Trees") && dyn.All(h => h.Mod != "Plain Statics"), "a static flagged Has Tree LOD counts as a tree, a plain static does not");
 		Check(grass.All(h => h.Mod != "Unticked Plugin"), "a plugin not switched on is not counted");
 		Equal("Land Mod", LodGuide.Find(setup, mo2, "xlodgen").Single().Mod, "xLODGen: a landscape record inside a worldspace");
-		Equal(0, LodGuide.Find(setup, mo2, "snowfixer").Count, "not a LOD step");
+		Equal(0, LodGuide.Find(setup, mo2, "landscapefixer").Count, "not a LOD step");
 	}
 
 	// TexGen / DynDOLOD keep their window's values in no file, but write them into their debug log: learned from there, and a
@@ -2351,7 +2361,7 @@ public static class Program
 		Equal("100", vars["GrassHDBillboardsAmbient"], "the last run's value wins");
 		Equal(2, vars.Count, "only ListVars lines");
 		Equal(log, ToolSettings.VarsLog(exe, "texgen"), "its debug log is found beside the tool");
-		Equal(null, ToolSettings.VarsLog(exe, "snowfixer"), "a tool without one has none");
+		Equal(null, ToolSettings.VarsLog(exe, "landscapefixer"), "a tool without one has none");
 		StepRegistry.Replace(new FakeStep("texgen", (ctx, s) => {
 			Thread.Sleep(50);
 			File.WriteAllText(log, "[00:01] [81BC] [ListVars] <Debug: GrassHDBillboardsAmbient: 60>\r\n[00:01] [81BC] [ListVars] <Debug: GrassHDBillboards: True>\r\n");
@@ -2584,8 +2594,8 @@ public static class Program
 	static void T_ASecondMo2RefusesTheRun()
 	{
 		using var f = new FakeMo2();
-		StepRegistry.Replace(new FakeStep("snowfixer", (ctx, s) => throw new InvalidOperationException("must not run")));
-		f.WriteSetup(("snowfixer", []));
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => throw new InvalidOperationException("must not run")));
+		f.WriteSetup(("landscapefixer", []));
 		var before = f.Text("modlist.txt");
 		var was = SystemChecks.Mo2Paths;
 		try {
@@ -2736,5 +2746,165 @@ public static class Program
 			throw new InvalidOperationException(failed.Message, failed);
 		}
 		Check(read.Contains("Logo") && read.Any(n => n.EndsWith(".png", StringComparison.OrdinalIgnoreCase)), "the header logo and its file are among them: " + string.Join(", ", read));
+	}
+
+	// a start with no window of its own that hits an error ends with exit 1 and its error in crash.txt - no window and no box of
+	// it ever shows (2026-11-03: two snapshot tries put a crash box on his screen and waited on it forever). The real program,
+	// built beside the tests, is started on a hidden desktop so even a broken build never reaches the player's screen; its
+	// leak guard watches his screen too
+	static void T_AWindowlessErrorShowsNothing()
+	{
+		Check(File.Exists(Path.Combine(AppContext.BaseDirectory, Brand.Name + ".exe")), "the program sits beside the tests");
+		// a copy of the built program in a scratch folder of this test's own: its data folder (and the crash.txt it writes) is the
+		// copy's, removed after - nothing is left in a folder that outlives the test (CodeRabbit on PR #22)
+		// never under the temp folder: a program there keeps its data in local app data (AppPaths), so its crash.txt would be elsewhere
+		var scratch = Path.Combine(Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(AppContext.BaseDirectory))!, "SUP windowless " + Guid.NewGuid().ToString("N"));
+		foreach (var f in Directory.GetFiles(AppContext.BaseDirectory, "*", SearchOption.AllDirectories)) {
+			var rel = Path.GetRelativePath(AppContext.BaseDirectory, f);
+			if (!rel.StartsWith(Brand.Name + " Data", StringComparison.OrdinalIgnoreCase)) {
+				Directory.CreateDirectory(Path.GetDirectoryName(Path.Combine(scratch, rel))!);
+				File.Copy(f, Path.Combine(scratch, rel));
+			}
+		}
+		var exe = Path.Combine(scratch, Brand.Name + ".exe");
+		var crash = Path.Combine(scratch, Brand.Name + " Data", "crash.txt");
+		var keep = HiddenDesktop.GuardPoll;
+		HiddenDesktop.GuardPoll = TimeSpan.FromMilliseconds(50);
+		try {
+			using var desk = new HiddenDesktop("SUP-test-windowless");
+			// a folder Windows refuses to make: the snapshot's first step throws
+			using var p = desk.Start($"\"{exe}\" --snapshot \"{Path.Combine(Path.GetTempPath(), "bad<name>")}\"", AppContext.BaseDirectory);
+			// each window named the moment it is seen (gone by the time a message is written); one with no size is Windows' own
+			// input helper (UAC_InputIndicatorOverlayWnd, 0x0 - measured 2026-11-04), nothing a player can see
+			var shown = new Dictionary<nint, string>();
+			var sw = Stopwatch.StartNew();
+			while (!p.HasExited && sw.Elapsed < TimeSpan.FromSeconds(30)) {
+				foreach (var h in desk.Windows()) {
+					if (!shown.ContainsKey(h) && Native.IsWindowVisible(h) && Native.GetWindowThreadProcessId(h, out var pid) != 0 && pid == p.Id &&
+					    Native.GetWindowRect(h, out var r) && r.Right > r.Left && r.Bottom > r.Top) {
+						var inside = string.Join(" / ", Native.ChildWindows(h).Select(Native.WindowText).Where(t => t.Length > 0));
+						shown[h] = $"{Native.ClassName(h)} '{Native.WindowText(h)}' {r.Right - r.Left}x{r.Bottom - r.Top} [{inside}]";
+					}
+				}
+				Thread.Sleep(20);
+			}
+			if (!p.HasExited) {
+				Procs.KillTree(p.Id);
+			}
+			Check(desk.Leak == null, "it showed on the player's screen: " + desk.Leak);
+			Check(shown.Count == 0, "it showed " + string.Join("; ", shown.Values));
+			Check(sw.Elapsed < TimeSpan.FromSeconds(30), "it was still running after 30 s");
+			Equal(1, p.ExitCode, "its exit code");
+			Check(File.Exists(crash) && File.ReadAllText(crash).Contains("bad<name>", StringComparison.Ordinal), "its error was written in crash.txt");
+		} finally {
+			HiddenDesktop.GuardPoll = keep;
+			// the copy's files are free once it ended (a moment after its exit)
+			for (var i = 0; i < 20 && Directory.Exists(scratch); i++) {
+				try {
+					Directory.Delete(scratch, true);
+				} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+					Thread.Sleep(250);
+				}
+			}
+		}
+	}
+
+	// ------------------------------------------------------------------ his finds 2026-11-06
+	// a failed run left its outputs sitting empty in Mod Organizer: an output this tool made that holds only its meta.ini leaves the
+	// mod list and its folder moves into the run's backup; one with files, or a mod the tool did not make, stays
+	static void T_AnEmptyOutputLeavesTheModList()
+	{
+		using var f = new FakeMo2();
+		var p = ProfileOf(f);
+		p.EnsureMod("Empty Out");
+		p.EnsureMod("Full Out");
+		File.WriteAllText(Path.Combine(f.Mods, "Full Out", "Built.esp"), "x");
+		f.Mod("His Empty");
+		File.WriteAllText(Path.Combine(f.ProfileDir, "modlist.txt"), "-His Empty\r\n" + f.Text("modlist.txt"));
+		var park = Path.Combine(f.Backups, "run");
+		Check(p.TakeOutEmptyOutput("Empty Out", park), "the empty output was taken out");
+		Check(!p.TakeOutEmptyOutput("Full Out", park), "an output with files stays");
+		Check(!p.TakeOutEmptyOutput("His Empty", park), "a mod the tool did not make stays, empty or not");
+		var list = f.Text("modlist.txt");
+		Check(!list.Contains("Empty Out", StringComparison.Ordinal), "its mod-list line is gone");
+		Check(list.Contains("-Full Out", StringComparison.Ordinal) && list.Contains("-His Empty", StringComparison.Ordinal), "the others keep their lines");
+		Check(!Directory.Exists(Path.Combine(f.Mods, "Empty Out")), "its folder left the mods folder");
+		Check(File.Exists(Path.Combine(park, "empty outputs", "Empty Out", "meta.ini")), "its folder is in the run's backup, never erased");
+		Check(!p.Added.Contains("Empty Out") && p.Added.Contains("Full Out"), "it is no longer kept as an added mod");
+	}
+
+	// the run never closes Mod Organizer while the player is working in it: in front AND touched within the quiet time
+	static void T_PlayerUsingModOrganizerIsSeen()
+	{
+		int[] mo2 = [500, 600];
+		Check(Mo2Control.PlayerUsing(mo2, 600, TimeSpan.FromSeconds(5)), "in front and just touched = in use");
+		Check(!Mo2Control.PlayerUsing(mo2, 700, TimeSpan.FromSeconds(5)), "another program in front = not in use");
+		Check(!Mo2Control.PlayerUsing(mo2, 600, Mo2Control.PlayerQuiet + TimeSpan.FromSeconds(1)), "in front but left alone = not in use");
+		Check(!Mo2Control.PlayerUsing([], 0, TimeSpan.Zero), "no Mod Organizer = not in use");
+	}
+
+	// every window's frame is painted in the theme's colors: Windows reads a color as 0x00BBGGRR
+	static void T_WindowFrameColorsAreInWindowsOrder()
+	{
+		Equal(0x00332211, ToolRunner.App.WindowFrame.Ref(System.Windows.Media.Color.FromRgb(0x11, 0x22, 0x33)), "the color Windows is handed");
+		Equal(0x00FFFFFF, ToolRunner.App.WindowFrame.Ref(System.Windows.Media.Colors.White), "white");
+	}
+
+	// "the tool keeps trying to fight you when you're doing something in mo2": what the player ticks, unticks or installs
+	// while a run goes on is told apart from the run's own switches (and from a step's switch-and-put-back), so the put-back
+	// keeps it instead of undoing it
+	static void T_ThePlayersChangesDuringARunAreTold()
+	{
+		using var f = new FakeMo2();
+		var p = ProfileOf(f);
+		p.WatchForOthers();
+		p.SetMods([], ["Output A"]);
+		var was = p.OursNow();
+		var snap = p.Snapshot();
+		p.SetMods([], ["Output B"]);
+		p.Restore(snap);
+		p.OursBack(was);
+		Equal(0, p.ChangedByOthers().Count, "the run's own switches and a step's put-back are not the player's");
+		f.Mod("Players New");
+		var list = f.Text("modlist.txt").Replace("+Base Mod", "-Base Mod");
+		File.WriteAllText(Path.Combine(f.ProfileDir, "modlist.txt"), "+Players New\r\n" + list);
+		var theirs = p.ChangedByOthers();
+		Equal(2, theirs.Count, "two changes of the player's");
+		Check(theirs.TryGetValue("Base Mod", out var b) && b == '-', "the mod the player unticked");
+		Check(theirs.TryGetValue("Players New", out var n) && n == '+', "the mod the player installed and ticked");
+		Check(!theirs.ContainsKey("Output A"), "the run's own switch is not the player's");
+		Check(Profile.StatesOf(snap).ContainsKey("Base Mod") && !Profile.StatesOf(snap).ContainsKey("Players New"), "a snapshot's states read back");
+		File.WriteAllText(Path.Combine(f.ProfileDir, "modlist.txt"), "-Folder Mod Organizer Found\r\n" + f.Text("modlist.txt"));
+		Check(!p.ChangedByOthers().ContainsKey("Folder Mod Organizer Found"), "a folder Mod Organizer lists as off by itself is not the player's change");
+	}
+
+	// his order 2026-11-07: only Landscape Fixer - a setup still naming SnowFixer or AutoBlend is told so in plain words
+	static void T_OnlyLandscapeFixerIsSupported()
+	{
+		using var f = new FakeMo2();
+		var s = f.WriteSetup(("snowfixer", []), ("autoblend", []));
+		var p = s.Problems();
+		Check(p.Count(x => x.Contains("Landscape Fixer replaced it", StringComparison.Ordinal)) == 2, "both old steps named: " + string.Join(" | ", p));
+		Check(!p.Any(x => x.StartsWith("unknown step", StringComparison.Ordinal)), "not called unknown");
+		Check(!StepCatalog.Known("snowfixer") && !StepCatalog.Known("autoblend") && StepCatalog.Known("landscapefixer"), "only Landscape Fixer is a step");
+		Equal("Testing MO2.json", LandscapeFixerStep.InstanceFile(@"C:\Modding\Testing MO2\ModOrganizer.ini"), "its settings file is named after the instance's folder");
+	}
+
+	static void T_LauncherToolsAreToldThisRunsProfile()
+	{
+		var had = "{ \"Mo2ProfileName\": \"Another\", \"OutputLocation\": \"E:\\\\Other\", \"UiTheme\": \"system\" }";
+		var at = System.Text.Json.Nodes.JsonNode.Parse(ToolRunner.Steps.LauncherStep.PointedAt(had, @"C:\M", "Test", @"C:\G", @"C:\M\mods\Out"))!;
+		Equal("Test", (string?)at["Mo2ProfileName"], "this run's profile");
+		Equal(@"C:\M\mods\Out", (string?)at["OutputLocation"], "this run's output");
+		Equal("system", (string?)at["UiTheme"], "the player's other settings stay");
+		Equal("Test", (string?)System.Text.Json.Nodes.JsonNode.Parse(ToolRunner.Steps.LauncherStep.PointedAt(null, @"C:\M", "Test", @"C:\G", @"C:\O"))!["Mo2ProfileName"], "a tool never run before");
+	}
+
+	static void T_SynthesisUsesTheGameModOrganizerRuns()
+	{
+		var at = SynthesisStep.WithDataFolder("{ \"DataPathOverride\": null, \"a\": 1 }", @"C:\Game's Copy\Data");
+		Check(at.Contains(@"C:\\Game", StringComparison.Ordinal) && !at.Contains("null", StringComparison.Ordinal), "the folder written, its backslashes escaped");
+		var own = "{ \"DataPathOverride\": \"E:\\\\Mine\" }";
+		Equal(own, SynthesisStep.WithDataFolder(own, @"C:\Other"), "a data folder the player set stays");
 	}
 }

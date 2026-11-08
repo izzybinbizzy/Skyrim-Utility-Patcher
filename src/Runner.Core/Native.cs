@@ -43,6 +43,30 @@ public static partial class Native
 	[LibraryImport("user32.dll")]
 	public static partial uint GetWindowThreadProcessId(nint a_hwnd, out uint a_pid);
 
+	[LibraryImport("user32.dll")]
+	public static partial nint GetForegroundWindow();
+
+	[StructLayout(LayoutKind.Sequential)]
+	struct LastInput
+	{
+		public uint Size;
+		public uint Time;
+	}
+
+	[LibraryImport("user32.dll")]
+	[return: MarshalAs(UnmanagedType.Bool)]
+	private static partial bool GetLastInputInfo(ref LastInput a_info);
+
+	// how long since the player last touched the keyboard or mouse (any program) - TimeSpan.MaxValue when Windows cannot say
+	public static TimeSpan SinceLastInput()
+	{
+		var li = new LastInput { Size = (uint)Marshal.SizeOf<LastInput>() };
+		return GetLastInputInfo(ref li) ? TimeSpan.FromMilliseconds(unchecked((uint)Environment.TickCount - li.Time)) : TimeSpan.MaxValue;
+	}
+
+	// the process that owns the window in front (0 when none)
+	public static int ForegroundPid() => GetWindowThreadProcessId(GetForegroundWindow(), out var pid) == 0 ? 0 : (int)pid;
+
 	[DllImport("user32.dll", EntryPoint = "GetWindowTextW", CharSet = CharSet.Unicode)]
 	static extern int GetWindowTextW(nint a_hwnd, [Out] char[] a_text, int a_max);
 

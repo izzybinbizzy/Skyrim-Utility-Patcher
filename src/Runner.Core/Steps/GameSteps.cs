@@ -426,7 +426,10 @@ public sealed class ShaderStep : IStep
 						a_ctx.Cancel.ThrowIfCancellationRequested();
 						var log = InGame.NewestShaderLog(logs);
 						var logFresh = log != null && File.GetLastWriteTimeUtc(log) >= started.AddSeconds(-5);
-						// the shader mod must say it runs within a few minutes (it stands down beside a DLL it refuses - 2026-10-09)
+						var n = Files.CountFiles(owCache);
+						// the shader mod must show it runs within a few minutes (it stands down beside a DLL it refuses - 2026-10-09).
+						// Shaders arriving in the cache ARE that sign: a log can be elsewhere (SKSE's log folder moved) or late - a
+						// player's run of 2026-11-04 failed here with 101 shaders already written
 						if (!sane && sw.Elapsed > TimeSpan.FromSeconds(45)) {
 							var text = logFresh ? Files.ReadSharedText(log!) : "";
 							var bad = Regex.Match(text, @"^.*(Incompatible DLL|Remove it to use|disabled itself|will not run).*$", RegexOptions.Multiline);
@@ -434,14 +437,17 @@ public sealed class ShaderStep : IStep
 								Procs.KillTree(g.Id);
 								throw new StepFailedException("the shader mod stood down at start - nothing will compile: " + bad.Value.Trim());
 							}
-							if (logFresh && Regex.IsMatch(text, "Loading Settings Complete|Loaded theme|Shader compilation started|ShaderTiming")) {
+							if (n > 0 || logFresh && Regex.IsMatch(text, "Loading Settings Complete|Loaded theme|Shader compilation started|ShaderTiming")) {
 								sane = true;
 							} else if (sw.Elapsed > TimeSpan.FromMinutes(a_s.Int("sanity_min", 3))) {
+								// never blamed on the shader mod while something else holds the game: what is on screen is named
+								var shows = InGame.WhatTheGameShows(a_ctx, started);
 								Procs.KillTree(g.Id);
-								throw new StepFailedException($"the shader mod wrote no log this start in {a_s.Int("sanity_min", 3)} minutes - is it ticked and loading?");
+								throw new StepFailedException(shows != "" ?
+									$"the game stopped at something this step does not know - {shows}. Answer or close it in game once (or turn off the mod that shows it), then run again from this step" :
+									$"the shader mod gave no sign of running in {a_s.Int("sanity_min", 3)} minutes (no log, no shaders written) - is it ticked and loading?");
 							}
 						}
-						var n = Files.CountFiles(owCache);
 						if (n != lastN) {
 							lastN = n;
 							lastChange.Restart();
@@ -468,11 +474,14 @@ public sealed class ShaderStep : IStep
 							Procs.KillTree(g.Id);
 							throw new StepFailedException($"the shader cache passed its {a_s.Deadline(180).TotalMinutes:0} minute limit");
 						}
-						Thread.Sleep(10000);
+						// a Stop ends the wait at once (the game is ended by the stop itself)
+						a_ctx.Cancel.WaitHandle.WaitOne(10000);
 					}
 					if (result != null) {
 						break;
 					}
+					// a game ended by Stop is never started again
+					a_ctx.Cancel.ThrowIfCancellationRequested();
 					if (++restarts > a_s.Int("max_restarts", 3)) {
 						throw new StepFailedException($"the game stopped {restarts} times while compiling shaders");
 					}
