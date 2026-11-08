@@ -3449,6 +3449,9 @@ public static class Program
 			ProgramUpdate.SetOff(dir, false);
 			fail = true;
 			Equal(null, Ask("1.0", now.AddDays(4)), "a failed look says nothing");
+			var afterFail = looks;
+			Equal(null, Ask("1.0", now.AddDays(4).AddHours(3)), "still nothing the same day");
+			Equal(afterFail, looks, "a failed look counts as the day's look - never asked again each start");
 			Check(ProgramUpdate.Page.StartsWith("https://", StringComparison.Ordinal), "its download page is a web address");
 		} finally {
 			ProgramUpdate.Probe = null;

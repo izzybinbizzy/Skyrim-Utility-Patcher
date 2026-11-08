@@ -73,9 +73,9 @@ public static class Cli
 	{
 		var file = Opt(a_args, "--setup") ?? throw new ArgumentException("--setup <file> is needed");
 		var setup = Setup.Load(Path.GetFullPath(file));
-		var outFile = SetupShare.Write(setup, Opt(a_args, "--out") is { } o ? Path.GetFullPath(o) : Path.Combine(AppPaths.Data, "Shared setups"), MainWindow.AppVersion);
+		var (outFile, removed) = SetupShare.Write(setup, Opt(a_args, "--out") is { } o ? Path.GetFullPath(o) : Path.Combine(AppPaths.Data, "Shared setups"), MainWindow.AppVersion);
 		Console.WriteLine($"shared copy: {outFile}");
-		foreach (var r in SetupShare.Share(setup, MainWindow.AppVersion).Removed) {
+		foreach (var r in removed) {
 			Console.WriteLine("  taken out: " + r);
 		}
 		return 0;

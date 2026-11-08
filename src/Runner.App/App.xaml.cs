@@ -9,6 +9,9 @@ namespace ToolRunner.App;
 //   "Skyrim Utility Patcher.exe" --snapshot <folder>   the window drawn off screen into <folder>\*.png (nothing is shown)
 public partial class App : Application
 {
+	// started for the command line or the off-screen pictures (no window of the player's): nothing goes online then
+	public static bool Headless { get; private set; }
+
 	// anything unexpected: written to the data folder's "crash.txt" and said in a message, never Windows' crash box
 	public static void LogCrash(Exception a_e)
 	{
@@ -25,6 +28,7 @@ public partial class App : Application
 		// with no window of its own (the command line, the off-screen pictures) an error ends the program with exit code 1: a box
 		// there would sit on the player's screen with nothing behind it, and the program would wait on it forever
 		var headless = Cli.Handles(a_e.Args) || a_e.Args is ["--snapshot" or "--page", _];
+		Headless = headless;
 		DispatcherUnhandledException += (_, e) => {
 			LogCrash(e.Exception);
 			e.Handled = true;

@@ -9,8 +9,8 @@ namespace ToolRunner;
 // player's Windows and PC names are masked in what is left. The copy says what the importing player sets themselves.
 public static partial class SetupShare
 {
-	// a drive path (C:\...), a UNC path (\\server\...) or a %VARIABLE% path, anywhere in a value
-	[GeneratedRegex(@"(?i)(\b[a-z]:[\\/]|\\\\[^\\\s]+\\|%[a-z_]+%[\\/])")]
+	// a drive path (C:\... or a bare C:), a UNC path (\\server\...), a %VARIABLE% path or a home path (~\...), anywhere in a value
+	[GeneratedRegex(@"(?i)(\b[a-z]:([\\/]|$|\s)|\\\\[^\\\s]+\\|%[a-z_]+%[\\/]|(^|\s|"")~[\\/])")]
 	private static partial Regex PathLike();
 
 	public static bool HoldsPath(string a_value) => PathLike().IsMatch(a_value);
@@ -78,14 +78,14 @@ public static partial class SetupShare
 		}
 	}
 
-	// writes the shared copy beside a_outDir as "<name> (shared).json"; returns its path
-	public static string Write(Setup a_setup, string a_outDir, string a_version)
+	// writes the shared copy into a_outDir as "<name> (shared).json"; returns its path and what was taken out
+	public static (string File, List<string> Removed) Write(Setup a_setup, string a_outDir, string a_version)
 	{
 		var r = Share(a_setup, a_version);
 		Directory.CreateDirectory(a_outDir);
 		var name = string.Concat(a_setup.Name.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '-' : c)).Trim();
 		var file = Path.Combine(a_outDir, $"{(name == "" ? "setup" : name)} (shared).json");
 		Files.WriteAtomic(file, r.Setup.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
-		return file;
+		return (file, r.Removed);
 	}
 }

@@ -9,6 +9,19 @@ public static class SaveHeader
 {
 	const string Magic = "TESV_SAVEGAME";
 
+	// the Windows Western code page the game writes names in (Latin-1 only where code page 1252 cannot be had)
+	static readonly Encoding Western = MakeWestern();
+
+	static Encoding MakeWestern()
+	{
+		try {
+			Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+			return Encoding.GetEncoding(1252);
+		} catch (Exception e) when (e is ArgumentException or NotSupportedException) {
+			return Encoding.Latin1;
+		}
+	}
+
 	// the player's name in a save, or null when the file is no save this reads (locked, cut short, another game's)
 	public static string? PlayerName(string a_file)
 	{
@@ -25,8 +38,7 @@ public static class SaveHeader
 			if (len == 0 || len > 256 || fs.Position + len > fs.Length) {
 				return null;
 			}
-			// the game writes its names in the Windows Western code page (1252); Latin-1 reads the same letters
-			var name = Encoding.Latin1.GetString(r.ReadBytes(len)).Trim();
+			var name = Western.GetString(r.ReadBytes(len)).Trim();
 			return name == "" ? null : name;
 		} catch (Exception e) when (e is IOException or UnauthorizedAccessException or EndOfStreamException) {
 			return null;

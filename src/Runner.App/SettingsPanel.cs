@@ -233,8 +233,7 @@ public static class SettingsPanel
 				return;
 			}
 			try {
-				var file = SetupShare.Write(current, Path.Combine(AppPaths.Data, "Shared setups"), MainWindow.AppVersion);
-				var gone = SetupShare.Share(current, MainWindow.AppVersion).Removed;
+				var (file, gone) = SetupShare.Write(current, Path.Combine(AppPaths.Data, "Shared setups"), MainWindow.AppVersion);
 				if (Ask.Show(a_w, "Shared copy made", $"It is ready: {Path.GetFileName(file)}\n\nTaken out (the other player sets these themselves):\n" +
 				    (gone.Count == 0 ? "nothing" : string.Join("\n", gone.Select(g => "- " + g))) + "\n\nThey bring it in with the import command (see the readme).",
 				    "Show the file", "Close")) {

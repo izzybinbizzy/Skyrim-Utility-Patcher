@@ -61,11 +61,13 @@ public static class ProgramUpdate
 			return null;
 		}
 		var newest = state?.Newest ?? "";
-		var due = state == null || newest == "" || a_now < state.At || a_now - state.At >= Every;
+		var due = state == null || a_now < state.At || a_now - state.At >= Every;
 		if (due) {
 			try {
 				newest = await (Probe?.Invoke(a_ct) ?? ToolUpdates.Newest(NexusId, GitHubRepo, a_ct)).ConfigureAwait(false);
 			} catch (Exception e) when (e is HttpRequestException or TaskCanceledException or InvalidOperationException or JsonException or NotSupportedException) {
+				// a look that failed (offline, no release yet) counts as the day's look too: asked again tomorrow, never each start
+				Write(a_dataDir, (state ?? new State(a_now, "")) with { At = a_now, Newest = "" });
 				return null;
 			}
 			state = (state ?? new State(a_now, newest)) with { At = a_now, Newest = newest };

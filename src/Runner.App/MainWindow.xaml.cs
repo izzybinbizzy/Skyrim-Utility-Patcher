@@ -49,7 +49,12 @@ public partial class MainWindow : Window
 		// last run is not read out as news
 		Loaded += (_, _) => Dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, () => _vm.PropertyChanged += Announce);
 		// his checklist 471: once the window is up, at most once a day, whether a newer version of the program is out
-		Loaded += async (_, _) => await _vm.LookForNewVersion(AppVersion);
+		// (never for the off-screen pictures: no web question, no file written into that data folder, no banner in a picture)
+		Loaded += async (_, _) => {
+			if (!App.Headless) {
+				await _vm.LookForNewVersion(AppVersion);
+			}
+		};
 		Theme.Applied += _vm.Repaint;
 	}
 
