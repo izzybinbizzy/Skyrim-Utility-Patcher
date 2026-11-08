@@ -1666,6 +1666,119 @@ public static class Program
 		Check(!made.Steps.Any(s => s.Key is "easynpc" or "upf"), "and none for what the list does not hold");
 	}
 
+	// his checklist 436: LOOT's list goes onto an order file; what LOOT did not see stays below the plugin it was below, and never above one of its masters
+	static void T_LootsListIsLaidOntoAnOrderFile()
+	{
+		IReadOnlyList<string> None(string a_) => [];
+		Equal("# made by it|C.esp|*B.esp|*A.esp|*Out.esp|*Patch.esp",
+			string.Join("|", Profile.InLootOrder(["# made by it", "*A.esp", "*Out.esp", "*B.esp", "C.esp", "*Patch.esp"], ["c.esp", "B.esp", "A.esp", "Patch.esp"], None)),
+			"sorted, the ticks kept, the plugin it did not see below the one it was below");
+		Equal("*Top.esp|*A.esp", string.Join("|", Profile.InLootOrder(["*Top.esp", "*A.esp"], ["A.esp"], None)), "one above everything stays on top");
+		Equal("*A.esp", string.Join("|", Profile.InLootOrder(["*A.esp"], ["A.esp", "NotInTheFile.esp"], None)), "a plugin the file does not list is not added");
+		IReadOnlyList<string> OutNeedsM(string a_p) => a_p == "out.esp" ? ["M.esp"] : [];
+		Equal("*K.esp|*M.esp|*Out.esp", string.Join("|", Profile.InLootOrder(["*M.esp", "*K.esp", "*Out.esp"], ["K.esp", "M.esp"], OutNeedsM)),
+			"it never lands above its master");
+		IReadOnlyList<string> Chain(string a_p) => a_p switch { "x.esp" => ["M.esp"], "y.esp" => ["X.esp"], _ => [] };
+		Equal("*K.esp|*M.esp|*X.esp|*Y.esp", string.Join("|", Profile.InLootOrder(["*M.esp", "*K.esp", "*X.esp", "*Y.esp"], ["K.esp", "M.esp"], Chain)),
+			"nor does one that needs it in turn");
+	}
+
+	// the sort stays through the run's put-back, a failed run keeps it like a finished step, and only Undo takes it back
+	static void T_LootsSortStaysUntilUndo()
+	{
+		using var f = new FakeMo2();
+		var loadorder = f.Text("loadorder.txt");
+		var plugins = f.Text("plugins.txt");
+		StepRegistry.Replace(new FakeStep(LootStep.StepKey, (ctx, s) => {
+			var sorted = Path.Combine(ctx.Journal.Folder, LootStep.SortedFile);
+			File.WriteAllText(sorted, "# made by it\r\nSkyrim.esm\r\nMasterMod.esm\r\nOld.esp\r\nBaseMod.esp\r\n");
+			LootStep.Lay(ctx, sorted, Path.Combine(ctx.Journal.Folder, LootStep.ReportFile));
+		}));
+		var seen = "";
+		StepRegistry.Replace(new FakeStep("synthesis", (ctx, s) => {
+			seen = string.Join("|", File.ReadAllLines(Path.Combine(ctx.Mo2.ProfileDir("Test"), "loadorder.txt")).Take(4));
+			WriteOutput(ctx, "synthesis", "Output A", "OutA.esp");
+		}));
+		f.WriteSetup((LootStep.StepKey, []), ("synthesis", new JsonObject { ["output_mod"] = "Output A" }));
+		Equal(RunState.Finished, Runner.Run(new RunRequest(f.SetupFile, f.Data)).State, "the run finished");
+		Equal("Skyrim.esm|MasterMod.esm|Old.esp|OutA.esp", seen, "the next tool builds on LOOT's order");
+		const string Sorted = "Skyrim.esm|MasterMod.esm|Old.esp|OutA.esp|OutB.esp|NeedsB.esp|BaseMod.esp";
+		Equal(Sorted, string.Join("|", File.ReadAllLines(Path.Combine(f.ProfileDir, "loadorder.txt"))), "it stays after the put-back");
+		Equal("# comment|*MasterMod.esm|*Old.esp|*OutA.esp|*OutB.esp|*NeedsB.esp|*BaseMod.esp", string.Join("|", File.ReadAllLines(Path.Combine(f.ProfileDir, "plugins.txt"))), "in both files, every tick kept");
+		var j = Journal.All(Runner.RunsDir(f.Data)).First();
+		Check(RunUndo.LeftSomething(j), "a run that only sorted still has something to undo");
+		Equal(RunState.Restored, Runner.Undo(Journal.Load(j.Folder)).State, "undone");
+		Equal(loadorder, f.Text("loadorder.txt"), "Undo brings the load order back");
+		Equal(plugins, f.Text("plugins.txt"), "and the plugin list");
+
+		StepRegistry.Replace(new FakeStep("synthesis", (ctx, s) => throw new StepFailedException("it broke")));
+		Check(Runner.Run(new RunRequest(f.SetupFile, f.Data)).State == RunState.Failed, "a tool fails after the sort");
+		Equal(Sorted, string.Join("|", File.ReadAllLines(Path.Combine(f.ProfileDir, "loadorder.txt"))), "the finished sort is kept, so running on from there builds on it");
+
+		f.WriteSetup((LootStep.StepKey, []));
+		StepRegistry.Replace(new FakeStep(LootStep.StepKey, (ctx, s) => {
+			var sorted = Path.Combine(ctx.Journal.Folder, LootStep.SortedFile);
+			File.WriteAllText(sorted, "Skyrim.esm\r\n");
+			LootStep.Lay(ctx, sorted, Path.Combine(ctx.Journal.Folder, LootStep.ReportFile));
+		}));
+		var blind = Runner.Run(new RunRequest(f.SetupFile, f.Data));
+		Check(blind.State == RunState.Failed && blind.Verdict.Contains("did not see", StringComparison.Ordinal), "a list that lacks ticked plugins is refused: " + blind.Verdict);
+		Equal(Sorted, string.Join("|", File.ReadAllLines(Path.Combine(f.ProfileDir, "loadorder.txt"))), "and changes nothing");
+	}
+
+	// what lootcli is told, what its report is read for, and where the step comes from
+	static void T_LootIsToldWhatMo2TellsIt()
+	{
+		using var f = new FakeMo2();
+		var mo2 = Mo2Instance.Load(f.Exe, f.Instance);
+		var args = LootStep.Arguments(mo2, "Test", @"C:\a b\sorted.txt", @"C:\a b\report.json", false);
+		foreach (var part in new[] { "--game skyrimse ", $"--gamePath \"{mo2.GameDir}\"", $"--pluginListPath \"{Path.Combine(f.ProfileDir, "loadorder.txt")}\"", "--out \"C:\\a b\\report.json\"", "--pluginListOutputPath \"C:\\a b\\sorted.txt\"", "--language en" }) {
+			Check(args.Contains(part, StringComparison.Ordinal), part + " in: " + args);
+		}
+		Check(!args.Contains("--skipUpdateMasterlist", StringComparison.Ordinal), "the masterlist is updated on the first try");
+		Check(LootStep.Arguments(mo2, "Test", "s", "r", true).EndsWith(" --skipUpdateMasterlist", StringComparison.Ordinal), "and not on the second");
+
+		var report = Path.Combine(f.Root, "report.json");
+		File.WriteAllText(report, """
+			{ "messages": [ { "type": "error", "text": "general trouble" }, { "type": "info", "text": "a tip" } ],
+			  "plugins": [
+				{ "name": "A.esp", "missingMasters": [ "Gone.esm" ], "incompatibilities": [ { "name": "B.esp", "displayName": "B" } ], "messages": [ { "type": "error", "text": "bad" }, { "type": "warn", "text": "maybe" } ] },
+				{ "name": "C.esp", "isMaster": true } ] }
+			""");
+		Equal("LOOT: general trouble|LOOT: A.esp is missing Gone.esm|LOOT: A.esp does not go with B.esp|LOOT: A.esp: bad", string.Join("|", LootStep.ReportNotes(report)), "what is wrong, not its advice");
+		var many = new JsonArray();
+		for (var i = 0; i < 20; ++i) {
+			many.Add(new JsonObject { ["name"] = $"P{i}.esp", ["missingMasters"] = new JsonArray("Gone.esm") });
+		}
+		File.WriteAllText(report, new JsonObject { ["plugins"] = many }.ToJsonString());
+		var capped = LootStep.ReportNotes(report);
+		Equal(LootStep.NotesShown + 1, capped.Count, "a long report is capped");
+		Check(capped[^1].Contains("and 12 more", StringComparison.Ordinal), capped[^1]);
+		File.WriteAllText(report, "not json");
+		Equal(0, LootStep.ReportNotes(report).Count, "a report that does not read says nothing");
+		Equal(0, LootStep.ReportNotes(report + " gone").Count, "nor does one that is not there");
+
+		var sorted = Path.Combine(f.Root, "sorted.txt");
+		File.WriteAllText(sorted, "# made by it\r\nA.esp\r\n\r\n  B.esp  \nC.esp");
+		Equal("A.esp|B.esp|C.esp", string.Join("|", LootStep.ReadSorted(sorted)), "its list read, whatever its line ends");
+		Equal(0, LootStep.ReadSorted(sorted + " gone").Count, "no list, no lines");
+		Equal("OutA.esp", LootStep.NotSeen(ProfileOf(f), ["Skyrim.esm", "MasterMod.esm", "BaseMod.esp", "Old.esp", "OutB.esp", "NeedsB.esp"]).Single(), "a ticked plugin it did not list is named");
+
+		var setup = f.WriteSetup((LootStep.StepKey, []));
+		var c = new CheckContext { Setup = setup, Mo2 = mo2, Profile = ProfileOf(f) };
+		Check(new LootStep().Check(c, new StepSettings([])).Single().Blocking, "Mod Organizer without its LOOT stops the pre-check");
+		Check(!SetupMaker.Make(f.Exe, f.Instance, "Test", "without", f.Data).Steps.Any(s => s.Key == LootStep.StepKey), "and a new setup has no such step");
+		Directory.CreateDirectory(Path.GetDirectoryName(LootStep.Program(mo2))!);
+		File.WriteAllText(LootStep.Program(mo2), "");
+		Check(!new LootStep().Check(c, new StepSettings([])).Any(), "with it, nothing stops");
+		Check(!SetupMaker.Make(f.Exe, f.Instance, "Test", "with", f.Data).Steps.Single(s => s.Key == LootStep.StepKey).On, "a new setup has it switched off: it changes the player's load order");
+
+		var order = StepCatalog.DefaultOrder.ToList();
+		Check(order.IndexOf("cleansave") < order.IndexOf(LootStep.StepKey) && order.IndexOf(LootStep.StepKey) < order.IndexOf("synthesis"), "after the clean save, before the first tool");
+		Check(StepCatalog.OrderWarnings(["dyndolod", LootStep.StepKey]).Count == 1, "a tool before the sort is warned about");
+		Check(RunPreview.Build(setup, mo2, setup.EnabledSteps).Lines(_ => null).Any(l => l.Contains("LOOT sorts your plugins", StringComparison.Ordinal)), "the preview says so");
+	}
+
 	// a command whose program path is quoted (a path with spaces) runs as written - cmd's own quoting, not Windows' escaping
 	// (2026-10-27: the trial's after-run command failed with '\"C:\...python.exe\"' is not recognized)
 	static void T_CommandWithAQuotedPathRuns()

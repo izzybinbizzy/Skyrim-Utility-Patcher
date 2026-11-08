@@ -1014,7 +1014,7 @@ public sealed partial class MainViewModel : Observable
 
 	// each step's usual minutes (the old updater's own logs, 30 Sep - 26 Oct 2026) - the made-up run of the pictures only
 	internal static readonly Dictionary<string, double> DemoMinutes = new() {
-		["shaders"] = 28, ["cleansave"] = 7.5, ["easynpc"] = 3, ["upf"] = 3, ["smash"] = 3, ["reqtificator"] = 3, ["wryebash"] = 3, ["synthesis"] = 1.3, ["landscapefixer"] = 9, ["pgpatcher"] = 4,
+		["shaders"] = 28, ["cleansave"] = 7.5, ["loot"] = 0.5, ["easynpc"] = 3, ["upf"] = 3, ["smash"] = 3, ["reqtificator"] = 3, ["wryebash"] = 3, ["synthesis"] = 1.3, ["landscapefixer"] = 9, ["pgpatcher"] = 4,
 		["xlodgen"] = 17.5, ["acmos"] = 1.5, ["grass"] = 0.8, ["treelodgen"] = 2.3, ["texgen"] = 5.5, ["dyndolod"] = 24, ["anvillod"] = 24,
 		["pandora"] = 0.5, ["playsave"] = 7,
 	};

@@ -61,6 +61,10 @@ public sealed class RunPreview
 		if (total > TimeSpan.Zero) {
 			l.Add($"About {Minutes(total)} in all{(untimed > 0 ? $", plus {untimed} step(s) never timed yet" : "")}.");
 		}
+		if (Steps.Any(s => s.Key == "loot")) {
+			l.Add("");
+			l.Add("LOOT sorts your plugins before the first tool. The new order stays; Undo the last run takes it back.");
+		}
 		if (OffForTheRun.Count > 0) {
 			l.Add("");
 			l.Add("Switched OFF while the run goes, back on when it ends (a remade output as soon as its tool is done):");

@@ -87,6 +87,8 @@ public sealed class Journal
 	public bool StopAfterStep { get; set; }
 	public List<StepRecord> Steps { get; set; } = [];
 	public List<string> Built { get; set; } = [];
+	// LOOT's sort finished: its list is in this run's folder (LootStep.SortedFile) and every put-back of this run keeps it
+	public bool Sorted { get; set; }
 	public List<string> Retire { get; set; } = [];
 	public List<string> Added { get; set; } = [];
 	public List<ParkRecord> Parked { get; set; } = [];

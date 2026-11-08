@@ -408,6 +408,66 @@ public sealed class Profile(Mo2Instance a_mo2, string a_name, Func<bool> a_mo2Ru
 		return moved;
 	}
 
+	// LOOT's sorted list laid onto plugins.txt and loadorder.txt; the ticks stay. Returns the files that changed
+	public List<string> SortPlugins(IReadOnlyList<string> a_sorted)
+	{
+		MustBeClosed("the plugin list");
+		var paths = PluginPaths();
+		IReadOnlyList<string> MastersOf(string a_plugin) => paths.TryGetValue(a_plugin, out var p) && File.Exists(p) ? Plugins.Masters(p) : [];
+		var changed = new List<string>();
+		foreach (var fn in new[] { "plugins.txt", "loadorder.txt" }) {
+			var p = Path.Combine(Dir, fn);
+			if (!File.Exists(p)) {
+				continue;
+			}
+			var (lines, nl, bom) = ReadPluginFile(p);
+			var sorted = InLootOrder(lines, a_sorted, MastersOf);
+			if (!sorted.SequenceEqual(lines)) {
+				WritePluginFile(p, sorted, nl, bom);
+				changed.Add(fn);
+			}
+		}
+		return changed;
+	}
+
+	// a plugin LOOT did not see (its mod is off for this run, or no file is behind the line) stays right below the plugin it was below, and never above one of
+	// its masters; a plugin the file does not list is not added
+	public static List<string> InLootOrder(IReadOnlyList<string> a_lines, IReadOnlyList<string> a_sorted, Func<string, IReadOnlyList<string>> a_masters)
+	{
+		var rank = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+		foreach (var plugin in a_sorted) {
+			rank.TryAdd(plugin, rank.Count);
+		}
+		var entries = a_lines.Where(l => !l.StartsWith('#')).ToList();
+		var followers = new Dictionary<string, List<string>>();
+		var above = "";
+		foreach (var line in entries) {
+			if (rank.ContainsKey(Bare(line))) {
+				above = Bare(line);
+			} else if (followers.TryGetValue(above, out var list)) {
+				list.Add(line);
+			} else {
+				followers[above] = [line];
+			}
+		}
+		var result = new List<string>(entries.Count);
+		result.AddRange(followers.GetValueOrDefault("") ?? []);
+		foreach (var line in entries.Where(l => rank.ContainsKey(Bare(l))).OrderBy(l => rank[Bare(l)])) {
+			result.Add(line);
+			result.AddRange(followers.GetValueOrDefault(Bare(line)) ?? []);
+		}
+		// in the file's own order: a master that also moves has gone first
+		foreach (var line in entries.Where(l => !rank.ContainsKey(Bare(l)))) {
+			var lastMaster = a_masters(Bare(line)).Select(m => result.FindIndex(l => string.Equals(Bare(l), m, StringComparison.OrdinalIgnoreCase))).DefaultIfEmpty(-1).Max();
+			var at = result.IndexOf(line);
+			if (lastMaster > at) {
+				result.RemoveAt(at);
+				result.Insert(lastMaster, line);
+			}
+		}
+		return [.. a_lines.Where(l => l.StartsWith('#')), .. result];
+	}
+
 	// tick the plugins of these (just switched on) mods; a plugin the files do not list yet gets a place in BOTH files
 	// (the setup's place_after anchor, else masters at the end of the master block, else the very end) - left to MO2 it
 	// moves a neighbour
