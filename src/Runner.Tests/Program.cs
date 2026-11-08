@@ -4454,6 +4454,43 @@ public static class Program
 		Equal(RootBuilderAddOn.State.Current, RootBuilderAddOn.StateOf(mo2), "and brought level");
 	}
 
+	// his checklist 467: the tools on the PC named against Mod Organizer's list, the found ones added to it with every other line left alone
+	static void T_TheFirstStartHelperFindsTools()
+	{
+		using var f = new FakeMo2();
+		foreach (var (mod, exe) in new[] { ("DynDOLOD Tool", "DynDOLODx64.exe"), ("Far, away", "Synthesis.exe"), ("Tool Mod", Path.Combine("sub", "folder", "PGPatcher.exe")) }) {
+			Directory.CreateDirectory(Path.GetDirectoryName(Path.Combine(f.Mods, mod, exe))!);
+			File.WriteAllText(Path.Combine(f.Mods, mod, exe), "");
+		}
+		var mo2 = Mo2Instance.Load(f.Exe, f.Instance);
+		var iniBefore = File.ReadAllText(mo2.IniPath);
+		var rows = ToolFinder.Find(mo2, [f.Mods]);
+		ToolFinder.Row Of(List<ToolFinder.Row> a_rows, string a_step) => a_rows.Single(r => r.Tool.Step == a_step);
+		Equal(ToolFinder.Found.NotListed, Of(rows, "dyndolod").State, "on the PC, not in the list");
+		Equal(ToolFinder.Found.NotListed, Of(rows, "pgpatcher").State, "a tool in a mod's sub folder too");
+		Equal(ToolFinder.Found.Missing, Of(rows, "pandora").State, "not on the PC");
+		Check(Of(rows, "pandora").Tool.Page.StartsWith("https://", StringComparison.Ordinal) && Of(rows, "pandora").Tool.Where != "", "says where to get it and where it goes");
+		Equal(3, ToolFinder.AddFound(mo2, rows).Count, "the found ones added");
+		Check(File.ReadAllText(ToolFinder.BackupOf(mo2)) == iniBefore, "the list as it was is kept beside it");
+		var after = Mo2Instance.Load(f.Exe, f.Instance);
+		Equal("-sse", after.Executable("DynDOLOD")!.Arguments, "the xEdit family names its game");
+		Check(Files.SamePath(after.Executable("Synthesis")!.Binary, Path.Combine(f.Mods, "Far, away", "Synthesis.exe")), "a path with a comma reads back whole");
+		Check(after.Executable("SKSE") != null && after.SelectedProfile == "Test", "what was there stays");
+		Check(File.ReadAllText(after.IniPath).Contains("[Settings]", StringComparison.Ordinal), "and the sections after it");
+		var again = ToolFinder.Find(after, [f.Mods]);
+		Equal(ToolFinder.Found.Listed, Of(again, "dyndolod").State, "now in the list");
+		Equal(0, ToolFinder.AddFound(after, again).Count, "nothing to add twice");
+		// a title already taken by something else; a list with no section yet
+		Directory.CreateDirectory(Path.Combine(f.Mods, "Other"));
+		File.WriteAllText(Path.Combine(f.Mods, "Other", "TexGenx64.exe"), "");
+		File.WriteAllText(after.IniPath, File.ReadAllText(after.IniPath).Replace(@"title=SKSE", @"title=TexGen", StringComparison.Ordinal));
+		var clash = Mo2Instance.Load(f.Exe, f.Instance);
+		Equal("TexGen (2)", ToolFinder.AddFound(clash, ToolFinder.Find(clash, [f.Mods])).Single(), "a title in use is left to its owner");
+		var made = ToolFinder.WithExecutable("[General]\nx=1\n", "A", Path.Combine(f.Root, "a.exe"), "");
+		var read = Mo2Instance.ReadQtIni(made);
+		Check(read["General"]["x"] == "1" && read["customExecutables"]["size"] == "1" && read["customExecutables"][@"1\title"] == "A", "a list that was not there is made: " + made);
+	}
+
 	static void T_EveryToolStepHasItsHelpPage()
 	{
 		foreach (var s in StepCatalog.All.Where(s => s.Key is not ("shaders" or "xlodgen"))) {

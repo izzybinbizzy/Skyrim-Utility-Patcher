@@ -11,12 +11,13 @@ namespace ToolRunner.App;
 //   "Skyrim Utility Patcher.exe" stop | stop-after                                                     ask the running run to stop
 //   "Skyrim Utility Patcher.exe" updates --setup <file>                                                its tools' newest versions (asks their pages)
 //   "Skyrim Utility Patcher.exe" changes --setup <file> [--look]                                       what Mod Organizer changed, newest first
+//   "Skyrim Utility Patcher.exe" tools --mo2 <ModOrganizer.exe> [--instance <folder>] [--add]          which tools it finds, where to get the rest; --add puts the found ones in Mod Organizer's list
 //   "Skyrim Utility Patcher.exe" bugreport [--setup <file>]                                            one zip for a bug report (the setup's last run), names masked
 //   "Skyrim Utility Patcher.exe" share --setup <file> [--out <folder>]                                 a copy of the setup to share: its paths and commands taken out
 // exit 0 = finished / clean, 1 = failed / refused, 2 = stopped, 3 = bad arguments, 4 = (updates) a tool has a newer version
 public static class Cli
 {
-	public static bool Handles(string[] a_args) => a_args.Length > 0 && a_args[0] is "run" or "retry" or "queue" or "check" or "preview" or "lod" or "restore" or "stop" or "stop-after" or "import" or "updates" or "changes" or "bugreport" or "share" or "--help" or "-h" or "/?";
+	public static bool Handles(string[] a_args) => a_args.Length > 0 && a_args[0] is "tools" or "run" or "retry" or "queue" or "check" or "preview" or "lod" or "restore" or "stop" or "stop-after" or "import" or "updates" or "changes" or "bugreport" or "share" or "--help" or "-h" or "/?";
 
 	static string? Opt(string[] a_args, string a_name)
 	{
@@ -48,6 +49,7 @@ public static class Cli
 				"updates" => Updates(a_args),
 				"changes" => Changes(a_args),
 				"bugreport" => BugReportCmd(a_args),
+				"tools" => ToolsCmd(a_args),
 				"share" => ShareCmd(a_args),
 				_ => Help(),
 			};
@@ -279,6 +281,29 @@ public static class Cli
 		Console.WriteLine(since == null ? "not watched yet - a run or a look starts it" : $"watched since {since.Value.ToString("yyyy-MM-dd HH:mm", InvariantCulture)}");
 		foreach (var r in Enumerable.Reverse(Mo2Changes.Shown(Mo2Changes.Read(dir), setup.ChangesHideProfiles, setup.ChangesHideMods))) {
 			Console.WriteLine($"{r.When.ToString("yyyy-MM-dd HH:mm", InvariantCulture)}  {r.Mod}: {r.What}  [{(r.Profiles.Count == 0 ? "Mod Organizer" : string.Join(", ", r.Profiles))}]  {r.Who}");
+		}
+		return 0;
+	}
+
+	// the first-start helper: tools --mo2 <ModOrganizer.exe> [--instance <folder>] [--add]
+	static int ToolsCmd(string[] a_args)
+	{
+		if (Opt(a_args, "--mo2") is not { } exe) {
+			Console.WriteLine("tools needs --mo2 <ModOrganizer.exe>");
+			return 3;
+		}
+		var mo2 = Mo2Instance.Load(exe, Opt(a_args, "--instance"));
+		var rows = ToolFinder.Find(mo2);
+		foreach (var r in rows) {
+			Console.WriteLine(r.State switch {
+				ToolFinder.Found.Listed => $"{r.Tool.Name}: in the list",
+				ToolFinder.Found.NotListed => $"{r.Tool.Name}: found, not in the list - {r.Binary}",
+				_ => $"{r.Tool.Name}: not found - {r.Tool.Where}: {r.Tool.Page}",
+			});
+		}
+		if (a_args.Contains("--add")) {
+			var added = ToolFinder.AddFound(mo2, rows);
+			Console.WriteLine(added.Count == 0 ? "nothing to add" : "added to Mod Organizer's list: " + string.Join(", ", added));
 		}
 		return 0;
 	}
