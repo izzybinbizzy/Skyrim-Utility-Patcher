@@ -128,6 +128,7 @@ public partial class App : Application
 	static int Page(string a_dir)
 	{
 		Directory.CreateDirectory(a_dir);
+		Theme.Apply(Theme.Default, false);
 		var w = new MainWindow { ShowActivated = false, ShowInTaskbar = false, WindowStartupLocation = WindowStartupLocation.Manual, Left = -30000, Top = -30000 };
 		w.Show();
 		Pump(w, 2500);
@@ -227,6 +228,8 @@ public partial class App : Application
 	static int Snapshot(string a_dir)
 	{
 		Directory.CreateDirectory(a_dir);
+		// the built-in look exactly as a start with no theme picked lays it out (its accent brushes last, over the Fluent theme's)
+		Theme.Apply(Theme.Default, false);
 		var w = new MainWindow { ShowActivated = false, ShowInTaskbar = false, WindowStartupLocation = WindowStartupLocation.Manual, Left = -30000, Top = -30000 };
 		w.Show();
 		Pump(w, 2500);

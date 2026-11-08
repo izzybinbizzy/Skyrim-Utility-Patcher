@@ -244,7 +244,9 @@ public sealed partial class MainViewModel : Observable
 	void ShowLastCard()
 	{
 		var text = SelectedStep is { } r && _lastDetail.TryGetValue(r.Key, out var d) ? d : "";
-		LastCardTitle = text != "" ? "LAST RUN - " + SelectedStep!.Name.ToUpperInvariant() : _outOfDate != "" ? "OUT OF DATE" : "";
+		// a card that holds only why the last runs could not be read says LAST RUNS, never OUT OF DATE over an error
+		LastCardTitle = text != "" ? "LAST RUN - " + SelectedStep!.Name.ToUpperInvariant() :
+			_outOfDate.StartsWith("The last runs could not", StringComparison.Ordinal) ? "LAST RUNS" : _outOfDate != "" ? "OUT OF DATE" : "";
 		_lastCard = _outOfDate == "" ? text : text == "" ? _outOfDate : text + "\n\n" + _outOfDate;
 		OnPropertyChanged(nameof(LastCardText));
 	}

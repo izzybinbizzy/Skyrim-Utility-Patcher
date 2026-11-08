@@ -207,10 +207,14 @@ public partial class MainWindow : Window
 	// the off-screen pictures only: the open drawer scrolled to a_y
 	public void ScrollDrawer(double a_y)
 	{
+		// the drawer's own scroller - never the one inside a text box (Settings' search box comes first in the tree)
 		static ScrollViewer? Find(DependencyObject a_d)
 		{
 			for (var i = 0; i < System.Windows.Media.VisualTreeHelper.GetChildrenCount(a_d); ++i) {
 				var c = System.Windows.Media.VisualTreeHelper.GetChild(a_d, i);
+				if (c is System.Windows.Controls.Primitives.TextBoxBase) {
+					continue;
+				}
 				if ((c as ScrollViewer ?? Find(c)) is { } s) {
 					return s;
 				}
@@ -285,7 +289,14 @@ public partial class MainWindow : Window
 		// the keyboard moves into the drawer (Tab then stays inside it - its own cycle - until Esc or Close), and a screen reader
 		// hears which one opened
 		Dispatcher.BeginInvoke(DispatcherPriority.Input, () => {
-			if (!Drawer.IsKeyboardFocusWithin) {
+			if (Drawer.IsKeyboardFocusWithin) {
+				return;
+			}
+			// Settings: its search box; elsewhere the first thing in the drawer's own content, else its Close button
+			if (a_which == "settings") {
+				SettingsPanel.FocusFind();
+			}
+			if (!Drawer.IsKeyboardFocusWithin && !DrawerBody.MoveFocus(new TraversalRequest(FocusNavigationDirection.First))) {
 				Drawer.MoveFocus(new TraversalRequest(FocusNavigationDirection.First));
 			}
 		});
@@ -454,10 +465,15 @@ public partial class MainWindow : Window
 		if (_vm.History.Count == 0) {
 			log.Text = "No runs of this setup yet.";
 		}
+		// an empty list says why it is empty (a blank box reads as broken)
+		var empty = new TextBlock { Text = "No runs of this setup yet - its runs show here, newest first, each with its log.", Style = (Style)FindResource("MutedText"),
+			Margin = new Thickness(14), IsHitTestVisible = false, Visibility = _vm.History.Count == 0 ? Visibility.Visible : Visibility.Collapsed };
 		Grid.SetRow(list, 0);
+		Grid.SetRow(empty, 0);
 		Grid.SetRow(buttons, 1);
 		Grid.SetRow(log, 2);
 		grid.Children.Add(list);
+		grid.Children.Add(empty);
 		grid.Children.Add(buttons);
 		grid.Children.Add(log);
 		if (_vm.History.Count > 0) {

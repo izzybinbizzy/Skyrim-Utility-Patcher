@@ -6,6 +6,10 @@
              ShutdownMode="OnMainWindowClose">
   <Application.Resources>
     <ResourceDictionary>
+      <!-- the Fluent brushes that take Windows' accent, taking ours (gold) instead; Theme.SetMode swaps in the light set -->
+      <ResourceDictionary.MergedDictionaries>
+        <ResourceDictionary Source="pack://application:,,,/Skyrim Utility Patcher;component/Accent.xaml"/>
+      </ResourceDictionary.MergedDictionaries>
       <!-- black and gold (his pick); every colour is a token here -->
       <Color x:Key="BgColor">#0B0B0D</Color>
       <Color x:Key="PanelColor">#141418</Color>

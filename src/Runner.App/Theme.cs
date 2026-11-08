@@ -443,7 +443,27 @@ public static class Theme
 		if (Application.Current.ThemeMode.Value != a_mode) {
 			Application.Current.ThemeMode = new ThemeMode(a_mode);
 		}
+		// the Fluent brushes built from the accent (Accent.xaml / AccentLight.xaml), the set made for this mode's background, LAST
+		// among the merged dictionaries: WPF reads them from the last one back, so ours win over the Fluent theme's own (which
+		// takes Windows' accent - blue on most PCs)
+		var merged = Application.Current.Resources.MergedDictionaries;
+		var want = a_mode == "Light" ? "AccentLight.xaml" : "Accent.xaml";
+		var ours = merged.Where(IsAccent).ToList();
+		if (ours.Count == 1 && merged[^1] == ours[0] && AccentFile(ours[0]) == want) {
+			return;
+		}
+		foreach (var d in ours) {
+			merged.Remove(d);
+		}
+		merged.Add(new ResourceDictionary { Source = new Uri($"pack://application:,,,/{Brand.Name};component/{want}", UriKind.Absolute) });
 	}
+
+	static string AccentFile(ResourceDictionary a_d) => a_d.Source is { } s ? s.OriginalString[(s.OriginalString.LastIndexOf('/') + 1)..] : "";
+
+	static bool IsAccent(ResourceDictionary a_d) => AccentFile(a_d) is "Accent.xaml" or "AccentLight.xaml";
+
+	// the accent set in use (the offline test reads it): the file name of the last merged dictionary that is one of ours
+	public static string AccentInUse => Application.Current.Resources.MergedDictionaries.LastOrDefault(IsAccent) is { } d ? AccentFile(d) : "";
 }
 
 // Windows draws every window's title bar and border itself: each one is painted in the theme's colors (Windows 11 takes them;

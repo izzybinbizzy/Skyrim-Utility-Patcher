@@ -2729,6 +2729,14 @@ public static class Program
 				Check(System.Windows.Application.Current == null, "no WPF Application made before this test (only one per process)");
 				var app = new ToolRunner.App.App();
 				app.InitializeComponent();
+				// the gold accent brushes over the Fluent theme's (Windows' accent, blue on most PCs): both sets load, and the one for
+				// the mode in use is last, so it wins
+				Check(app.Resources.MergedDictionaries.Any(d => d.Contains("TextControlElevationBorderFocusedBrush")), "the accent brushes load with App.xaml");
+				ToolRunner.App.Theme.Apply(ToolRunner.App.Theme.Default, false);
+				Equal("Accent.xaml", ToolRunner.App.Theme.AccentInUse, "the dark set after the built-in look");
+				var ours = app.Resources.MergedDictionaries.Last(d => d.Source?.OriginalString.EndsWith("/Accent.xaml", StringComparison.Ordinal) == true);
+				Check(ReferenceEquals(app.Resources["TextControlElevationBorderFocusedBrush"], ours["TextControlElevationBorderFocusedBrush"]),
+					"the text box's focus line is the program's own brush, not the Fluent theme's");
 				foreach (var k in app.Resources.Keys) {
 					if (app.Resources[k] is System.Windows.Media.Imaging.BitmapSource b) {
 						Whole(b, $"the {k} picture");
