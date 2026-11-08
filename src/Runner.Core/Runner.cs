@@ -982,7 +982,7 @@ public static class Runner
 	}
 
 	// overwrite's files and their times (what a step adds there is told apart from what was there before)
-	static Dictionary<string, DateTime> OverwriteFiles(RunContext a_ctx)
+	public static Dictionary<string, DateTime> OverwriteFiles(RunContext a_ctx)
 	{
 		var d = a_ctx.Mo2.OverwriteDir;
 		return Directory.Exists(d) ? Directory.EnumerateFiles(d, "*", SearchOption.AllDirectories)

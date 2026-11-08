@@ -610,7 +610,8 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 	static string Trim(string a_s) => a_s.Length > 200 ? a_s[..200] + " ..." : a_s;
 
 	// run one of MO2's executables through the running instance; returns the tool's process once it exists
-	public Process RunExecutable(string a_title, string a_image, string? a_args, CancellationToken a_ct, TimeSpan? a_startTimeout = null)
+	// a_byPath: a_title is the program's own path, for one that is in no Executables list (an add-on's)
+	public Process RunExecutable(string a_title, string a_image, string? a_args, CancellationToken a_ct, TimeSpan? a_startTimeout = null, bool a_byPath = false)
 	{
 		Start(a_ct);
 		var old = Procs.Pids(a_image).ToHashSet();
@@ -618,7 +619,7 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 			throw new StepFailedException($"{a_image} is already running (process {string.Join(", ", old)}) - close it first");
 		}
 		_log.Detail($"running {a_title} through Mod Organizer{(string.IsNullOrEmpty(a_args) ? "" : " with " + a_args)}");
-		var cmd = $"{Quote(Mo2.Exe)}{Instance} -p {Quote(ProfileName)} run -e {Quote(a_title)}" + (string.IsNullOrEmpty(a_args) ? "" : $" -a {Quote(a_args)}");
+		var cmd = $"{Quote(Mo2.Exe)}{Instance} -p {Quote(ProfileName)} run {(a_byPath ? "" : "-e ")}{Quote(a_title)}" + (string.IsNullOrEmpty(a_args) ? "" : $" -a {Quote(a_args)}");
 		var logAt = LogLength();
 		var asked = DateTime.Now;
 		// what Mod Organizer starts while the tool is awaited - every process whose parent is one of its own, as it appears (a tool

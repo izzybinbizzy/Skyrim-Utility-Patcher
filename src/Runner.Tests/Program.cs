@@ -4564,6 +4564,90 @@ public static class Program
 		Equal(TweaksBefore, File.ReadAllText(tweakFile), "the mod's as well");
 	}
 
+	// his checklist 433-435: an add-on file is read and checked in plain words, goes where it says in the order, and a file changed since is asked about
+	static void T_AnAddOnFileIsCheckedAndPlaced()
+	{
+		const string Good = """
+			{ "schema": 1, "name": "My Patcher", "author": "A Modder", "page": "https://example.com/p", "program": "tools/MyPatcher.exe", "arguments": "--auto",
+			  "output": "My Patcher Output", "minutes": 30, "makes": "MyPatch.esp", "after": "synthesis" }
+			""";
+		Equal(0, AddOns.Problems(Good).Count, "a right file: " + string.Join("; ", AddOns.Problems(Good)));
+		bool Says(string a_file, string a_word) => AddOns.Problems(a_file).Any(p => p.Contains(a_word, StringComparison.Ordinal));
+		Check(Says("not json", "not valid JSON"), "not JSON");
+		Check(Says("[1]", "one JSON object"), "not an object");
+		Check(Says("""{ "schema": 2 }""", "\"schema\""), "another schema");
+		Check(Says("""{ "schema": 1 }""", "\"program\" is missing"), "a key left out");
+		Check(Says(Good.Replace("\"page\"", "\"pgae\"", StringComparison.Ordinal), "typing mistake"), "a key misspelt");
+		Check(Says(Good.Replace("tools/MyPatcher.exe", "../other/x.exe", StringComparison.Ordinal), "inside your mod"), "a program outside the mod");
+		Check(Says(Good.Replace("tools/MyPatcher.exe", "C:/x.exe", StringComparison.Ordinal), "inside your mod"), "a whole path");
+		Check(Says(Good.Replace("tools/MyPatcher.exe", "tools/run.bat", StringComparison.Ordinal), "inside your mod"), "not a program");
+		Check(Says(Good.Replace("\"synthesis\"", "\"nothing\"", StringComparison.Ordinal), "which is no step"), "a step that does not exist");
+		Check(Says(Good.Replace("My Patcher Output", "My:Output", StringComparison.Ordinal), "good folder name"), "an output that makes no folder");
+		Check(Says(Good.Replace("\"minutes\": 30", "\"minutes\": 0", StringComparison.Ordinal), "\"minutes\""), "a time that is no time");
+		Check(Says(Good.Replace("https://example.com/p", "http://example.com/p", StringComparison.Ordinal), "https"), "a page that is not https");
+
+		using var f = new FakeMo2();
+		var mod = Path.Combine(f.Mods, "Base Mod");
+		var file = Path.Combine(mod, AddOns.FolderInMod, "patcher.json");
+		Directory.CreateDirectory(Path.GetDirectoryName(file)!);
+		File.WriteAllText(file, Good);
+		Check(AddOns.Problems(Good, mod).Any(p => p.Contains("not in the mod", StringComparison.Ordinal)), "the program is looked for in the mod");
+		Directory.CreateDirectory(Path.Combine(mod, "tools"));
+		File.WriteAllText(Path.Combine(mod, "tools", "MyPatcher.exe"), "");
+		var mo2 = Mo2Instance.Load(f.Exe, f.Instance);
+		var found = AddOns.Find(mo2, ProfileOf(f)).Single();
+		var addOn = found.AddOn ?? throw new InvalidOperationException(string.Join("; ", found.Problems));
+		Check(addOn.Says.Contains(addOn.ProgramPath, StringComparison.Ordinal) && addOn.Says.Contains("--auto", StringComparison.Ordinal) && addOn.Says.Contains("My Patcher Output", StringComparison.Ordinal), "the question says what it will start and where it writes");
+		var setup = f.WriteSetup(("synthesis", new JsonObject()), ("pgpatcher", new JsonObject()), ("texgen", new JsonObject()), ("playsave", new JsonObject()));
+		AddOns.AddToSetup(setup.Root, addOn, "Test");
+		Equal("synthesis|addon:My Patcher|pgpatcher|texgen|playsave", string.Join("|", setup.Steps.Select(s => s.Key)), "after the step it names");
+		Equal("My Patcher Output - Test", setup.Steps[1].Settings["output_mod"]?.ToString(), "its output, named as every output");
+		Equal("My Patcher", StepCatalog.Name(addOn.Key), "its name in the window");
+		Check(StepCatalog.Known(addOn.Key) && StepRegistry.For(addOn.Key) is AddOnStep, "a step like any other");
+		Check(setup.Problems().Count == 0, "the setup reads: " + string.Join("; ", setup.Problems()));
+		AddOns.AddToSetup(setup.Root, addOn with { After = null }, "Test");
+		Equal("synthesis|pgpatcher|addon:My Patcher|texgen|playsave", string.Join("|", setup.Steps.Select(s => s.Key)), "saying nothing: before the LOD tools, and never twice");
+		// allowed, then changed
+		var check = new CheckContext { Setup = setup, Mo2 = mo2, Profile = ProfileOf(f), States = ProfileOf(f).States() };
+		var settings = new StepSettings(setup.Steps[2].Settings);
+		var step = new AddOnStep(addOn.Key);
+		Equal(0, step.Check(check, settings).Count(i => i.Blocking), "allowed: nothing blocks");
+		File.AppendAllText(file, " ");
+		Check(step.Check(check, settings).Single(i => i.Blocking).Text.Contains("changed since", StringComparison.Ordinal), "a file changed since is asked about again");
+		setup.Root[AddOns.NoAskSetting] = true;
+		Equal(0, step.Check(check, settings).Count(i => i.Blocking), "unless the player switched the question off");
+	}
+
+	// what the tool wrote goes into its own output mod; a tool that wrote nothing, or not what it promised, failed and its old output comes back
+	static void T_AnAddOnsFilesGoIntoItsOwnMod()
+	{
+		using var f = new FakeMo2();
+		File.WriteAllText(Path.Combine(f.Overwrite, "there before.ini"), "the player's");
+		var mode = "good";
+		StepRegistry.Replace(new FakeStep("synthesis", (ctx, s) => {
+			var before = Runner.OverwriteFiles(ctx);
+			if (mode != "nothing") {
+				Directory.CreateDirectory(Path.Combine(f.Overwrite, "Docs"));
+				File.WriteAllText(Path.Combine(f.Overwrite, "Docs", "log.txt"), "log");
+				File.WriteAllText(Path.Combine(f.Overwrite, mode == "good" ? "MyPatch.esp" : "Other.esp"), "plugin");
+			}
+			AddOnStep.Collect(ctx, "synthesis", "Output A", "MyPatch.esp", before);
+			ctx.SetAfter("Output A");
+		}));
+		f.WriteSetup(("synthesis", new JsonObject { ["output_mod"] = "Output A" }));
+		Equal(RunState.Finished, Runner.Run(new RunRequest(f.SetupFile, f.Data)).State, "the run finished");
+		Check(File.Exists(Path.Combine(f.Mods, "Output A", "MyPatch.esp")) && File.Exists(Path.Combine(f.Mods, "Output A", "Docs", "log.txt")), "each file at its own place in its mod");
+		Check(!File.Exists(Path.Combine(f.Mods, "Output A", "OutA.esp")), "the old output left it");
+		Check(!File.Exists(Path.Combine(f.Overwrite, "MyPatch.esp")), "nothing of it stays in overwrite");
+		Check(File.Exists(Path.Combine(f.Overwrite, "there before.ini")), "what was there before stays");
+		mode = "nothing";
+		Check(Runner.Run(new RunRequest(f.SetupFile, f.Data)).Verdict.Contains("wrote nothing", StringComparison.Ordinal), "a tool that wrote nothing failed");
+		Check(File.Exists(Path.Combine(f.Mods, "Output A", "MyPatch.esp")), "and the output stays");
+		mode = "other";
+		Check(Runner.Run(new RunRequest(f.SetupFile, f.Data)).Verdict.Contains("did not write MyPatch.esp", StringComparison.Ordinal), "nor one that did not write what it promised");
+		Check(File.Exists(Path.Combine(f.Mods, "Output A", "MyPatch.esp")), "and the output stays");
+	}
+
 	static void T_EveryToolStepHasItsHelpPage()
 	{
 		foreach (var s in StepCatalog.All.Where(s => s.Key is not ("shaders" or "xlodgen"))) {

@@ -26,9 +26,10 @@ public static class StepCatalog
 
 	public static readonly IReadOnlyList<string> DefaultOrder = All.Select(s => s.Key).ToList();
 
-	public static bool Known(string a_key) => All.Any(s => s.Key == a_key);
+	public static bool Known(string a_key) => a_key.StartsWith(AddOns.KeyPrefix, StringComparison.Ordinal) || All.Any(s => s.Key == a_key);
 
-	public static StepInfo Info(string a_key) => All.FirstOrDefault(s => s.Key == a_key) ?? new StepInfo(a_key, a_key, "");
+	public static StepInfo Info(string a_key) => All.FirstOrDefault(s => s.Key == a_key) ??
+		(a_key.StartsWith(AddOns.KeyPrefix, StringComparison.Ordinal) ? new StepInfo(a_key, a_key[AddOns.KeyPrefix.Length..], "An add-on, from its author's own mod.") : new StepInfo(a_key, a_key, ""));
 
 	public static string Name(string a_key) => Info(a_key).Name;
 

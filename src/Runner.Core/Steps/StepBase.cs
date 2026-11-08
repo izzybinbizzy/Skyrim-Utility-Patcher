@@ -31,7 +31,7 @@ public static class StepRegistry
 
 	public static IReadOnlyDictionary<string, IStep> All => Steps;
 
-	public static IStep? For(string a_key) => Steps.GetValueOrDefault(a_key);
+	public static IStep? For(string a_key) => a_key.StartsWith(AddOns.KeyPrefix, StringComparison.Ordinal) ? new AddOnStep(a_key) : Steps.GetValueOrDefault(a_key);
 
 	// the offline tests put their own steps in (a step that writes files, fails or waits) to drive the whole run
 	public static void Replace(IStep a_step) => Steps[a_step.Key] = a_step;

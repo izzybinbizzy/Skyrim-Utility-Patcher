@@ -415,6 +415,73 @@ public static class SettingsPanel
 
 		NewVersions(a_w, stack);
 
+		// his checklist 433-435: add-ons from other modders, each allowed by the player
+		Head("ADD-ONS");
+		var addOnNote = new TextBlock { Style = (Style)a_w.FindResource("MutedText"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 8),
+			Text = "A modder can add their patcher with one file in their own mod. The wiki has the guide and an example." };
+		var addOnRows = new StackPanel();
+		var lookAddOns = new Button { Content = "Look for add-ons in this profile", Style = (Style)a_w.FindResource("Ghost"), Margin = new Thickness(0, 0, 8, 0) };
+		var checkAddOn = new Button { Content = "Check my add-on file ...", Style = (Style)a_w.FindResource("Ghost"), ToolTip = "For modders: says in plain words what is wrong with an add-on file" };
+		lookAddOns.Click += (_, _) => {
+			addOnRows.Children.Clear();
+			if (a_vm.Setup is not { } current) {
+				return;
+			}
+			try {
+				var mo2 = Mo2Instance.Load(current.Mo2Exe, current.Mo2Instance);
+				var found = AddOns.Find(mo2, new Profile(mo2, current.Profile, () => true));
+				addOnNote.Text = found.Count == 0 ? "No ticked mod of this profile holds an add-on." : $"{found.Count} add-on file(s) in this profile's ticked mods.";
+				foreach (var hit in found) {
+					var row = new DockPanel { Margin = new Thickness(0, 2, 0, 2) };
+					if (hit.AddOn is { } addOn && !AddOns.InSetup(current, addOn)) {
+						var allow = new Button { Content = "Add it", Style = (Style)a_w.FindResource("Ghost"), Margin = new Thickness(8, 0, 0, 0) };
+						allow.Click += (_, _) => {
+							if (HasChanges) {
+								a_vm.Say("Save or undo your changes first.", "warn");
+								return;
+							}
+							if (Setup.Bool(current.Root, AddOns.NoAskSetting) != true && !Ask.Show(a_w, "Add this add-on?", addOn.Says, "Allow it", "Not now")) {
+								return;
+							}
+							AddOns.AddToSetup(current.Root, addOn, current.Profile);
+							current.Save();
+							a_vm.LoadSetups(current.File);
+							a_w.ShowPanel("settings", true);
+						};
+						DockPanel.SetDock(allow, Dock.Right);
+						row.Children.Add(allow);
+					}
+					row.Children.Add(new TextBlock { TextWrapping = TextWrapping.Wrap, Text = hit.AddOn is { } a ?
+						$"{a.Name}, by {a.Author}, in {hit.Mod}" + (AddOns.InSetup(current, a) ? " - in this setup" : "") :
+						$"{hit.File}: {string.Join("; ", hit.Problems)}" });
+					addOnRows.Children.Add(row);
+				}
+			} catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException) {
+				a_vm.Say("The add-ons could not be looked for: " + e.Message, "bad");
+			}
+		};
+		checkAddOn.Click += (_, _) => {
+			var d = new Microsoft.Win32.OpenFileDialog { Filter = "Add-on file|*.json", Title = "Your add-on file" };
+			if (d.ShowDialog(a_w) != true) {
+				return;
+			}
+			try {
+				var parent = Path.GetDirectoryName(d.FileName);
+				var problems = AddOns.Problems(Files.ReadSharedText(d.FileName), Path.GetFileName(parent) == AddOns.FolderInMod ? Path.GetDirectoryName(parent) : null);
+				a_vm.Say(problems.Count == 0 ? "That add-on file is right." : string.Join(" ", problems.Select(p => p + ".")), problems.Count == 0 ? "good" : "bad");
+			} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+				a_vm.Say("That file could not be read: " + e.Message, "bad");
+			}
+		};
+		stack.Children.Add(addOnNote);
+		var addOnBar = new WrapPanel { Orientation = Orientation.Horizontal };
+		addOnBar.Children.Add(lookAddOns);
+		addOnBar.Children.Add(checkAddOn);
+		stack.Children.Add(addOnBar);
+		stack.Children.Add(addOnRows);
+		work[AddOns.NoAskSetting] ??= false;
+		Field(stack, apply, "Do not ask before adding an add-on, or when its file changes", work, AddOns.NoAskSetting, JsonValueKind.True);
+
 		// his checklist 468: the program in Mod Organizer's Tools menu
 		if (a_vm.Setup is { } menuSetup && Environment.ProcessPath is { } program) {
 			try {
