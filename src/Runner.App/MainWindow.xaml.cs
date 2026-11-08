@@ -87,6 +87,9 @@ public partial class MainWindow : Window
 		} else if (ctrl && a_e.Key == Key.OemComma) {
 			ShowPanel("settings");
 			a_e.Handled = true;
+		} else if (ctrl && a_e.Key == Key.F && _panel == "settings" && Drawer.Visibility == Visibility.Visible) {
+			SettingsPanel.FocusFind();
+			a_e.Handled = true;
 		} else if (ctrl && a_e.Key == Key.N && Drawer.Visibility != Visibility.Visible) {
 			NewSetup_Click(this, new RoutedEventArgs());
 			a_e.Handled = true;
@@ -407,7 +410,31 @@ public partial class MainWindow : Window
 		var log = new TextBox { IsReadOnly = true, FontFamily = (System.Windows.Media.FontFamily)FindResource("MonoFont"), FontSize = (double)FindResource("SizeLog"), Background = Brushes2.Get("Panel2"),
 			Foreground = Brushes2.Get("Text"), VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto };
 		AutomationPropertiesName(log, "The run's log");
-		var open = new Button { Content = "Open its folder", Style = (Style)FindResource("Ghost"), Margin = new Thickness(0, 10, 0, 10), HorizontalAlignment = HorizontalAlignment.Left };
+		var open = new Button { Content = "Open its folder", Style = (Style)FindResource("Ghost"), Margin = new Thickness(0, 0, 8, 0) };
+		// his checklist 482: one zip for a bug report, names masked; made on the player's press, never sent anywhere
+		var report = new Button { Content = "Make a bug report ...", Style = (Style)FindResource("Ghost"),
+			ToolTip = "Puts this run's logs, its setup and the versions of everything into one zip, with your Windows name and PC name masked - for a GitHub issue" };
+		report.Click += async (_, _) => {
+			var row = list.SelectedItem as HistoryRow;
+			report.IsEnabled = false;
+			try {
+				var zip = await Task.Run(() => BugReport.Make(AppPaths.Data, row == null ? null : Journal.Load(row.Folder), Path.Combine(AppPaths.Data, "Bug reports"), AppVersion));
+				if (Ask.Show(this, "Bug report made", $"It is ready: {Path.GetFileName(zip)}\n\nIt holds {(row == null ? "the program's own notes" : "this run's logs and record")}, the setup it ran and the " +
+				    "versions of Windows, Mod Organizer, the game and each tool. Your Windows user name and your PC's name are masked. Nothing was sent anywhere.\n\n" +
+				    "To report the bug: open an issue on the program's GitHub page, say what happened and what you expected, and attach this zip.",
+				    "Show the zip and open the issue page", "Close")) {
+					System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer.exe", $"/select,\"{zip}\"") { UseShellExecute = true });
+					System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(BugReport.Issues) { UseShellExecute = true });
+				}
+			} catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException or System.Text.Json.JsonException) {
+				_vm.Say("The bug report could not be made: " + e.Message, "bad");
+			} finally {
+				report.IsEnabled = true;
+			}
+		};
+		var buttons = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 10, 0, 10) };
+		buttons.Children.Add(open);
+		buttons.Children.Add(report);
 		list.SelectionChanged += (_, _) => {
 			if (list.SelectedItem is HistoryRow r) {
 				var p = MainViewModel.LogFile(r.Folder, _vm.DetailedLog);
@@ -428,10 +455,10 @@ public partial class MainWindow : Window
 			log.Text = "No runs of this setup yet.";
 		}
 		Grid.SetRow(list, 0);
-		Grid.SetRow(open, 1);
+		Grid.SetRow(buttons, 1);
 		Grid.SetRow(log, 2);
 		grid.Children.Add(list);
-		grid.Children.Add(open);
+		grid.Children.Add(buttons);
 		grid.Children.Add(log);
 		if (_vm.History.Count > 0) {
 			list.SelectedIndex = 0;

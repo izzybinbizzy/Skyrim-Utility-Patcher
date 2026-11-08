@@ -70,6 +70,33 @@ public static partial class InGame
 			Path.Combine(docs, "My Games", "Skyrim Special Edition", "SKSE");
 	}
 
+	// his checklist 470: the game closed under a step - the crash log a crash logger wrote since the run began is named (Crash Logger
+	// writes SKSE\crash-<time>.log, Trainwreck SKSE\Crashlogs\crash-<time>.log, .NET Script Framework NetScriptFramework\Crash\Crash_<time>.txt
+	// into Mod Organizer's overwrite), so the failure points at the cause instead of only saying the game went
+	public static StepFailedException GameClosed(RunContext a_ctx, string a_while) =>
+		new($"the game closed {a_while}" + CrashNote(SkseLogs(a_ctx.Setup, a_ctx.Mo2), a_ctx.Mo2.OverwriteDir, a_ctx.Journal.Started));
+
+	public static string CrashNote(string a_skseLogs, string a_overwrite, DateTime a_since) =>
+		CrashLog(a_skseLogs, a_overwrite, a_since) is { } log ? $" - it crashed; its crash log: {log}" :
+			" - no crash log was written (a crash logger such as Crash Logger SSE names the cause of the next one)";
+
+	public static string? CrashLog(string a_skseLogs, string a_overwrite, DateTime a_since)
+	{
+		var found = new List<FileInfo>();
+		void Look(string a_dir, string a_pattern, SearchOption a_how)
+		{
+			try {
+				if (Directory.Exists(a_dir)) {
+					found.AddRange(new DirectoryInfo(a_dir).EnumerateFiles(a_pattern, a_how).Where(f => f.LastWriteTime >= a_since));
+				}
+			} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+			}
+		}
+		Look(a_skseLogs, "crash*.log", SearchOption.AllDirectories);
+		Look(Path.Combine(a_overwrite, "NetScriptFramework", "Crash"), "Crash*.txt", SearchOption.TopDirectoryOnly);
+		return found.OrderByDescending(f => f.LastWriteTime).FirstOrDefault()?.FullName;
+	}
+
 	// the log a shader mod writes now: the newest of the known names (Bottled Shaders renamed its log 2026-10-26)
 	public static string? NewestShaderLog(string a_folder, string? a_preferred = null)
 	{
@@ -300,7 +327,7 @@ public static partial class InGame
 		while (DateTime.UtcNow < until) {
 			a_ctx.Cancel.ThrowIfCancellationRequested();
 			if (!GameUp(a_ctx)) {
-				throw new StepFailedException("the game closed while the save settled");
+				throw GameClosed(a_ctx, "while the save settled");
 			}
 			if (DateTime.UtcNow >= nextLook) {
 				nextLook = DateTime.UtcNow.AddSeconds(5);
@@ -448,7 +475,7 @@ public static partial class InGame
 		while (sw.Elapsed < TimeSpan.FromMinutes(5)) {
 			a_ctx.Cancel.ThrowIfCancellationRequested();
 			if (!GameUp(a_ctx)) {
-				throw new StepFailedException("the game closed while the new place loaded");
+				throw GameClosed(a_ctx, "while the new place loaded");
 			}
 			try {
 				if (a_ctx.DevBench.Call("inspect", new { kind = "state" }, 10)["playerLoaded"]?.GetValue<bool>() == true &&
@@ -573,7 +600,7 @@ public static partial class InGame
 				throw new StepFailedException($"the game (or DevBench) did not answer within {limit.TotalMinutes:0} minutes");
 			}
 			if (sw.Elapsed > TimeSpan.FromSeconds(30) && !GameUp(a_ctx)) {
-				throw new StepFailedException("the game closed while it was starting");
+				throw GameClosed(a_ctx, "while it was starting");
 			}
 			AnswerNativeBoxes(RunBoxes(a_ctx, launched), a_ctx.Log);
 			Thread.Sleep(2000);
@@ -598,7 +625,7 @@ public static partial class InGame
 		while (t.Elapsed < limit) {
 			a_ctx.Cancel.ThrowIfCancellationRequested();
 			if (!GameUp(a_ctx)) {
-				throw new StepFailedException($"the game closed while loading \"{a_save}\"");
+				throw GameClosed(a_ctx, $"while loading \"{a_save}\"");
 			}
 			try {
 				if (AnswerGameBox(a_ctx) != null) {
@@ -643,7 +670,7 @@ public static partial class InGame
 		while (sw.Elapsed < max) {
 			a_ctx.Cancel.ThrowIfCancellationRequested();
 			if (!GameUp(a_ctx)) {
-				throw new StepFailedException("the game closed while its shaders compiled");
+				throw GameClosed(a_ctx, "while its shaders compiled");
 			}
 			if (!seen && BootPassOver(logs, a_since) && !Compiling(logs, a_ctx.Mo2.OverwriteDir, a_since)) {
 				passOverSince ??= sw.Elapsed;

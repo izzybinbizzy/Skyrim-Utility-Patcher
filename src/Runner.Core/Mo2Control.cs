@@ -535,8 +535,26 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 			$"{a_image} did not start within {(a_startTimeout ?? TimeSpan.FromMinutes(3)).TotalMinutes:0} minutes - is MO2's executable \"{a_title}\" right?" +
 			WhatMo2Said(a_title, a_image, logAt));
 		_log.Detail($"{a_image} started (process {pid})");
-		Started.Add(pid);
+		Ours(pid);
 		return Process.GetProcessById(pid);
+	}
+
+	// his checklist 479: the tools at a lower priority (the setup's "lowerPriority") - the PC stays smooth while they work; the
+	// processes a tool starts after this take its priority with them (Windows passes below-normal on to its children)
+	public bool LowerPriority { get; set; }
+
+	void Ours(int a_pid)
+	{
+		Started.Add(a_pid);
+		if (!LowerPriority) {
+			return;
+		}
+		try {
+			using var p = Process.GetProcessById(a_pid);
+			p.PriorityClass = ProcessPriorityClass.BelowNormal;
+		} catch (Exception e) when (e is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception) {
+			// it ended already, or Windows refused: it runs at its own priority
+		}
 	}
 
 	// Mod Organizer's own log of this session (beside its ModOrganizer.ini, in "logs")
@@ -715,7 +733,7 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 		var cmd = $"{Quote(Mo2.Exe)}{Instance} -p {Quote(ProfileName)} run {Quote(a_program)} -a {Quote(a_args)}";
 		var pid = LaunchTool(cmd, () => FreshPid(a_image, old), TimeSpan.FromMinutes(1), a_ct);
 		if (pid is { } p) {
-			Started.Add(p);
+			Ours(p);
 		}
 		return pid;
 	}

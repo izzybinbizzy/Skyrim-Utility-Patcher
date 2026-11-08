@@ -11,10 +11,11 @@ namespace ToolRunner.App;
 //   "Skyrim Utility Patcher.exe" stop | stop-after                                                     ask the running run to stop
 //   "Skyrim Utility Patcher.exe" updates --setup <file>                                                its tools' newest versions (asks their pages)
 //   "Skyrim Utility Patcher.exe" changes --setup <file> [--look]                                       what Mod Organizer changed, newest first
+//   "Skyrim Utility Patcher.exe" bugreport [--setup <file>]                                            one zip for a bug report (the setup's last run), names masked
 // exit 0 = finished / clean, 1 = failed / refused, 2 = stopped, 3 = bad arguments, 4 = (updates) a tool has a newer version
 public static class Cli
 {
-	public static bool Handles(string[] a_args) => a_args.Length > 0 && a_args[0] is "run" or "retry" or "queue" or "check" or "preview" or "lod" or "restore" or "stop" or "stop-after" or "import" or "updates" or "changes" or "--help" or "-h" or "/?";
+	public static bool Handles(string[] a_args) => a_args.Length > 0 && a_args[0] is "run" or "retry" or "queue" or "check" or "preview" or "lod" or "restore" or "stop" or "stop-after" or "import" or "updates" or "changes" or "bugreport" or "--help" or "-h" or "/?";
 
 	static string? Opt(string[] a_args, string a_name)
 	{
@@ -44,6 +45,7 @@ public static class Cli
 				"import" => Import(a_args),
 				"updates" => Updates(a_args),
 				"changes" => Changes(a_args),
+				"bugreport" => BugReportCmd(a_args),
 				_ => Help(),
 			};
 		} catch (Exception e) when (e is ArgumentException or IOException or InvalidDataException) {
@@ -59,7 +61,18 @@ public static class Cli
 
 	static int Help()
 	{
-		Console.WriteLine("Skyrim Utility Patcher - run | retry | queue | check | preview | lod | restore | stop | stop-after | updates | changes | import   (see the readme)");
+		Console.WriteLine("Skyrim Utility Patcher - run | retry | queue | check | preview | lod | restore | stop | stop-after | updates | changes | import | bugreport   (see the readme)");
+		return 0;
+	}
+
+	// the newest run of the setup (or of any setup), zipped with its logs for a bug report; prints where the zip is
+	static int BugReportCmd(string[] a_args)
+	{
+		var setup = Opt(a_args, "--setup") is { } s ? Path.GetFullPath(s) : null;
+		var run = Journal.All(AppPaths.Runs).FirstOrDefault(j => setup == null || string.Equals(j.SetupFile, setup, StringComparison.OrdinalIgnoreCase));
+		var zip = BugReport.Make(AppPaths.Data, run, Path.Combine(AppPaths.Data, "Bug reports"), MainWindow.AppVersion);
+		Console.WriteLine($"bug report: {zip}");
+		Console.WriteLine($"attach it to an issue: {BugReport.Issues}");
 		return 0;
 	}
 

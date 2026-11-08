@@ -142,7 +142,7 @@ public static class Runner
 		using var cts = new CancellationTokenSource();
 		var commands = new Commands(journal, cts);
 		var profile = new Profile(mo2, setup.Profile, () => new Mo2Control(mo2, setup.Profile, RunLog.Null).Running);
-		var control = new Mo2Control(mo2, setup.Profile, log);
+		var control = new Mo2Control(mo2, setup.Profile, log) { LowerPriority = Setup.Bool(setup.Root, "lowerPriority") == true };
 		var ctx = new RunContext {
 			Setup = setup, Mo2 = mo2, Profile = profile, Control = control, Log = log, Journal = journal, Cancel = cts.Token,
 			BackupFolder = journal.BackupDir, Guide = a_guide?.Invoke(journal) ?? new FileGuide(journal, commands.TakeContinue, commands.ClearContinue),
@@ -406,30 +406,46 @@ public static class Runner
 		}
 	}
 
-	static void PruneBackupsUnguarded(RunContext a_ctx)
+	static void PruneBackupsUnguarded(RunContext a_ctx) =>
+		PruneBackupsOf(a_ctx.Setup, Path.GetDirectoryName(a_ctx.Journal.Folder)!, a_ctx.BackupFolder, Setup.Int(a_ctx.Setup.Root, "keepBackups") ?? 5, a_ctx.Log);
+
+	// this setup's own run backups (by the run-folder name the runner gives them), newest first, with their size in bytes
+	public static List<(DirectoryInfo Dir, long Bytes)> BackupsOf(Setup a_setup)
 	{
-		var keep = Setup.Int(a_ctx.Setup.Root, "keepBackups") ?? 5;
-		var root = a_ctx.Setup.BackupDir;
-		if (keep <= 0 || root == "" || !Directory.Exists(root)) {
-			return;
+		var root = a_setup.BackupDir;
+		if (root == "" || !Directory.Exists(root)) {
+			return [];
 		}
-		var runs = Path.GetDirectoryName(a_ctx.Journal.Folder)!;
-		var needed = Journal.All(runs).Where(j => j.Unfinished && !string.IsNullOrWhiteSpace(j.BackupDir)).Select(j => Path.GetFullPath(j.BackupDir)).ToHashSet(StringComparer.OrdinalIgnoreCase);
-		needed.Add(Path.GetFullPath(a_ctx.BackupFolder));
-		var own = new System.Text.RegularExpressions.Regex(@"^\d{4}-\d\d-\d\d \d\d-\d\d-\d\d " + System.Text.RegularExpressions.Regex.Escape(a_ctx.Setup.Name) + "$");
-		var old = new DirectoryInfo(root).GetDirectories().Where(d => own.IsMatch(d.Name)).OrderByDescending(d => d.Name, StringComparer.Ordinal).Skip(keep)
-			.Where(d => !needed.Contains(d.FullName)).ToList();
-		foreach (var d in old) {
+		var own = new System.Text.RegularExpressions.Regex(@"^\d{4}-\d\d-\d\d \d\d-\d\d-\d\d " + System.Text.RegularExpressions.Regex.Escape(a_setup.Name) + "$");
+		return new DirectoryInfo(root).GetDirectories().Where(d => own.IsMatch(d.Name)).OrderByDescending(d => d.Name, StringComparer.Ordinal)
+			.Select(d => (d, Files.SizeOf(d.FullName))).ToList();
+	}
+
+	// all but the newest a_keep of this setup's run backups removed - never the running one (a_current) or one an unfinished run
+	// still needs; returns the folders removed. Settings' "remove old backups now" calls it with the run lock held
+	public static List<string> PruneBackupsOf(Setup a_setup, string a_runsDir, string? a_current, int a_keep, RunLog a_log)
+	{
+		var removed = new List<string>();
+		if (a_keep <= 0) {
+			return removed;
+		}
+		var needed = Journal.All(a_runsDir).Where(j => j.Unfinished && !string.IsNullOrWhiteSpace(j.BackupDir)).Select(j => Path.GetFullPath(j.BackupDir)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+		if (a_current != null) {
+			needed.Add(Path.GetFullPath(a_current));
+		}
+		foreach (var (d, _) in BackupsOf(a_setup).Skip(a_keep).Where(b => !needed.Contains(b.Dir.FullName))) {
 			try {
 				foreach (var f in d.EnumerateFiles("*", SearchOption.AllDirectories).Where(f => f.IsReadOnly)) {
 					f.IsReadOnly = false;
 				}
 				d.Delete(true);
-				a_ctx.Log.Detail("an old run's backup removed (only the last " + keep + " are kept): " + d.Name);
+				removed.Add(d.FullName);
+				a_log.Detail("an old run's backup removed (only the last " + a_keep + " are kept): " + d.Name);
 			} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
-				a_ctx.Log.Warn($"an old run's backup could not be removed ({e.Message}): {d.FullName}");
+				a_log.Warn($"an old run's backup could not be removed ({e.Message}): {d.FullName}");
 			}
 		}
+		return removed;
 	}
 
 	// one step: run, put its parked output back if it did not finish, its built output switched on, the plugins placed

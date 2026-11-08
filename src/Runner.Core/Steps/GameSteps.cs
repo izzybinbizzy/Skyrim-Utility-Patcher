@@ -193,7 +193,8 @@ public sealed class GrassStep : IStep
 					}
 					if (File.Exists(flag)) {
 						if (launches == 1 && sw.Elapsed < TimeSpan.FromMinutes(a_s.Int("first_start_min", 5))) {
-							throw new StepFailedException($"the first start crashed after {sw.Elapsed.TotalMinutes:0.0} minutes - a broken setup, not a normal grass-cache crash; read the crash log");
+							throw new StepFailedException($"the first start crashed after {sw.Elapsed.TotalMinutes:0.0} minutes - a broken setup, not a normal grass-cache crash" +
+								InGame.CrashNote(InGame.SkseLogs(a_ctx.Setup, a_ctx.Mo2), a_ctx.Mo2.OverwriteDir, a_ctx.Journal.Started));
 						}
 						idle = Files.CountFiles(ow) <= have ? idle + 1 : 0;
 						if (launches - 1 >= a_s.Int("max_restarts", 15)) {

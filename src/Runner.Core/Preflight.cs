@@ -74,6 +74,7 @@ public static class Preflight
 				outList.Add(new Issue(key, true, "its check found a setting of the wrong kind: " + e.Message));
 			}
 			outList.AddRange(ToolVersions.Check(a_setup, a_mo2, key, s));
+			outList.AddRange(Duplicates.Check(a_setup, a_mo2, c.States, key));
 			// the settings learned from the tool's own window: a tool updated since may have changed what they mean
 			if (ToolSettings.CanLearn(s) && ToolSettings.Load(a_setup, key) is { } l && ToolUpdates.Yours(a_mo2, s).Exe is { } exe &&
 			    File.GetLastWriteTimeUtc(exe) > l.At) {
@@ -101,6 +102,62 @@ public static class Preflight
 			parent = snap.FirstOrDefault(p => p.Pid == parent).Parent;
 		}
 		return false;
+	}
+}
+
+// his checklist 455: a second, older output of the same tool still ticked (an earlier manual run, another tool's output under
+// another name). A new output goes to the bottom of Mod Organizer's left pane, so an old copy higher up WINS and hides the fresh
+// build without a word - each is named before the run. Only files nothing but that tool writes count (measured on a 1,200-mod
+// testing setup 2026-11-07: Pandora's and Nemesis's engine folders are also in 50 ordinary animation mods, so they are not used)
+public static class Duplicates
+{
+	public static readonly IReadOnlyDictionary<string, string[]> Signatures = new Dictionary<string, string[]>(StringComparer.Ordinal) {
+		["dyndolod"] = ["DynDOLOD.esm", "DynDOLOD.esp", "Occlusion.esp"],
+		["texgen"] = [@"textures\DynDOLOD\LOD\TexGen_SSE.ini"],
+		["treelodgen"] = ["TreeLODGen_report.csv"],
+		["pgpatcher"] = ["PGPatcher.esp", "PG_1.esp"],
+		["synthesis"] = ["Synthesis.esp"],
+		["landscapefixer"] = ["LandscapeFixer.esp"],
+		["wryebash"] = ["Bashed Patch, 0.esp"],
+	};
+
+	// what in a mod folder shows it holds a step's output: one of its own files, or (grass cache, terrain LOD) a file of its kind
+	public static string? Holds(string a_modDir, string a_step)
+	{
+		if (Signatures.TryGetValue(a_step, out var files)) {
+			return files.FirstOrDefault(f => File.Exists(Path.Combine(a_modDir, f)));
+		}
+		try {
+			if (a_step == "grass" && Directory.Exists(Path.Combine(a_modDir, "grass")) &&
+			    Directory.EnumerateFiles(Path.Combine(a_modDir, "grass"), "*.cgid").FirstOrDefault() is { } cgid) {
+				return Path.GetRelativePath(a_modDir, cgid);
+			}
+			if (a_step == "xlodgen" && Directory.Exists(Path.Combine(a_modDir, "meshes", "terrain")) &&
+			    Directory.EnumerateFiles(Path.Combine(a_modDir, "meshes", "terrain"), "*.btr", SearchOption.AllDirectories).FirstOrDefault() is { } btr) {
+				return Path.GetRelativePath(a_modDir, btr);
+			}
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+		}
+		return null;
+	}
+
+	public static IEnumerable<Issue> Check(Setup a_setup, Mo2Instance a_mo2, IReadOnlyDictionary<string, char> a_states, string a_step)
+	{
+		var s = new StepSettings(a_setup.StepSettings(a_step) ?? []);
+		if (s.OutputMod is not { } own) {
+			yield break;
+		}
+		// the mods the run itself switches off are no rivals: every output of the setup, every mod a step replaces, its LOD outputs
+		var off = Runner.OutputsToTurnOff(a_setup, a_states).Select(o => o.Mod).Append(own).ToHashSet(StringComparer.OrdinalIgnoreCase);
+		foreach (var (mod, flag) in a_states) {
+			if (flag != '+' || off.Contains(mod)) {
+				continue;
+			}
+			if (Holds(a_mo2.ModDir(mod), a_step) is { } file) {
+				yield return new Issue(a_step, false, $"\"{mod}\" also holds {file}, which {StepCatalog.Name(a_step)} makes - with both ticked, the one higher in Mod Organizer's " +
+					$"left pane wins and can hide the new output. Untick it, or add it to the step's \"Mods it replaces\" so every run keeps it off");
+			}
+		}
 	}
 }
 

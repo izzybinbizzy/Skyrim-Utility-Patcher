@@ -3258,4 +3258,136 @@ public static class Program
 		}
 		Check(threw, "carrying a refused plan says why and sends nothing");
 	}
+
+	// his checklist 482: the bug-report zip holds the run's logs, its setup and the versions, with the player's names masked
+	// everywhere (paths included) - and a name inside an ordinary word is left alone
+	static void T_BugReportMasksThePlayersNames()
+	{
+		var names = new List<(string, string)> { ("Izzy-PC", "<this PC>"), ("Izzy", "<you>") };
+		Equal(@"C:\Users\<you>\Documents on <this PC>; Izzyland stays", BugReport.Mask(@"C:\Users\izzy\Documents on IZZY-PC; Izzyland stays", names), "whole names, any case");
+		using var f = new FakeMo2();
+		var setup = f.WriteSetup(("pandora", new JsonObject()));
+		var me = Environment.UserName;
+		var folder = Path.Combine(Runner.RunsDir(f.Data), "2026-11-02 21-00-00 " + setup.Name);
+		Directory.CreateDirectory(folder);
+		var j = new Journal { Id = "r", Folder = folder, SetupFile = f.SetupFile, SetupName = setup.Name, Started = DateTime.Now, State = RunState.Failed };
+		j.Save();
+		File.WriteAllText(Path.Combine(folder, "log.txt"), $"21:00:00  started from C:\\Users\\{me}\\Desktop on {Environment.MachineName}\n");
+		File.WriteAllText(Path.Combine(folder, RunLog.SimpleName), "21:00  1/1 Pandora started\n");
+		var zip = BugReport.Make(f.Data, Journal.Load(folder), Path.Combine(f.Root, "reports"), "1.0");
+		Check(File.Exists(zip) && !File.Exists(zip + ".tmp"), "the zip is there, no half file beside it");
+		using var z = System.IO.Compression.ZipFile.OpenRead(zip);
+		var got = z.Entries.Select(e => e.FullName).ToList();
+		foreach (var want in new[] { "about.txt", "run/log.txt", "run/" + RunLog.SimpleName, "run/journal.json", "setup.json" }) {
+			Check(got.Contains(want), $"{want} in the zip: {string.Join(", ", got)}");
+		}
+		foreach (var e in z.Entries) {
+			using var r = new StreamReader(e.Open());
+			var text = r.ReadToEnd();
+			if (me.Length >= 3) {
+				Check(!System.Text.RegularExpressions.Regex.IsMatch(text, @"(?<![\p{L}\p{N}])" + System.Text.RegularExpressions.Regex.Escape(me) + @"(?![\p{L}\p{N}])",
+					System.Text.RegularExpressions.RegexOptions.IgnoreCase), $"{e.FullName} never names the Windows user");
+			}
+			if (e.FullName == "run/log.txt") {
+				Check(text.Contains(@"C:\Users\<you>\Desktop", StringComparison.Ordinal) && text.Contains("<this PC>", StringComparison.Ordinal), "the log's path and PC name masked: " + text);
+			}
+			if (e.FullName == "about.txt") {
+				Check(text.Contains(Brand.Name + " 1.0", StringComparison.Ordinal) && text.Contains("Windows:", StringComparison.Ordinal), "the versions: " + text);
+			}
+		}
+	}
+
+	// his checklist 478: a setup's run backups are listed newest first with their size, and the clean-up keeps the newest few -
+	// never another setup's folder or one an unfinished run still needs
+	static void T_BackupCleanUpKeepsTheNewest()
+	{
+		using var f = new FakeMo2();
+		var setup = f.WriteSetup(("pandora", new JsonObject()));
+		string Run(string a_when) => Path.Combine(setup.BackupDir, a_when + " " + setup.Name);
+		foreach (var w in new[] { "2026-11-01 20-00-00", "2026-11-02 20-00-00", "2026-11-03 20-00-00", "2026-11-04 20-00-00" }) {
+			Directory.CreateDirectory(Run(w));
+			File.WriteAllBytes(Path.Combine(Run(w), "x.bin"), new byte[1000]);
+		}
+		var stranger = Path.Combine(setup.BackupDir, "2026-11-01 20-00-00 Other Setup");
+		Directory.CreateDirectory(stranger);
+		var listed = Runner.BackupsOf(setup);
+		Equal(4, listed.Count, "only this setup's own run folders");
+		Check(listed[0].Dir.Name.StartsWith("2026-11-04", StringComparison.Ordinal) && listed.All(b => b.Bytes == 1000), "newest first, each with its size");
+		// the oldest is still needed by a run that did not finish
+		var j = new Journal { Id = "u", Folder = Path.Combine(Runner.RunsDir(f.Data), "u"), SetupFile = f.SetupFile, SetupName = setup.Name, Started = DateTime.Now,
+			State = RunState.Running, BackupDir = Run("2026-11-01 20-00-00") };
+		Directory.CreateDirectory(j.Folder);
+		j.Save();
+		var removed = Runner.PruneBackupsOf(setup, Runner.RunsDir(f.Data), null, 2, RunLog.Null);
+		Equal(1, removed.Count, "one removed: " + string.Join(", ", removed));
+		Check(!Directory.Exists(Run("2026-11-02 20-00-00")), "the old one nobody needs went");
+		Check(Directory.Exists(Run("2026-11-01 20-00-00")) && Directory.Exists(Run("2026-11-03 20-00-00")) && Directory.Exists(Run("2026-11-04 20-00-00")),
+			"the newest two and the one an unfinished run needs stay");
+		Check(Directory.Exists(stranger), "another setup's folder is never touched");
+		Equal(0, Runner.PruneBackupsOf(setup, Runner.RunsDir(f.Data), null, 0, RunLog.Null).Count, "0 = keep them all");
+	}
+
+	// his checklist 475: each step's help is its tool's own page (never a guess), and the save steps get DynDOLOD's clean-save help
+	static void T_EveryToolStepHasItsHelpPage()
+	{
+		foreach (var s in StepCatalog.All.Where(s => s.Key is not ("shaders" or "xlodgen"))) {
+			var help = ToolRunner.App.SettingsPanel.HelpPage(s.Key);
+			Check(help is { } h && h.Url.StartsWith("https://", StringComparison.Ordinal) && !h.Url.Contains("?tab=files", StringComparison.Ordinal), $"{s.Name} has its page: {help?.Url}");
+		}
+		Equal("https://dyndolod.info/Help/Clean-Save", ToolRunner.App.SettingsPanel.HelpPage("cleansave")?.Url, "the clean save's help");
+	}
+
+	// his checklist 470: a game that closed under an in-game step names the crash log written since the run began - Crash Logger's
+	// and Trainwreck's in the SKSE folder, .NET Script Framework's in overwrite - and never an older one
+	static void T_AGameCrashNamesItsCrashLog()
+	{
+		using var f = new FakeMo2();
+		var skse = Path.Combine(f.Root, "SKSE");
+		var trainwreck = Path.Combine(skse, "Crashlogs");
+		var nsf = Path.Combine(f.Overwrite, "NetScriptFramework", "Crash");
+		foreach (var d in new[] { skse, trainwreck, nsf }) {
+			Directory.CreateDirectory(d);
+		}
+		var since = DateTime.Now.AddMinutes(-10);
+		var old = Path.Combine(skse, "crash-2026-01-01-00-00-00.log");
+		File.WriteAllText(old, "old");
+		File.SetLastWriteTime(old, since.AddHours(-1));
+		Equal<string?>(null, InGame.CrashLog(skse, f.Overwrite, since), "a crash log from before the run is not this run's");
+		Check(InGame.CrashNote(skse, f.Overwrite, since).Contains("no crash log", StringComparison.Ordinal), "said when there is none");
+		var tw = Path.Combine(trainwreck, "crash-2026-11-07-21-00-00.log");
+		File.WriteAllText(tw, "x");
+		File.SetLastWriteTime(tw, since.AddMinutes(2));
+		Equal<string?>(tw, InGame.CrashLog(skse, f.Overwrite, since), "Trainwreck's, in its own folder");
+		var net = Path.Combine(nsf, "Crash_2026_11_07_21_05_00.txt");
+		File.WriteAllText(net, "x");
+		File.SetLastWriteTime(net, since.AddMinutes(5));
+		Equal<string?>(net, InGame.CrashLog(skse, f.Overwrite, since), "the newest wins (.NET Script Framework's, in overwrite)");
+		Check(InGame.CrashNote(skse, f.Overwrite, since).EndsWith(net, StringComparison.Ordinal), "the note names it");
+	}
+
+	// his checklist 455: an older output of the same tool still ticked would win over the fresh one (a new output sits at the bottom
+	// of the left pane) - named before the run; once the step replaces it (kept off by the run) it is no longer named
+	static void T_ASecondOutputOfTheSameToolIsNamed()
+	{
+		using var f = new FakeMo2();
+		f.Mod("Old DynDOLOD");
+		File.WriteAllText(Path.Combine(f.Mods, "Old DynDOLOD", "DynDOLOD.esp"), "x");
+		f.Mod("Old Grass");
+		Directory.CreateDirectory(Path.Combine(f.Mods, "Old Grass", "grass"));
+		File.WriteAllText(Path.Combine(f.Mods, "Old Grass", "grass", "Tamrielx0000y0000.cgid"), "x");
+		f.Mod("Unticked DynDOLOD");
+		File.WriteAllText(Path.Combine(f.Mods, "Unticked DynDOLOD", "DynDOLOD.esm"), "x");
+		File.WriteAllText(Path.Combine(f.ProfileDir, "modlist.txt"), "+Old DynDOLOD\r\n+Old Grass\r\n-Unticked DynDOLOD\r\n" + f.Text("modlist.txt"));
+		var setup = f.WriteSetup(("dyndolod", new JsonObject { ["output_mod"] = "DynDOLOD Output" }), ("grass", new JsonObject { ["output_mod"] = "Grass Out" }));
+		var mo2 = Mo2Instance.Load(setup.Mo2Exe, setup.Mo2Instance);
+		var states = ProfileOf(f).States();
+		var dyn = Duplicates.Check(setup, mo2, states, "dyndolod").ToList();
+		Equal(1, dyn.Count, "one rival: " + string.Join(" | ", dyn.Select(i => i.Text)));
+		Check(dyn[0].Text.Contains("Old DynDOLOD", StringComparison.Ordinal) && dyn[0].Text.Contains("DynDOLOD.esp", StringComparison.Ordinal) && !dyn[0].Blocking, "named with its file, as a note");
+		Check(Duplicates.Check(setup, mo2, states, "grass").Any(i => i.Text.Contains("Old Grass", StringComparison.Ordinal)), "a grass cache of its kind counts too");
+		// the step replaces it: the run keeps it off, so it is no rival
+		var replaced = f.WriteSetup(("dyndolod", new JsonObject { ["output_mod"] = "DynDOLOD Output", ["replaces"] = new JsonArray("Old DynDOLOD") }));
+		Equal(0, Duplicates.Check(replaced, mo2, states, "dyndolod").Count(), "a replaced mod is not named");
+		Equal<string?>(null, Duplicates.Holds(Path.Combine(f.Mods, "Old DynDOLOD"), "pandora"), "a step with no own file is never guessed");
+	}
 }
