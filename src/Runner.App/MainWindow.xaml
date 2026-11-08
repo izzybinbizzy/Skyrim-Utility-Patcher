@@ -77,6 +77,15 @@
           <TextBlock Text="{Binding Interrupted}" Foreground="{DynamicResource Text}" VerticalAlignment="Center" TextWrapping="Wrap" Margin="0,0,16,0"/>
         </DockPanel>
       </Border>
+      <Border Background="{DynamicResource Panel2}" BorderBrush="{DynamicResource Gold}" BorderThickness="0,0,0,1" Padding="20,10"
+              Visibility="{Binding NewVersion, Converter={StaticResource NotEmpty}}">
+        <DockPanel>
+          <Button DockPanel.Dock="Right" Content="Not now" Style="{StaticResource Ghost}" Command="{Binding SetAsideNewVersionCommand}" Margin="8,0,0,0"
+                  AutomationProperties.HelpText="Not mentioned again until a newer version is out"/>
+          <Button DockPanel.Dock="Right" Content="Open the _download page" Style="{StaticResource Primary}" Command="{Binding OpenNewVersionCommand}"/>
+          <TextBlock Text="{Binding NewVersion}" Foreground="{DynamicResource Text}" VerticalAlignment="Center" TextWrapping="Wrap" Margin="0,0,16,0"/>
+        </DockPanel>
+      </Border>
       <Border Padding="20,6" Visibility="{Binding Message, Converter={StaticResource NotEmpty}}" Background="{DynamicResource Panel2}">
         <TextBlock Text="{Binding Message}" Foreground="{Binding MessageKind, Converter={StaticResource KindBrush}}" TextWrapping="Wrap"/>
       </Border>

@@ -3417,6 +3417,234 @@ public static class Program
 	}
 
 	// his checklist 475: each step's help is its tool's own page (never a guess), and the save steps get DynDOLOD's clean-save help
+	// his checklist 471: a newer version of the program is told at most once a day (one look on the web, then the remembered answer),
+	// a version set aside with "Not now" is not told again but the next newer one is, the switch turns the look off, and a look that
+	// fails stays quiet
+	static void T_ANewVersionIsToldOnceADay()
+	{
+		var dir = Path.Combine(Path.GetTempPath(), "SUP new version " + Guid.NewGuid().ToString("N"));
+		var looks = 0;
+		var newest = "1.1";
+		var fail = false;
+		ProgramUpdate.Probe = _ => {
+			++looks;
+			return fail ? throw new System.Net.Http.HttpRequestException("offline") : Task.FromResult("v" + newest);
+		};
+		try {
+			var now = new DateTime(2026, 11, 8, 12, 0, 0, DateTimeKind.Utc);
+			string? Ask(string a_current, DateTime a_at) => ProgramUpdate.Newer(dir, a_current, a_at, CancellationToken.None).GetAwaiter().GetResult();
+			Equal("v1.1", Ask("1.0", now), "a newer version is told");
+			Equal(1, looks, "one look on the web");
+			Equal("v1.1", Ask("1.0", now.AddHours(5)), "told again from what was remembered");
+			Equal(1, looks, "no second look within a day");
+			Equal(null, Ask("1.1", now.AddHours(6)), "the version you have is nothing new");
+			ProgramUpdate.SetAside(dir, "v1.1");
+			Equal(null, Ask("1.0", now.AddHours(7)), "a version set aside is not told again");
+			newest = "1.2";
+			Equal("v1.2", Ask("1.0", now.AddDays(1).AddHours(1)), "the next newer one is told after a day");
+			Equal(2, looks, "a day later it looks again");
+			ProgramUpdate.SetOff(dir, true);
+			Equal(null, Ask("1.0", now.AddDays(3)), "the switch turns it off");
+			Equal(2, looks, "switched off, it never looks");
+			ProgramUpdate.SetOff(dir, false);
+			fail = true;
+			Equal(null, Ask("1.0", now.AddDays(4)), "a failed look says nothing");
+			var afterFail = looks;
+			Equal(null, Ask("1.0", now.AddDays(4).AddHours(3)), "still nothing the same day");
+			Equal(afterFail, looks, "a failed look counts as the day's look - never asked again each start");
+			Check(ProgramUpdate.Page.StartsWith("https://", StringComparison.Ordinal), "its download page is a web address");
+			// switched off while a look is out on the web: the look's answer neither undoes the switch nor is told (CodeRabbit on #25)
+			fail = false;
+			newest = "1.3";
+			ProgramUpdate.Probe = _ => {
+				++looks;
+				ProgramUpdate.SetOff(dir, true);
+				return Task.FromResult("v" + newest);
+			};
+			Equal(null, Ask("1.0", now.AddDays(6)), "switched off during the look: nothing told");
+			Check(ProgramUpdate.IsOff(dir), "and the switch stays off");
+		} finally {
+			ProgramUpdate.Probe = null;
+			try {
+				Directory.Delete(dir, true);
+			} catch (IOException) {
+			}
+		}
+	}
+
+	// his checklist 466: a shared setup keeps its steps and options and loses everything of this PC - its Mod Organizer, backup
+	// folder, every value holding a path, and the commands it runs before and after a run; it names what the other player sets
+	static void T_ASharedSetupCarriesNothingOfThisPc()
+	{
+		var setup = Setup.FromJson(JsonNode.Parse("""
+			{ "name": "My Setup", "mo2": { "exe": "C:\\Games\\MO2\\ModOrganizer.exe", "instance": "D:\\MO2\\Instances\\SSE", "profile": "Bottled" },
+			  "backups": "D:\\Backups", "beforeRun": ["del /q C:\\Temp\\x"], "afterRun": [], "idleMinutes": 3,
+			  "steps": [ { "key": "pgpatcher", "on": true, "output": "PGPatcher Output", "tool_writes": "C:\\Users\\Someone\\pg" },
+			             { "key": "dyndolod", "on": false, "output": "DynDOLOD Output", "args": "-o:\"\\\\nas\\lod\"", "lodWorlds": ["Tamriel", "E:\\x"] } ] }
+			""")!.AsObject());
+		var r = SetupShare.Share(setup, "1.0");
+		var text = r.Setup.ToJsonString();
+		Check(!SetupShare.HoldsPath(text.Replace("\\\\", "\\")), "no path of this PC is left: " + text);
+		Equal("", r.Setup["mo2"]?["exe"]?.ToString(), "Mod Organizer is the other player's to set");
+		Equal("Bottled", r.Setup["mo2"]?["profile"]?.ToString(), "the profile name is kept as a hint");
+		Check(r.Setup["beforeRun"] == null && r.Setup["backups"] == null, "no commands, no backup folder");
+		Equal(3, r.Setup["idleMinutes"]?.GetValue<int>(), "its options are kept");
+		Equal(2, (r.Setup["steps"] as JsonArray)?.Count, "every step is kept");
+		Equal("PGPatcher Output", r.Setup["steps"]?[0]?["output"]?.ToString(), "a step's own options are kept");
+		Equal(1, (r.Setup["steps"]?[1]?["lodWorlds"] as JsonArray)?.Count, "a list keeps its other items");
+		Check(r.Removed.Any(x => x.Contains("before", StringComparison.Ordinal)) && r.Removed.Any(x => x.Contains("tool_writes", StringComparison.Ordinal)),
+			"what was taken out is named: " + string.Join("; ", r.Removed));
+		Check((r.Setup["shared"]?["setYourself"] as JsonArray)?.Count == r.Removed.Count, "the copy itself says what to set");
+		// CodeRabbit on #25: more path forms, names masked in values only, the file name masked, never written over its source,
+		// and a PGPatcher settings set named as the other player's to make
+		foreach (var p in new[] { @"%ProgramFiles(x86)%\Tool", "//nas/private/tool", @"\\nas\lod\x" }) {
+			Check(SetupShare.HoldsPath(p), "a path of this PC: " + p);
+		}
+		Check(!SetupShare.HoldsPath("https://www.nexusmods.com/skyrimspecialedition/mods/32382") && !SetupShare.HoldsPath("Tamriel"), "a web address or a word is no path");
+		var dir = Path.Combine(Path.GetTempPath(), "SUP share " + Guid.NewGuid().ToString("N"));
+		Directory.CreateDirectory(dir);
+		try {
+			var source = Path.Combine(dir, "Steps Of Izzy (shared).json");
+			File.WriteAllText(source, """
+				{ "name": "Steps Of Izzy", "mo2": { "profile": "Izzy Profile" },
+				  "steps": [ { "step": "pgpatcher", "on": true, "settings": { "settings": "PBR", "output_mod": "Izzy Output" } } ] }
+				""");
+			var named = Setup.Load(source);
+			List<(string Name, string Mask)> names = [("Izzy", "<you>"), ("Steps", "<this PC>")];
+			var shared = SetupShare.Share(named, "1.0", names);
+			Check(shared.Setup["steps"] is JsonArray { Count: 1 }, "a key that is also a name stays the setup's own key");
+			Equal("<you> Profile", shared.Setup["mo2"]?["profile"]?.ToString(), "a name in a value is masked");
+			Equal("pgpatcher", shared.Setup["steps"]?[0]?["step"]?.ToString(), "a step's own key is no name");
+			Check(shared.Removed.Any(x => x.Contains("PGPatcher settings set \"PBR\"", StringComparison.Ordinal)), "the settings set it names is the other player's to make: " +
+				string.Join("; ", shared.Removed));
+			var (file, _) = SetupShare.Write(named, dir, "1.0", names);
+			Check(!Path.GetFileName(file).Contains("Izzy", StringComparison.OrdinalIgnoreCase), "the file name masked too: " + Path.GetFileName(file));
+			Check(File.ReadAllText(source).Contains("Izzy Output", StringComparison.Ordinal), "the setup itself is untouched");
+			File.WriteAllText(Path.Combine(dir, "Mine (shared).json"), """{ "name": "Mine", "mo2": { "exe": "C:\\MO2\\ModOrganizer.exe" } }""");
+			var mine = Setup.Load(Path.Combine(dir, "Mine (shared).json"));
+			var (again, _) = SetupShare.Write(mine, dir, "1.0", names);
+			Check(!Files.SamePath(again, mine.File) && File.ReadAllText(mine.File).Contains("ModOrganizer.exe", StringComparison.Ordinal),
+				"a setup named \"... (shared)\" shared into its own folder is never written over: " + Path.GetFileName(again));
+		} finally {
+			try {
+				Directory.Delete(dir, true);
+			} catch (IOException) {
+			}
+		}
+	}
+
+	// his checklist 457: a save's character is read off the start of its header (the UESP layout), every character with a save is
+	// listed most recently played first, and a picked character limits the in-game steps to that character's saves
+	static void T_TheCharacterIsReadOffTheSave()
+	{
+		var dir = Path.Combine(Path.GetTempPath(), "SUP saves " + Guid.NewGuid().ToString("N"));
+		Directory.CreateDirectory(dir);
+		try {
+			void Save(string a_file, string a_name, DateTime a_at)
+			{
+				using (var fs = File.Create(Path.Combine(dir, a_file)))
+				using (var w = new BinaryWriter(fs, Encoding.Latin1)) {
+					w.Write(Encoding.ASCII.GetBytes("TESV_SAVEGAME"));
+					w.Write(100u);
+					w.Write(12u);
+					w.Write(7u);
+					w.Write((ushort)a_name.Length);
+					w.Write(Encoding.Latin1.GetBytes(a_name));
+					w.Write(new byte[64]);
+				}
+				File.SetLastWriteTimeUtc(Path.Combine(dir, a_file), a_at);
+			}
+			var t0 = new DateTime(2026, 11, 1, 12, 0, 0, DateTimeKind.Utc);
+			Save("Save1_Lydia.ess", "Lydia", t0);
+			Save("Save2_Björn.ess", "Björn", t0.AddHours(1));
+			Save("Save3_Lydia.ess", "Lydia", t0.AddHours(2));
+			File.WriteAllText(Path.Combine(dir, "broken.ess"), "not a save");
+			Equal("Björn", SaveHeader.PlayerName(Path.Combine(dir, "Save2_Björn.ess")), "the name is read, its letters too");
+			Equal(null, SaveHeader.PlayerName(Path.Combine(dir, "broken.ess")), "a file that is no save gives no name");
+			Equal("Lydia, Björn", string.Join(", ", SaveHeader.Characters(dir)), "every character once, the most recently played first");
+		} finally {
+			try {
+				Directory.Delete(dir, true);
+			} catch (IOException) {
+			}
+		}
+	}
+
+	// the in-game steps with a character picked: that character's newest save even when another character played since, a save
+	// of another character never loaded (named or an earlier clean save), and the save to play starting from the picked one's
+	// (CodeRabbit on #25)
+	static void T_TheInGameStepsUseThePickedCharactersSaves()
+	{
+		using var f = new FakeMo2();
+		File.WriteAllText(Path.Combine(f.ProfileDir, "settings.ini"), "[General]\r\nLocalSaves=true\r\n");
+		var p = ProfileOf(f);
+		var saves = InGame.SavesDir(p);
+		Directory.CreateDirectory(saves);
+		void Save(string a_file, string a_name, DateTime a_at)
+		{
+			using (var fs = File.Create(Path.Combine(saves, a_file + ".ess")))
+			using (var w = new BinaryWriter(fs, Encoding.Latin1)) {
+				w.Write(Encoding.ASCII.GetBytes("TESV_SAVEGAME"));
+				w.Write(100u);
+				w.Write(12u);
+				w.Write(7u);
+				w.Write((ushort)a_name.Length);
+				w.Write(Encoding.Latin1.GetBytes(a_name));
+				w.Write(new byte[64]);
+			}
+			File.SetLastWriteTimeUtc(Path.Combine(saves, a_file + ".ess"), a_at);
+		}
+		var t0 = DateTime.UtcNow.AddDays(-2);
+		Save("Save2_Bjorn", "Björn", t0.AddHours(1));
+		Save("Save3_Lydia", "Lydia", t0.AddHours(2));
+		Save("Skyrim Utility Patcher - clean save", "Lydia", t0.AddHours(3));
+		Equal("Save3_Lydia", InGame.NewestPlayerSave(p), "no character picked: anyone's newest (never one the runner made)");
+		Equal("Save2_Bjorn", InGame.NewestPlayerSave(p, null, "björn"), "the picked character's newest, though another played since");
+		Equal("Lydia", InGame.OtherCharacter(p, "Save3_Lydia", "Björn"), "a save of another character is told apart");
+		Equal<string?>(null, InGame.OtherCharacter(p, "Save2_Bjorn", "BJÖRN"), "the picked character's own save, in any case");
+		Equal<string?>(null, InGame.OtherCharacter(p, "Save3_Lydia", null), "no character picked: no conflict");
+		Equal<DateTime?>(null, InGame.OldCleanSave(p, "Björn"), "an earlier clean save of another character is not used");
+		Check(InGame.OldCleanSave(p, "Lydia") != null, "one of the picked character's is");
+		var player = InGame.NewestPlayerSave(p, null, "Björn");
+		Equal("Save2_Bjorn", InGame.PlaySaveFrom(null, null, InGame.OldCleanSave(p, "Björn"), player, InGame.SaveTime(p, player)).Save,
+			"the save to play starts from the picked character's save, not the newer clean save of another");
+		// the steps themselves pass the picked character on - each case below stops before any game would start
+		var setup = f.WriteSetup(("cleansave", new JsonObject()), ("playsave", new JsonObject()));
+		setup.Root["character"] = "Björn";
+		var mo2 = Mo2Instance.Load(f.Exe, f.Instance);
+		var runs = Runner.RunsDir(f.Data);
+		var j = new Journal { Id = "character", Folder = Path.Combine(runs, "0000 character"), SetupFile = setup.File, SetupName = setup.Name, Profile = "Test", Started = DateTime.Now };
+		Directory.CreateDirectory(j.Folder);
+		using var log = new RunLog(j.Folder);
+		var ctx = new RunContext { Setup = setup, Mo2 = mo2, Profile = p, Control = new Mo2Control(mo2, "Test", log), Log = log, Journal = j,
+			Cancel = CancellationToken.None, BackupFolder = Path.Combine(f.Backups, "character") };
+		Equal("Björn", InGame.Character(ctx), "the setup's character is read");
+		string Refused(Action a_step)
+		{
+			try {
+				a_step();
+			} catch (StepFailedException e) {
+				return e.Message;
+			}
+			return "(not refused)";
+		}
+		var named = new StepSettings(new JsonObject { ["save"] = "Save3_Lydia" });
+		Check(Refused(() => InGame.Deactivate(ctx, named)).Contains("is Lydia's, not Björn's", StringComparison.Ordinal), "the clean save refuses a named save of another character");
+		Check(Refused(() => InGame.PlaySave(ctx, named)).Contains("is Lydia's, not Björn's", StringComparison.Ordinal), "so does the save to play");
+		File.Delete(Path.Combine(saves, "Save2_Bjorn.ess"));
+		Equal("no save to load", Refused(() => InGame.PlaySave(ctx, new StepSettings(new JsonObject()))),
+			"with no save of the picked character, the save to play never falls back to another character's clean save");
+		// the clean save's own pick on the automatic route (DevBench ticked - a stand-in file, nothing runs): no save of the picked
+		// character is refused by name before anything starts, never another character's newest taken instead
+		var dev = Path.Combine(f.Mods, "DevBench", "SKSE", "Plugins");
+		Directory.CreateDirectory(dev);
+		File.WriteAllBytes(Path.Combine(dev, "devbench.dll"), []);
+		File.WriteAllText(Path.Combine(f.ProfileDir, "modlist.txt"), "+DevBench\r\n" + f.Text("modlist.txt"));
+		Check(DevBench.InProfile(p), "(DevBench ticked: the automatic route)");
+		var auto = Refused(() => InGame.Deactivate(ctx, new StepSettings(new JsonObject())));
+		Check(auto.Contains("no save of Björn", StringComparison.Ordinal), "the clean save's own pick keeps to the picked character: " + auto);
+	}
+
 	static void T_EveryToolStepHasItsHelpPage()
 	{
 		foreach (var s in StepCatalog.All.Where(s => s.Key is not ("shaders" or "xlodgen"))) {

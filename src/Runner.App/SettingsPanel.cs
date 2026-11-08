@@ -197,10 +197,25 @@ public static class SettingsPanel
 
 	static string Label(string a_key) => Labels.TryGetValue(a_key, out var l) ? l : char.ToUpperInvariant(a_key[0]) + a_key[1..].Replace('_', ' ');
 
+	// his checklist 471: the program's own new versions - kept for the whole program, saved the moment it is ticked
+	static void NewVersions(MainWindow a_w, StackPanel a_stack)
+	{
+		a_stack.Children.Add(new TextBlock { Text = "NEW VERSIONS OF THIS PROGRAM", Style = (Style)a_w.FindResource("H2"), Margin = new Thickness(0, 18, 0, 8), Tag = HeadTag });
+		var newVersions = new CheckBox { Content = "Tell me when a new version is out", IsChecked = !ProgramUpdate.IsOff(AppPaths.Data), Margin = new Thickness(0, 0, 0, 4) };
+		newVersions.Click += (_, _) => ProgramUpdate.SetOff(AppPaths.Data, newVersions.IsChecked != true);
+		a_stack.Children.Add(newVersions);
+		a_stack.Children.Add(new TextBlock { Text = "At most once a day, when the window opens, it asks its own download page which version is newest - nothing else is sent, " +
+			"and nothing is downloaded: the page opens in your browser when you choose.", Style = (Style)a_w.FindResource("MutedText"), TextWrapping = TextWrapping.Wrap });
+	}
+
 	public static FrameworkElement Build(MainWindow a_w, MainViewModel a_vm)
 	{
 		if (a_vm.Setup == null) {
-			return new TextBlock { Text = "Make or pick a setup first.", TextWrapping = TextWrapping.Wrap };
+			// the program's own new-version look happens with no setup too, so its switch is here as well
+			var none = new StackPanel();
+			none.Children.Add(new TextBlock { Text = "Make or pick a setup first.", TextWrapping = TextWrapping.Wrap });
+			NewVersions(a_w, none);
+			return none;
 		}
 		var work = (JsonObject)a_vm.Setup.Root.DeepClone();
 		HasChanges = false;
@@ -225,6 +240,32 @@ public static class SettingsPanel
 		top.Children.Add(findHint);
 
 		Head("THIS SETUP");
+		// his checklist 466: a copy another player can import - its steps and options, nothing of this PC
+		var share = new Button { Content = "Share this setup ...", Style = (Style)a_w.FindResource("Ghost"), HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 0, 0, 8),
+			ToolTip = "Writes a copy of this setup (as last saved) for another player: every path of this PC and the commands it runs before and after a run are taken out" };
+		share.Click += async (_, _) => {
+			if (a_vm.Setup is not { } current || !share.IsEnabled) {
+				return;
+			}
+			// the setup as it is this moment, written off the window's thread; one share at a time
+			share.IsEnabled = false;
+			var text = System.Text.Encoding.UTF8.GetBytes(current.Root.ToJsonString());
+			var source = current.File;
+			try {
+				var (file, gone) = await Task.Run(() => SetupShare.Write(Setup.Parse(text, source), Path.Combine(AppPaths.Data, "Shared setups"), MainWindow.AppVersion))
+					.ConfigureAwait(true);
+				if (Ask.Show(a_w, "Shared copy made", $"It is ready: {Path.GetFileName(file)}\n\nWhat the other player sets themselves:\n" +
+				    (gone.Count == 0 ? "nothing" : string.Join("\n", gone.Select(g => "- " + g))) + "\n\nThey bring it in with the import command (see the readme).",
+				    "Show the file", "Close")) {
+					System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer.exe", $"/select,\"{file}\"") { UseShellExecute = true });
+				}
+			} catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception or System.Text.Json.JsonException or InvalidDataException) {
+				a_vm.Say("The shared copy could not be made: " + e.Message, "bad");
+			} finally {
+				share.IsEnabled = true;
+			}
+		};
+		stack.Children.Add(share);
 		var mo2 = work["mo2"] as JsonObject ?? (JsonObject)(work["mo2"] = new JsonObject());
 		Field(stack, apply, "Mod Organizer's program", mo2, "exe");
 		Field(stack, apply, "Its instance folder", mo2, "instance");
@@ -232,6 +273,20 @@ public static class SettingsPanel
 		Field(stack, apply, "Backups folder", work, "backups");
 		Field(stack, apply, "Scratch folder (emptied after a whole run)", work, "scratch");
 		Field(stack, apply, "SKSE log folder (empty = My Games)", work, "skseLogs");
+		// his checklist 457: the character whose saves the in-game steps load (the names are read off the saves, off the window's thread)
+		Field(stack, apply, "Character for the in-game steps (empty = the newest save)", work, "character");
+		var whoHint = new TextBlock { Style = (Style)a_w.FindResource("MutedText"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(230, -6, 0, 10) };
+		stack.Children.Add(whoHint);
+		var forSaves = a_vm.Setup!;
+		_ = Task.Run(() => {
+			try {
+				var mo2 = Mo2Instance.Load(forSaves.Mo2Exe, forSaves.Mo2Instance);
+				return SaveHeader.Characters(InGame.SavesDir(new Profile(mo2, forSaves.Profile, () => false)));
+			} catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException or ArgumentException) {
+				return new List<string>();
+			}
+		}).ContinueWith(t => whoHint.Dispatcher.BeginInvoke(() => whoHint.Text = t.Result.Count == 0 ? "No saves found in this profile yet." :
+			"Characters with saves here, most recently played first: " + string.Join(", ", t.Result.Take(12))), TaskScheduler.Default);
 		Field(stack, apply, "A tool idle this long is looked at (minutes)", work, "idleMinutes", JsonValueKind.Number);
 		Field(stack, apply, "Free space a run needs (GB)", work, "minFreeGb", JsonValueKind.Number);
 		Choice(stack, apply, "Rebuild the shader caches", work, "shaderRebuild", [("whenChanged", "only when the shader mod changed"), ("always", "every run"), ("never", "never")]);
@@ -342,6 +397,8 @@ public static class SettingsPanel
 		stack.Children.Add(new TextBlock { Text = "The \"High contrast\" theme takes Windows' own high-contrast colors and is used by itself while Windows has high contrast on " +
 			"and no theme was picked here. \"Color-blind safe\" keeps finished, warning and failed apart by more than red and green. Every state also has its own mark.",
 			Style = (Style)a_w.FindResource("MutedText"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 0) });
+
+		NewVersions(a_w, stack);
 
 		// his ask 2026-10-27: aware of a tool's updates, the download from the runner (its page, in the player's browser)
 		Head("TOOL UPDATES");

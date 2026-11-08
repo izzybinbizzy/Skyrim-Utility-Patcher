@@ -12,10 +12,11 @@ namespace ToolRunner.App;
 //   "Skyrim Utility Patcher.exe" updates --setup <file>                                                its tools' newest versions (asks their pages)
 //   "Skyrim Utility Patcher.exe" changes --setup <file> [--look]                                       what Mod Organizer changed, newest first
 //   "Skyrim Utility Patcher.exe" bugreport [--setup <file>]                                            one zip for a bug report (the setup's last run), names masked
+//   "Skyrim Utility Patcher.exe" share --setup <file> [--out <folder>]                                 a copy of the setup to share: its paths and commands taken out
 // exit 0 = finished / clean, 1 = failed / refused, 2 = stopped, 3 = bad arguments, 4 = (updates) a tool has a newer version
 public static class Cli
 {
-	public static bool Handles(string[] a_args) => a_args.Length > 0 && a_args[0] is "run" or "retry" or "queue" or "check" or "preview" or "lod" or "restore" or "stop" or "stop-after" or "import" or "updates" or "changes" or "bugreport" or "--help" or "-h" or "/?";
+	public static bool Handles(string[] a_args) => a_args.Length > 0 && a_args[0] is "run" or "retry" or "queue" or "check" or "preview" or "lod" or "restore" or "stop" or "stop-after" or "import" or "updates" or "changes" or "bugreport" or "share" or "--help" or "-h" or "/?";
 
 	static string? Opt(string[] a_args, string a_name)
 	{
@@ -46,6 +47,7 @@ public static class Cli
 				"updates" => Updates(a_args),
 				"changes" => Changes(a_args),
 				"bugreport" => BugReportCmd(a_args),
+				"share" => ShareCmd(a_args),
 				_ => Help(),
 			};
 		} catch (Exception e) when (e is ArgumentException or IOException or InvalidDataException) {
@@ -61,11 +63,24 @@ public static class Cli
 
 	static int Help()
 	{
-		Console.WriteLine("Skyrim Utility Patcher - run | retry | queue | check | preview | lod | restore | stop | stop-after | updates | changes | import | bugreport   (see the readme)");
+		Console.WriteLine("Skyrim Utility Patcher - run | retry | queue | check | preview | lod | restore | stop | stop-after | updates | changes | import | bugreport | share   (see the readme)");
 		return 0;
 	}
 
 	// the newest run of the setup (or of any setup), zipped with its logs for a bug report; prints where the zip is
+	// his checklist 466: a copy of the setup another player can import - paths of this PC and its commands taken out
+	static int ShareCmd(string[] a_args)
+	{
+		var file = Opt(a_args, "--setup") ?? throw new ArgumentException("--setup <file> is needed");
+		var setup = Setup.Load(Path.GetFullPath(file));
+		var (outFile, removed) = SetupShare.Write(setup, Opt(a_args, "--out") is { } o ? Path.GetFullPath(o) : Path.Combine(AppPaths.Data, "Shared setups"), MainWindow.AppVersion);
+		Console.WriteLine($"shared copy: {outFile}");
+		foreach (var r in removed) {
+			Console.WriteLine("  taken out: " + r);
+		}
+		return 0;
+	}
+
 	static int BugReportCmd(string[] a_args)
 	{
 		var setup = Opt(a_args, "--setup") is { } s ? Path.GetFullPath(s) : null;

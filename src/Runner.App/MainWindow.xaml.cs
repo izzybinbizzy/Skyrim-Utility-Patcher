@@ -48,6 +48,13 @@ public partial class MainWindow : Window
 		// what changes on its own is said to a screen reader (his checklist 490) - once the window is up, so the first look at the
 		// last run is not read out as news
 		Loaded += (_, _) => Dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, () => _vm.PropertyChanged += Announce);
+		// his checklist 471: once the window is up, at most once a day, whether a newer version of the program is out
+		// (never for the off-screen pictures: no web question, no file written into that data folder, no banner in a picture)
+		Loaded += async (_, _) => {
+			if (!App.Headless) {
+				await _vm.LookForNewVersion(AppVersion);
+			}
+		};
 		Theme.Applied += _vm.Repaint;
 	}
 
@@ -79,6 +86,9 @@ public partial class MainWindow : Window
 				_powerSaid.Add(-1);
 				A11y.Say(this, _vm.PowerText, true);
 			}
+			break;
+		case nameof(MainViewModel.NewVersion) when _vm.NewVersion != "":
+			A11y.Say(this, _vm.NewVersion);
 			break;
 		case nameof(MainViewModel.Interrupted) when _vm.Interrupted != "":
 			A11y.Say(this, _vm.Interrupted, true);

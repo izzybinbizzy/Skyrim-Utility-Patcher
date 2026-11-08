@@ -133,6 +133,34 @@ public sealed partial class MainViewModel : Observable
 	public Cmd CheckCommand => field ??= new(() => _ = RunCheck());
 	public Cmd RetryCommand => field ??= new(() => _ = RunRetry());
 	public Cmd CancelPowerCommand => field ??= new(CancelPower);
+
+	// "A new version is out" (his checklist 471): the banner's text ("" = nothing to tell), its download page and "Not now"
+	public string NewVersion { get; set => Set(ref field, value); } = "";
+	string _newVersion = "";
+	public Cmd OpenNewVersionCommand => field ??= new(() => {
+		try {
+			System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(ProgramUpdate.Page) { UseShellExecute = true });
+		} catch (Exception e) when (e is System.ComponentModel.Win32Exception or InvalidOperationException) {
+			Say("The download page did not open: " + e.Message, "bad");
+		}
+	});
+	public Cmd SetAsideNewVersionCommand => field ??= new(() => {
+		if (_newVersion != "") {
+			ProgramUpdate.SetAside(AppPaths.Data, _newVersion);
+		}
+		NewVersion = "";
+	});
+
+	// asked once the window is up, off its thread; a look that fails says nothing (the next start tries again)
+	public async Task LookForNewVersion(string a_current)
+	{
+		var newer = await Task.Run(() => ProgramUpdate.Newer(AppPaths.Data, a_current, DateTime.UtcNow, CancellationToken.None)).ConfigureAwait(true);
+		// switched off in Settings while the look was out: nothing is shown
+		if (newer != null && !ProgramUpdate.IsOff(AppPaths.Data)) {
+			_newVersion = newer;
+			NewVersion = $"{Brand.Name} {newer} is out (you have {a_current}). Its download page has what changed.";
+		}
+	}
 	// the PC about to sleep or shut down after a run ("" = nothing pending): the banner with its Cancel button
 	public string PowerText { get; set => Set(ref field, value); } = "";
 	Task RunRestore() => Restore();
