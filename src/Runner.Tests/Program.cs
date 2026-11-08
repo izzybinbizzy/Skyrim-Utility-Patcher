@@ -4509,6 +4509,61 @@ public static class Program
 		Check(!Mo2Control.IsThisProgram("SSEEdit.exe"), "another program is");
 	}
 
+	// his checklist 460: the settings of the small, muted window, for the step only: back after it, after a failure too; off, nothing changes
+	static void T_TheQuietGameWindowGoesBack()
+	{
+		const string Prefs = "[AudioMenu]\r\nfAudioMasterVolume=1.0000\r\nfVal=1\r\n[Display]\r\nbBorderless=1\r\nbFull Screen=1\r\niSize H=1080\r\niSize W=1920\r\nother=keep\r\n[General]\r\nsLanguage=ENGLISH\r\n";
+		var changed = QuietGame.GamePrefs(Prefs);
+		var read = Mo2Instance.ReadQtIni(changed);
+		Equal("0", read["Display"]["bFull Screen"], "windowed");
+		Equal("0", read["Display"]["bBorderless"], "with its border");
+		Equal("960", read["Display"]["iSize W"], "small");
+		Equal("1", read["General"]["bAlwaysActive"], "and running behind other windows");
+		Equal("0.0000", read["AudioMenu"]["fAudioMasterVolume"], "muted");
+		Equal("keep", read["Display"]["other"], "the rest as it was");
+		Equal(Prefs.Split("\r\n").Length + 1, changed.Split("\r\n").Length, "only the missing line was added");
+		var tweaks = QuietGame.DisplayTweaks("[Render]\n#    true  - Exclusive fullscreen mode\nFullscreen = true\nBorderless = true\nBorderlessUpscale = false\n#Resolution=1920x1080\nResolutionScale=0.75\n[Other]\nResolution=keep\n");
+		Check(tweaks.Contains("\nFullscreen=false\n", StringComparison.Ordinal) && tweaks.Contains("\nBorderless=false\n", StringComparison.Ordinal), "its windowed mode: " + tweaks);
+		Check(tweaks.Contains("\nBorderlessUpscale = false\n", StringComparison.Ordinal) && tweaks.Contains("#    true  - Exclusive fullscreen mode", StringComparison.Ordinal), "another setting and its comment are left alone");
+		Check(tweaks.Contains("\nResolution=960x540\n", StringComparison.Ordinal) && tweaks.Contains("\n#ResolutionScale=0.75\n", StringComparison.Ordinal), "the size, and the scale that would apply over it taken out");
+		Check(tweaks.Contains("[Other]\nResolution=keep\n", StringComparison.Ordinal), "only in its own section");
+		Equal("[X]\nk=1\n", QuietGame.Set("[X]\nk=0\n", "X", "k", "1"), "an active line is set");
+		Equal("[X]\na=b\n[Y]\nk=1\n", QuietGame.Set("[X]\na=b\n", "Y", "k", "1"), "a section that was not there");
+
+		using var f = new FakeMo2();
+		var prefs = Path.Combine(f.ProfileDir, "skyrimprefs.ini");
+		File.WriteAllText(prefs, Prefs);
+		File.WriteAllText(Path.Combine(f.ProfileDir, "settings.ini"), "[General]\r\nLocalSettings=true\r\n");
+		var tweakFile = Path.Combine(f.Mods, "Base Mod", "SKSE", "Plugins", "SSEDisplayTweaks.ini");
+		Directory.CreateDirectory(Path.GetDirectoryName(tweakFile)!);
+		const string TweaksBefore = "[Render]\r\nFullscreen = true\r\n";
+		File.WriteAllText(tweakFile, TweaksBefore);
+		var seen = "";
+		var fail = false;
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => {
+			QuietGame.Apply(ctx);
+			QuietGame.Apply(ctx);
+			seen = File.ReadAllText(prefs) + File.ReadAllText(tweakFile);
+			if (fail) {
+				throw new StepFailedException("a failure");
+			}
+		}));
+		var setup = f.WriteSetup(("landscapefixer", new JsonObject()));
+		Equal(RunState.Finished, Runner.Run(new RunRequest(f.SetupFile, f.Data)).State, "off: the run finished");
+		Check(seen == Prefs + TweaksBefore, "off: nothing changes");
+		setup.Root["quietGame"] = true;
+		setup.Save(f.SetupFile);
+		Equal(RunState.Finished, Runner.Run(new RunRequest(f.SetupFile, f.Data)).State, "on: the run finished");
+		Check(seen.Contains("iSize W=960", StringComparison.Ordinal) && seen.Contains("Fullscreen=false", StringComparison.Ordinal), "on: the step sees the small window");
+		Equal(Prefs, File.ReadAllText(prefs), "and the game's settings go back");
+		Equal(TweaksBefore, File.ReadAllText(tweakFile), "and the mod's");
+		fail = true;
+		Check(Runner.Run(new RunRequest(f.SetupFile, f.Data)).State != RunState.Finished, "a step that fails");
+		Check(seen.Contains("iSize W=960", StringComparison.Ordinal), "had them changed");
+		Equal(Prefs, File.ReadAllText(prefs), "and they go back too");
+		Equal(TweaksBefore, File.ReadAllText(tweakFile), "the mod's as well");
+	}
+
 	static void T_EveryToolStepHasItsHelpPage()
 	{
 		foreach (var s in StepCatalog.All.Where(s => s.Key is not ("shaders" or "xlodgen"))) {

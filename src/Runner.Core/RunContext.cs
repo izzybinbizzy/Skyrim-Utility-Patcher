@@ -13,6 +13,8 @@ public sealed class RunContext
 	public required RunLog Log { get; init; }
 	// the game's own words for its load boxes, read the first time a box is not in English
 	public GameWords? GameWords { get; set; }
+	// the settings files the small, muted game window changed for this step
+	public List<string> QuietFiles { get; } = [];
 	public required Journal Journal { get; init; }
 	public required CancellationToken Cancel { get; init; }
 	public required string BackupFolder { get; init; }

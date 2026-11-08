@@ -535,6 +535,7 @@ public static class Runner
 			foreach (var live in learned) {
 				StepKit.PutFilesBack(a_ctx, live);
 			}
+			QuietGame.PutBack(a_ctx);
 		} catch (Exception e) {
 			var stopped = e is OperationCanceledException;
 			r.State = stopped ? StepState.Stopped : StepState.Failed;
@@ -558,6 +559,7 @@ public static class Runner
 			}
 			PutBackParked(a_ctx, a_s.Key);
 			StepKit.PutFilesBack(a_ctx);
+			a_ctx.QuietFiles.Clear();
 			MoveNewOverwrite(a_ctx, overwriteBefore);
 			return false;
 		}

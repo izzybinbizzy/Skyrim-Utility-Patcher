@@ -712,6 +712,7 @@ public static partial class InGame
 	static void LaunchGame(RunContext a_ctx, StepSettings a_s)
 	{
 		NoGameRunning(a_ctx);
+		QuietGame.Apply(a_ctx);
 		a_ctx.Control.LaunchGame(a_s.Str("launch_executable") ?? "SKSE", FreshGamePid(), a_ctx.Cancel);
 	}
 
