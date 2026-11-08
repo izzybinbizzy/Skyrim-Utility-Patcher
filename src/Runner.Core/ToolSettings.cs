@@ -182,17 +182,36 @@ public static partial class ToolSettings
 		// the player pressed "Learn its settings": their Mod Organizer closes the way Start closes it, never waited on for half an hour
 		var control = new Mo2Control(mo2, a_setup.Profile, a_log) { AllowCloseTheirs = true };
 		control.Close(null, a_ct);
-		using var proc = control.RunExecutable(title, image, null, a_ct, TimeSpan.FromMinutes(5));
-		a_log.Say($"{tool} is open - set it up as you want it, save, and close it");
-		while (!proc.HasExited) {
-			a_ct.ThrowIfCancellationRequested();
-			Thread.Sleep(1000);
+		// a tool inside a switched-off mod: Mod Organizer cannot start it from there, so that mod is on while the tool is open and
+		// the profile's order files go back after (one holding a plugin is left to the player, as in a run)
+		var profile = new Profile(mo2, a_setup.Profile, () => control.Running);
+		Dictionary<string, byte[]>? putBack = null;
+		if (StepKit.ToolMod(mo2, profile, title) is { } toolMod) {
+			if (Plugins.InMod(mo2.ModDir(toolMod)).Count > 0) {
+				throw new StepFailedException($"{tool}'s program is inside the mod \"{toolMod}\", which is switched off in this profile - tick that mod (it holds a plugin), then learn again");
+			}
+			putBack = profile.Snapshot();
+			profile.SetMods([toolMod], [], a_log);
 		}
-		// a packed tool keeps its window in a child after its launcher ends: wait for the launcher's whole tree
-		var root = proc.Id;
-		while (Procs.Tree(root).Any(pid => pid != root && Procs.StartTime(pid) != null)) {
-			a_ct.ThrowIfCancellationRequested();
-			Thread.Sleep(1000);
+		try {
+			using var proc = control.RunExecutable(title, image, null, a_ct, TimeSpan.FromMinutes(5));
+			a_log.Say($"{tool} is open - set it up as you want it, save, and close it");
+			while (!proc.HasExited) {
+				a_ct.ThrowIfCancellationRequested();
+				Thread.Sleep(1000);
+			}
+			// a packed tool keeps its window in a child after its launcher ends: wait for the launcher's whole tree
+			var root = proc.Id;
+			while (Procs.Tree(root).Any(pid => pid != root && Procs.StartTime(pid) != null)) {
+				a_ct.ThrowIfCancellationRequested();
+				Thread.Sleep(1000);
+			}
+		} finally {
+			if (putBack != null) {
+				// the put-back happens even after a Stop
+				control.Close(null, CancellationToken.None);
+				profile.Restore(putBack);
+			}
 		}
 		var changed = Changed(before, Scan(roots, skip)).Where(f => !f.EndsWith("_Debug_log.txt", StringComparison.OrdinalIgnoreCase)).ToList();
 		// a tool that keeps its window's values in no file (TexGen, DynDOLOD) still writes them into its debug log when it runs

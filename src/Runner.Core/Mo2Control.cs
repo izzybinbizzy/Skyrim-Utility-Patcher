@@ -583,11 +583,16 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 		int Watch()
 		{
 			try {
+				// a child of Mod Organizer, and any new copy of Mod Organizer itself whoever started it (the helper it runs for a
+				// program it cannot start directly lived 3 s and was missed by the parent test alone)
 				var mo2 = Pids().ToHashSet();
-				foreach (var (child, parent) in Procs.Snapshot().Where(p => mo2.Contains(p.Parent) && known.Add(p.Pid))) {
+				foreach (var (child, parent) in Procs.Snapshot().Where(p => (mo2.Contains(p.Parent) || mo2.Contains(p.Pid)) && known.Add(p.Pid))) {
 					started.Add($"{DateTime.Now:HH:mm:ss.f}  {Procs.Image(child)} (process {child}, started by {parent})");
 				}
 			} catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) {
+				if (started.Count == 0 || !started[^1].StartsWith('(')) {
+					started.Add($"(processes could not be listed: {e.Message})");
+				}
 			}
 			return FreshPid(a_image, old);
 		}
@@ -654,7 +659,9 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 				lines.AddRange(RawLinesSince(f.FullName, 0).Where(l => l.Contains("inject", StringComparison.OrdinalIgnoreCase) ||
 					l.Contains("inithooks called", StringComparison.OrdinalIgnoreCase) || l.Contains("remove from process", StringComparison.OrdinalIgnoreCase)).Select(s => "  " + s));
 			}
-			var file = Path.Combine(folder, $"{a_title} did not start.txt");
+			// a title may hold characters a file name cannot (an executable called "xEdit: clean")
+			var safe = string.Concat(a_title.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '-' : c)).Trim();
+			var file = Path.Combine(folder, $"{(safe == "" ? "tool" : safe)} did not start.txt");
 			Files.WriteAtomic(file, string.Join("\r\n", lines) + "\r\n");
 			return $" Everything Mod Organizer did meanwhile is in \"{Path.GetFileName(file)}\" in the run's folder.";
 		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
