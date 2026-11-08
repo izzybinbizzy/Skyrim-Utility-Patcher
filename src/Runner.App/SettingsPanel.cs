@@ -166,12 +166,19 @@ public static class SettingsPanel
 				return;
 			}
 			tidy.IsEnabled = false;
-			var removed = await Task.Run(() => {
-				// one at a time with runs and put-backs (the run lock, taken and given back on this thread)
-				using var hold = Runner.HoldIfFree();
-				return hold == null ? null : Runner.PruneBackupsOf(setup, AppPaths.Runs, null, keep, RunLog.Null);
-			});
-			a_vm.Say(removed == null ? "Not removed: a run or a put-back is going - try again when it is done." : $"{removed.Count} old backup(s) removed.", removed == null ? "bad" : "good");
+			try {
+				var removed = await Task.Run(() => {
+					// one at a time with runs and put-backs (the run lock, taken and given back on this thread)
+					using var hold = Runner.HoldIfFree();
+					return hold == null ? null : Runner.PruneBackupsOf(setup, AppPaths.Runs, null, keep, RunLog.Null);
+				});
+				a_vm.Say(removed == null ? "Not removed: a run or a put-back is going - try again when it is done." : $"{removed.Count} old backup(s) removed.", removed == null ? "bad" : "good");
+			} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+				// a backup folder that went away or locked part way: said, and the button can be pressed again
+				a_vm.Say("The old backups could not all be looked at: " + e.Message, "bad");
+			} finally {
+				tidy.IsEnabled = true;
+			}
 			Measure();
 		};
 		var row = new WrapPanel { Margin = new Thickness(230, -4, 0, 12) };
@@ -393,6 +400,13 @@ public static class SettingsPanel
 				return;
 			}
 			shown = pick.SelectedIndex;
+			// a search in force is applied again once the new step's fields are built (else they stay hidden under the old filter)
+			pick.Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background, () => {
+				if (find.Text.Trim() is { Length: > 0 } q) {
+					var hits = Filter(stack, q);
+					findHint.Text = hits == 0 ? "No setting has that word." : $"{hits} setting(s) found.";
+				}
+			});
 			stepHost.Children.Clear();
 			stepApply.Clear();
 			if (pick.SelectedIndex < 0) {
@@ -503,7 +517,14 @@ public static class SettingsPanel
 		// his checklist 484: a clean removal of everything the program keeps (to the Recycle Bin, never erased)
 		var remove = new Button { Content = "Remove its data ...", Style = (Style)a_w.FindResource("Danger"), Margin = new Thickness(10, 0, 0, 0),
 			ToolTip = "Sends the program's own data and its run backups to the Recycle Bin - the mods the tools made stay in Mod Organizer" };
-		remove.Click += (_, _) => RemoveData(a_w, errors);
+		remove.Click += async (_, _) => {
+			remove.IsEnabled = false;
+			try {
+				await RemoveData(a_w, errors);
+			} finally {
+				remove.IsEnabled = true;
+			}
+		};
 		var bar = new WrapPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 12, 0, 0) };
 		bar.Children.Add(save);
 		bar.Children.Add(undo);
@@ -600,14 +621,15 @@ public static class SettingsPanel
 
 	// everything the program keeps to the Recycle Bin, after a plain list of what goes and what stays; the window closes after,
 	// since the folder it writes into is gone. Refused while a run goes or one still needs its profile put back.
-	static void RemoveData(MainWindow a_w, TextBlock a_errors)
+	// the slow parts (listing every backup folder, recycling) run off the window's thread; the button stays off meanwhile
+	static async Task RemoveData(MainWindow a_w, TextBlock a_errors)
 	{
 		if (HasChanges && !Ask.Show(a_w, "Settings not saved", "You changed settings and did not press Save. Go on without saving them?", "Go on", "Keep editing")) {
 			return;
 		}
 		var keepSetups = Ask.Show(a_w, "Keep your setups?", "Your setups (which steps run, in which order, with which settings) can stay, so a new copy of the program " +
 			"picks them up again. Everything else the program keeps goes.", "Keep my setups", "Remove them too");
-		var plan = DataRemoval.Make(AppPaths.Data, keepSetups);
+		var plan = await Task.Run(() => DataRemoval.Make(AppPaths.Data, keepSetups));
 		if (plan.Refused != null) {
 			a_errors.Text = "Not removed: " + plan.Refused + ".";
 			return;
@@ -622,7 +644,7 @@ public static class SettingsPanel
 		}
 		List<string> failed;
 		try {
-			failed = DataRemoval.Carry(plan);
+			failed = await Task.Run(() => DataRemoval.Carry(plan));
 		} catch (InvalidOperationException e) {
 			a_errors.Text = "Not removed: " + e.Message + ".";
 			return;

@@ -8,28 +8,39 @@ namespace ToolRunner;
 // Refused while a run or a queue goes, and while a run still needs its profile put back.
 public static class DataRemoval
 {
-	public sealed record Plan(List<string> Remove, List<string> Kept, string? Refused);
+	public sealed record Plan(List<string> Remove, List<string> Kept, string? Refused, string DataDir = "");
+
+	// why removal may not go ahead now (null = it may): a run going or not put back
+	static string? Busy(string a_dataDir)
+	{
+		var all = Journal.All(Runner.RunsDir(a_dataDir)).ToList();
+		return all.Any(j => (j.Unfinished || j.InGameAfter) && j.OwnerAlive) || QueueRun.Read(a_dataDir) != null ? "a run is going - wait for it to end" :
+			all.Any(j => j.Unfinished) ? "a run did not finish - put your profile back first, or its switched-off outputs stay off" : null;
+	}
 
 	public static Plan Make(string a_dataDir, bool a_keepSetups)
 	{
 		var remove = new List<string>();
 		var kept = new List<string>();
-		var runs = Runner.RunsDir(a_dataDir);
-		var all = Journal.All(runs).ToList();
-		var refused = all.Any(j => j.Unfinished && j.OwnerAlive) || QueueRun.Read(a_dataDir) != null ? "a run is going - wait for it to end" :
-			all.Any(j => j.Unfinished) ? "a run did not finish - put your profile back first, or its switched-off outputs stay off" : null;
+		var refused = Busy(a_dataDir);
 		var setups = Path.Combine(a_dataDir, "Setups");
-		// each setup's own run backups, by the run-folder name the runner gives them; nothing else in that folder is touched
-		if (Directory.Exists(setups)) {
-			foreach (var f in Directory.GetFiles(setups, "*.json")) {
-				Setup s;
-				try {
-					s = Setup.Load(f);
-				} catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException or System.Text.Json.JsonException) {
-					continue;
+		// each setup's own run backups, by the run-folder name the runner gives them; nothing else in that folder is touched. A setup
+		// that cannot be read, or a folder that cannot be listed, refuses the removal: its backups would be left behind unseen
+		try {
+			if (Directory.Exists(setups)) {
+				foreach (var f in Directory.GetFiles(setups, "*.json")) {
+					Setup s;
+					try {
+						s = Setup.Load(f);
+					} catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException or System.Text.Json.JsonException) {
+						refused ??= $"the setup \"{Path.GetFileName(f)}\" could not be read ({e.Message}) - its backups could not be found";
+						continue;
+					}
+					remove.AddRange(BackupsOf(s.BackupDir, s.Name, ref refused));
 				}
-				remove.AddRange(BackupsOf(s.BackupDir, s.Name));
 			}
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+			refused ??= "the Setups folder could not be listed: " + e.Message;
 		}
 		// its work folder in ProgramData (FasterNGIO's wrapper), under the new and the old name
 		foreach (var work in WorkRoots.Where(Directory.Exists)) {
@@ -43,13 +54,20 @@ public static class DataRemoval
 				remove.Add(a_dataDir);
 			}
 		}
-		return new Plan(remove.Distinct(StringComparer.OrdinalIgnoreCase).ToList(), kept, refused);
+		return new Plan(remove.Distinct(StringComparer.OrdinalIgnoreCase).ToList(), kept, refused, a_dataDir);
 	}
 
 	// the offline tests point this elsewhere (the real ProgramData folders are never touched by a test)
 	public static IEnumerable<string> WorkRoots { get; set; } = [Brand.WorkRoot, Brand.OldWorkRoot];
 
 	public static List<string> BackupsOf(string a_backupDir, string a_setupName)
+	{
+		string? ignored = null;
+		return BackupsOf(a_backupDir, a_setupName, ref ignored);
+	}
+
+	// a backup folder that cannot be listed sets a_problem (the removal is then refused, never silently incomplete)
+	static List<string> BackupsOf(string a_backupDir, string a_setupName, ref string? a_problem)
 	{
 		if (a_backupDir == "" || !Directory.Exists(a_backupDir)) {
 			return [];
@@ -58,9 +76,23 @@ public static class DataRemoval
 		try {
 			return Directory.GetDirectories(a_backupDir).Where(d => own.IsMatch(Path.GetFileName(d))).ToList();
 		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+			a_problem ??= $"the backup folder \"{a_backupDir}\" could not be listed ({e.Message})";
 			return [];
 		}
 	}
+
+	// a path on a network or cloud-mapped drive: Windows deletes it for good there instead of putting it in the Recycle Bin
+	public static Func<string, bool> OnNetwork { get; set; } = a_path => {
+		var full = Path.GetFullPath(a_path);
+		if (full.StartsWith(@"\\", StringComparison.Ordinal)) {
+			return true;
+		}
+		try {
+			return new DriveInfo(Path.GetPathRoot(full)!).DriveType is DriveType.Network or DriveType.NoRootDirectory or DriveType.Unknown;
+		} catch (Exception e) when (e is ArgumentException or IOException) {
+			return true;
+		}
+	};
 
 	// every entry of the plan to the Recycle Bin; returns what could not go, each with why (a_recycle is for the offline tests)
 	public static List<string> Carry(Plan a_plan, Func<string, string?>? a_recycle = null)
@@ -68,9 +100,19 @@ public static class DataRemoval
 		if (a_plan.Refused != null) {
 			throw new InvalidOperationException(a_plan.Refused);
 		}
+		// the run lock through the whole removal, and the check made again under it: a run started from the command line while the
+		// list was on screen is never left without its record and backups
+		using var hold = a_plan.DataDir == "" ? null : Runner.HoldIfFree() ?? throw new InvalidOperationException("a run started - nothing was removed");
+		if (a_plan.DataDir != "" && Busy(a_plan.DataDir) is { } now) {
+			throw new InvalidOperationException(now + " - nothing was removed");
+		}
 		var recycle = a_recycle ?? Recycle;
 		var failed = new List<string>();
 		foreach (var p in a_plan.Remove.Where(p => File.Exists(p) || Directory.Exists(p))) {
+			if (OnNetwork(p)) {
+				failed.Add($"{p}: on a network drive, where Windows would delete it for good instead of recycling it - left in place");
+				continue;
+			}
 			if (recycle(p) is { } why) {
 				failed.Add($"{p}: {why}");
 			}

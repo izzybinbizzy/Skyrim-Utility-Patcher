@@ -224,7 +224,8 @@ public sealed partial class MainViewModel : Observable
 		if (load != _lastLoad || !ReferenceEquals(setup, Setup)) {
 			return;
 		}
-		_lastDetail = got.ToDictionary(g => g.Section.Key, g => g.Text);
+		// a setup that lists a step twice shares one section between both rows (never a duplicate-key throw)
+		_lastDetail = got.GroupBy(g => g.Section.Key).ToDictionary(g => g.Key, g => g.First().Text);
 		foreach (var row in Steps) {
 			var (s, line, _) = got.FirstOrDefault(g => g.Section.Key == row.Key);
 			row.LastRun = s?.Latest == null ? "" : line;
@@ -317,8 +318,9 @@ public sealed partial class MainViewModel : Observable
 
 	public void Say(string a_text, string a_kind = "")
 	{
-		Message = a_text;
+		// the kind first: a screen reader hears the message as soon as it changes, and its urgency comes from the kind
 		MessageKind = a_kind;
+		Message = a_text;
 	}
 
 	// ---------------------------------------------------------------- the live view, once a second
@@ -398,7 +400,7 @@ public sealed partial class MainViewModel : Observable
 			ShowReady();
 			return;
 		}
-		IsRunning = _run.Unfinished && _run.OwnerAlive;
+		IsRunning = (_run.Unfinished || _run.InGameAfter) && _run.OwnerAlive;
 		RetryFrom = !IsRunning && queue == null && SelectedSetup != null && string.Equals(_run.SetupFile, SelectedSetup.File, StringComparison.OrdinalIgnoreCase) &&
 		            Retry.FromStep(_run) is { } from ? from : "";
 		StopAfterAsked = _run.StopAfterStep;
@@ -517,7 +519,8 @@ public sealed partial class MainViewModel : Observable
 	public static string LogFile(string a_folder, bool a_detailed)
 	{
 		var simple = Path.Combine(a_folder, RunLog.SimpleName);
-		return !a_detailed && File.Exists(simple) ? simple : Path.Combine(a_folder, "log.txt");
+		// a run from before the simple log (its steps.txt empty, or made only by a later restore) shows its detailed log
+		return !a_detailed && File.Exists(simple) && new FileInfo(simple).Length > 0 ? simple : Path.Combine(a_folder, "log.txt");
 	}
 
 	void TailLog()

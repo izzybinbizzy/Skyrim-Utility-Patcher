@@ -36,7 +36,9 @@ public static partial class PowerAfter
 	public static Kind Decide(Kind a_wanted, bool a_onlyFinished, RunState a_state) =>
 		a_state == RunState.Stopped || (a_onlyFinished && a_state != RunState.Finished) ? Kind.None : a_wanted;
 
-	// the pending action as the window reads it (null = none, or one whose time has come - too late to cancel)
+	// the pending action as the window reads it (null = none). The notice file lives until the action is asked of Windows (Carry
+	// removes it just before), so it can be cancelled until then even if the clock ran ahead of the countdown; a file left by a
+	// program that died is ignored once it is minutes old
 	public static Pending? Look(string a_dataDir)
 	{
 		try {
@@ -44,7 +46,7 @@ public static partial class PowerAfter
 				return null;
 			}
 			var p = JsonSerializer.Deserialize<Pending>(Files.ReadShared(File(a_dataDir)));
-			return p != null && p.At > DateTime.Now ? p : null;
+			return p != null && p.At > DateTime.Now.AddMinutes(-5) ? p : null;
 		} catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException) {
 			return null;
 		}

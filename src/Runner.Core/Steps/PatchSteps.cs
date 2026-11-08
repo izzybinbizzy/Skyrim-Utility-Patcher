@@ -51,6 +51,9 @@ public abstract class LauncherStep : IStep
 	// the folder beside its program that holds its translations (each a JSON file with its button's words), or null
 	protected virtual string? TranslationFolder => null;
 
+	// the plugin a finished run writes last (null = none known)
+	protected virtual string? OutputPlugin => null;
+
 	// the names its start button may carry: its own words in every language it ships ("run" > "generate" in each translation file
 	// - his checklist 439: a tool set to another language is understood too), then the English ones
 	public static List<string> StartButtonNames(string? a_translations, IEnumerable<string> a_english)
@@ -150,6 +153,12 @@ public abstract class LauncherStep : IStep
 					throw new StepFailedException($"{name} ended without writing anything into {Path.GetFileName(outDir)}. " +
 						(Exited(proc) ? "It closed." : "Its window shows: " + WindowSays(w)));
 				}
+				// its plugin is the last thing it writes: meshes without a fresh plugin are a run that stopped part way (they never
+				// replace the last good output)
+				if (OutputPlugin is { } plugin && !(File.Exists(Path.Combine(outDir, plugin)) && File.GetLastWriteTimeUtc(Path.Combine(outDir, plugin)) > t0)) {
+					throw new StepFailedException($"{name} stopped before it wrote {plugin} - its run did not finish. " +
+						(Exited(proc) ? "It closed." : "Its window shows: " + WindowSays(w)));
+				}
 				a_ctx.Log.Detail($"{name} finished its run");
 			} finally {
 				StepKit.CloseTool(a_ctx, image);
@@ -172,7 +181,9 @@ public abstract class LauncherStep : IStep
 	static void UnknownBox(string a_name, string a_image)
 	{
 		if (Uia.Boxes(StepKit.PidsOf(a_image)()).FirstOrDefault() is { } box) {
-			throw new StepFailedException($"{a_name} shows a box this step does not know (left for you): {box.Text.Trim()}");
+			// its whole text goes into the log (the failure line keeps it too); the tool is then closed so the profile can be put back
+			throw new StepFailedException($"{a_name} showed a box this step does not know, so the step stopped without answering it (the tool is closed " +
+				$"so your profile can be put back; run {a_name} yourself to see the box again). It said: {box.Text.Trim()}");
 		}
 	}
 }
@@ -184,6 +195,7 @@ public sealed class LandscapeFixerStep : LauncherStep
 	protected override string TitleRx => "^Landscape Fixer";
 	protected override string[] StartNames => ["Generate", "Start"];
 	protected override string? TranslationFolder => "LandscapeFixer_translations";
+	protected override string? OutputPlugin => "LandscapeFixer.esp";
 
 	// it keeps one settings file per Mod Organizer instance, named after the folder holding that instance's ModOrganizer.ini
 	protected override string SettingsFile(RunContext a_ctx) =>

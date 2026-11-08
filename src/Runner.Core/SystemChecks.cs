@@ -18,7 +18,7 @@ public static partial class SystemChecks
 			try {
 				outList.AddRange(a_check());
 			} catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Security.SecurityException or System.ComponentModel.Win32Exception or
-			                            ArgumentException or NotSupportedException or InvalidOperationException) {
+			                            ArgumentException or NotSupportedException or InvalidOperationException or DllNotFoundException or EntryPointNotFoundException) {
 				outList.Add(new Issue("", false, $"could not check {a_what}: {e.Message}"));
 			}
 		}

@@ -20,6 +20,10 @@ public sealed class RunContext
 	// outputs to tick once the step's mods are put back (applied by the runner after each step)
 	public List<string> PendingEnable { get; } = [];
 	public string? CleanSaveName { get; set; }
+
+	// when this run last started its game: a crash log is that start's only if written after it (an earlier start's crash, retried
+	// since, is never named as the cause of a later close)
+	public DateTime? GameLaunched { get; set; }
 	public Dictionary<string, string> CleanSaveExtraOff { get; set; } = [];
 	public string Mo2Dir => Path.GetDirectoryName(Mo2.Exe)!;
 
@@ -145,8 +149,19 @@ public sealed class Toggle : IDisposable
 			_ctx.Log.Error($"could not close Mod Organizer to put the mods back after {_label}: {e.Message}");
 			throw;
 		}
+		// what the player changed in Mod Organizer while the step's switches were on (CodeRabbit on PR #24): read before the order
+		// files go back, laid back over them after, and still counted as the player's (the expectation goes back to before the
+		// step), so the run's final put-back sees and keeps it too
+		var theirs = _ctx.Profile.ChangedByOthers();
+		var marks = theirs.Count > 0 ? _ctx.Profile.PluginMarks() : [];
 		_ctx.Profile.Restore(_snap);
 		_ctx.Profile.OursBack(_oursBefore);
+		if (theirs.Count > 0) {
+			var expected = _ctx.Profile.OursNow();
+			_ctx.Log.Detail($"kept what you changed in Mod Organizer during {_label}: " + string.Join(", ", theirs.Select(p => (p.Value == '+' ? "on " : "off ") + p.Key)));
+			Runner.ReapplyTheirs(_ctx, theirs, marks);
+			_ctx.Profile.OursBack(expected);
+		}
 	}
 }
 

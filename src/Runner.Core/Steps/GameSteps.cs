@@ -170,6 +170,7 @@ public sealed class GrassStep : IStep
 					a_ctx.Activity(Key, $"the game builds the grass cache - start {launches} ({have} files so far)");
 					InGame.NoGameRunning(a_ctx);
 					var sw = Stopwatch.StartNew();
+					a_ctx.GameLaunched = DateTime.Now;
 					using var g = Process.GetProcessById(a_ctx.Control.LaunchGame(a_s.Str("launch_executable") ?? "SKSE", InGame.FreshGamePid(), a_ctx.Cancel));
 					var lastN = -1;
 					var still = Stopwatch.StartNew();
@@ -194,7 +195,7 @@ public sealed class GrassStep : IStep
 					if (File.Exists(flag)) {
 						if (launches == 1 && sw.Elapsed < TimeSpan.FromMinutes(a_s.Int("first_start_min", 5))) {
 							throw new StepFailedException($"the first start crashed after {sw.Elapsed.TotalMinutes:0.0} minutes - a broken setup, not a normal grass-cache crash" +
-								InGame.CrashNote(InGame.SkseLogs(a_ctx.Setup, a_ctx.Mo2), a_ctx.Mo2.OverwriteDir, a_ctx.Journal.Started));
+								InGame.CrashNote(InGame.SkseLogs(a_ctx.Setup, a_ctx.Mo2), a_ctx.Mo2.OverwriteDir, a_ctx.GameLaunched ?? a_ctx.Journal.Started));
 						}
 						idle = Files.CountFiles(ow) <= have ? idle + 1 : 0;
 						if (launches - 1 >= a_s.Int("max_restarts", 15)) {
@@ -418,6 +419,9 @@ public sealed class ShaderStep : IStep
 					InGame.NoGameRunning(a_ctx);
 					var sw = Stopwatch.StartNew();
 					g?.Dispose();
+					a_ctx.GameLaunched = DateTime.Now;
+					// shaders already in the cache came from an earlier start of this step: only new ones show THIS start works
+					var atLaunch = Files.CountFiles(owCache);
 					g = Process.GetProcessById(a_ctx.Control.LaunchGame(a_s.Str("launch_executable") ?? "SKSE", InGame.FreshGamePid(), a_ctx.Cancel));
 					a_ctx.Activity("shaders", $"{a_c.ShaderMod}: the game compiles the shader cache at its main menu");
 					var sane = false;
@@ -438,7 +442,7 @@ public sealed class ShaderStep : IStep
 								Procs.KillTree(g.Id);
 								throw new StepFailedException("the shader mod stood down at start - nothing will compile: " + bad.Value.Trim());
 							}
-							if (n > 0 || logFresh && Regex.IsMatch(text, "Loading Settings Complete|Loaded theme|Shader compilation started|ShaderTiming")) {
+							if (n > atLaunch || logFresh && Regex.IsMatch(text, "Loading Settings Complete|Loaded theme|Shader compilation started|ShaderTiming")) {
 								sane = true;
 							} else if (sw.Elapsed > TimeSpan.FromMinutes(a_s.Int("sanity_min", 3))) {
 								// never blamed on the shader mod while something else holds the game: what is on screen is named
@@ -463,7 +467,7 @@ public sealed class ShaderStep : IStep
 							result = done.Trim();
 						} else if (remaining == 0 && n >= a_s.Int("min_files", 50) && lastChange.Elapsed > TimeSpan.FromSeconds(30)) {
 							result = $"compile finished: remaining=0 ({n} files)";
-						} else if (remaining == null && n >= a_s.Int("min_files", 50) && lastChange.Elapsed > quiet &&
+						} else if (sane && remaining == null && n >= a_s.Int("min_files", 50) && lastChange.Elapsed > quiet &&
 						           (!logFresh || DateTime.UtcNow - File.GetLastWriteTimeUtc(log!) > quiet)) {
 							result = $"compile finished by quiet: no new shader and no shader log line for {quiet.TotalMinutes:0} minutes ({n} files)";
 							verified = false;

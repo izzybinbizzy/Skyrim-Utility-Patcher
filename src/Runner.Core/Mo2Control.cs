@@ -64,7 +64,7 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 	}
 
 	// every tool process this run started (a tool is only ever ended by these PIDs and their children - never by its name)
-	public HashSet<int> Started { get; } = [];
+	public StartedSet Started { get; } = new();
 
 	// this setup's Mod Organizer (its exe); one whose path cannot be read (started as administrator) is counted apart
 	public List<int> Pids() => Mo2Processes(false);
@@ -244,7 +244,8 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 	// trying to fight you when you're doing something in mo2 even though it's running"). The player's is never closed mid-run:
 	// the run says so and waits for the player to close it (UserWait), then goes on; only the run's very first close, which the
 	// player asked for by pressing Start, may close it (AllowCloseTheirs)
-	readonly HashSet<int> _ownMo2 = [];
+	// with their start times: a PID Windows gives the player's Mod Organizer later is never taken for the run's
+	readonly StartedSet _ownMo2 = new();
 
 	public bool AllowCloseTheirs { get; set; }
 
@@ -257,7 +258,7 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 		if (TheirsProbe != null) {
 			return TheirsProbe();
 		}
-		var others = Pids().Where(p => !_ownMo2.Contains(p)).ToList();
+		var others = Pids().Where(p => !_ownMo2.SameProcess(p)).ToList();
 		if (others.Count == 0) {
 			return others;
 		}
@@ -271,7 +272,8 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 		foreach (var p in others) {
 			var ours = false;
 			for (int at = p, hops = 0; hops < 8 && parent.TryGetValue(at, out var up) && up != 0 && up != at; at = up, ++hops) {
-				if (_ownMo2.Contains(up)) {
+				// a real parent of ours: the very process we started, and started before this one
+				if (_ownMo2.SameProcess(up) && Procs.StartTime(up) is { } ut && Procs.StartTime(p) is { } pt && ut <= pt) {
 					ours = true;
 					break;
 				}
@@ -296,6 +298,8 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 		}
 		_log.Warn($"Mod Organizer was opened outside this run (process {string.Join(", ", theirs)}) - it is never closed under you. " +
 			$"Close it when you are done and the run goes on by itself (it waits up to {UserWait.TotalMinutes:0} minutes; Stop ends the run safely)");
+		// the simple log (the window's default view) says it too - the wait can be long
+		_log.Simple($"Waiting for you: close the Mod Organizer you opened and the run goes on (up to {UserWait.TotalMinutes:0} minutes).");
 		WaitingForPlayer = true;
 		try {
 			var w = Stopwatch.StartNew();
@@ -583,7 +587,7 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 	// processes a tool starts after this take its priority with them (Windows passes below-normal on to its children)
 	public bool LowerPriority { get; set; }
 
-	void Ours(int a_pid)
+	public void Ours(int a_pid)
 	{
 		Started.Add(a_pid);
 		if (!LowerPriority) {

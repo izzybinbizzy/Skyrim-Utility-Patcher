@@ -33,9 +33,16 @@ public sealed class RunLog : IDisposable
 	{
 		Directory.CreateDirectory(a_folder);
 		TextPath = Path.Combine(a_folder, "log.txt");
-		_text = Open(TextPath);
-		_simple = Open(Path.Combine(a_folder, SimpleName));
-		_events = Open(Path.Combine(a_folder, "events.jsonl"));
+		// a writer that opened is released at once when a later one cannot open (no handle left for the finalizer)
+		try {
+			_text = Open(TextPath);
+			_simple = Open(Path.Combine(a_folder, SimpleName));
+			_events = Open(Path.Combine(a_folder, "events.jsonl"));
+		} catch {
+			_simple?.Dispose();
+			_text?.Dispose();
+			throw;
+		}
 	}
 
 	// the simple log's file name in a run folder

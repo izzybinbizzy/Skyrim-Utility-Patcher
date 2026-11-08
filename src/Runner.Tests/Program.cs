@@ -2769,18 +2769,19 @@ public static class Program
 		// copy's, removed after - nothing is left in a folder that outlives the test (CodeRabbit on PR #22)
 		// never under the temp folder: a program there keeps its data in local app data (AppPaths), so its crash.txt would be elsewhere
 		var scratch = Path.Combine(Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(AppContext.BaseDirectory))!, "SUP windowless " + Guid.NewGuid().ToString("N"));
-		foreach (var f in Directory.GetFiles(AppContext.BaseDirectory, "*", SearchOption.AllDirectories)) {
-			var rel = Path.GetRelativePath(AppContext.BaseDirectory, f);
-			if (!rel.StartsWith(Brand.Name + " Data", StringComparison.OrdinalIgnoreCase)) {
-				Directory.CreateDirectory(Path.GetDirectoryName(Path.Combine(scratch, rel))!);
-				File.Copy(f, Path.Combine(scratch, rel));
-			}
-		}
 		var exe = Path.Combine(scratch, Brand.Name + ".exe");
 		var crash = Path.Combine(scratch, Brand.Name + " Data", "crash.txt");
 		var keep = HiddenDesktop.GuardPoll;
 		HiddenDesktop.GuardPoll = TimeSpan.FromMilliseconds(50);
 		try {
+			// the copy inside the cleanup's reach: a copy that fails part way leaves nothing behind
+			foreach (var f in Directory.GetFiles(AppContext.BaseDirectory, "*", SearchOption.AllDirectories)) {
+				var rel = Path.GetRelativePath(AppContext.BaseDirectory, f);
+				if (!rel.StartsWith(Brand.Name + " Data", StringComparison.OrdinalIgnoreCase)) {
+					Directory.CreateDirectory(Path.GetDirectoryName(Path.Combine(scratch, rel))!);
+					File.Copy(f, Path.Combine(scratch, rel));
+				}
+			}
 			using var desk = new HiddenDesktop("SUP-test-windowless");
 			// a folder Windows refuses to make: the snapshot's first step throws
 			using var p = desk.Start($"\"{exe}\" --snapshot \"{Path.Combine(Path.GetTempPath(), "bad<name>")}\"", AppContext.BaseDirectory);
@@ -3341,6 +3342,16 @@ public static class Program
 	{
 		var names = new List<(string, string)> { ("Izzy-PC", "<this PC>"), ("Izzy", "<you>") };
 		Equal(@"C:\Users\<you>\Documents on <this PC>; Izzyland stays", BugReport.Mask(@"C:\Users\izzy\Documents on IZZY-PC; Izzyland stays", names), "whole names, any case");
+		var realFolder = BugReport.UserFolder;
+		try {
+			// a short user name is never in the names list, but its user folder is masked in every way a path is written
+			BugReport.UserFolder = @"C:\Users\Li";
+			Equal(@"<your user folder>\x, <your user folder>\\y, <your user folder>/z, C:\Users\Lisa stays",
+				BugReport.Mask(@"C:\Users\Li\x, C:\\Users\\Li\\y, C:/Users/Li/z, C:\Users\Lisa stays", []), "the user folder, however short its name");
+		} finally {
+			BugReport.UserFolder = realFolder;
+		}
+		Equal(@"""C:\\Users\\<you>\\x""", BugReport.Mask(@"""C:\\Users\\Jos\u00E9\\x""", [("José", "<you>")]), "a name as a JSON file escapes it");
 		using var f = new FakeMo2();
 		var setup = f.WriteSetup(("pandora", new JsonObject()));
 		var me = Environment.UserName;
@@ -3365,7 +3376,9 @@ public static class Program
 					System.Text.RegularExpressions.RegexOptions.IgnoreCase), $"{e.FullName} never names the Windows user");
 			}
 			if (e.FullName == "run/log.txt") {
-				Check(text.Contains(@"C:\Users\<you>\Desktop", StringComparison.Ordinal) && text.Contains("<this PC>", StringComparison.Ordinal), "the log's path and PC name masked: " + text);
+				// the user folder itself is masked first (a short user name too), so the path reads as the folder's mask
+				var userFolderMasked = text.Contains(@"<your user folder>\Desktop", StringComparison.Ordinal) || text.Contains(@"C:\Users\<you>\Desktop", StringComparison.Ordinal);
+				Check(userFolderMasked && text.Contains("<this PC>", StringComparison.Ordinal), "the log's path and PC name masked: " + text);
 			}
 			if (e.FullName == "about.txt") {
 				Check(text.Contains(Brand.Name + " 1.0", StringComparison.Ordinal) && text.Contains("Windows:", StringComparison.Ordinal), "the versions: " + text);
@@ -3585,7 +3598,7 @@ public static class Program
 			var marks = new List<string>();
 			for (var i = 1; i <= rounds; i += every) {
 				run();
-				if (i % (rounds / 3) == 0) {
+				if (i % Math.Max(1, rounds / 3) == 0) {
 					var m = Held();
 					marks.Add($"{m.Managed / 1024} KB / {m.Handles} handles at {i}");
 				}

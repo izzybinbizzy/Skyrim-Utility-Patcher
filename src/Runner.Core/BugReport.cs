@@ -34,11 +34,22 @@ public static class BugReport
 		return outList.OrderByDescending(o => o.Item1.Length).ToList();
 	}
 
-	// every whole-word use of each name (any letter case) replaced by its mask
+	// the player's own user folder, however short its name ("C:\Users\Li" too) - masked before the names
+	public static string UserFolder { get; set; } = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+
+	// every whole-word use of each name (any letter case) replaced by its mask - as written, and as a JSON file writes it (a run
+	// record escapes letters such as "é" as \u00E9); the user folder itself first, in any of the ways a path is written
 	public static string Mask(string a_text, IEnumerable<(string Name, string Mask)> a_names)
 	{
+		if (UserFolder.Length > 3) {
+			foreach (var form in new[] { UserFolder, UserFolder.Replace(@"\", @"\\"), UserFolder.Replace('\\', '/') }.Distinct()) {
+				a_text = Regex.Replace(a_text, Regex.Escape(form) + @"(?![\p{L}\p{N}])", "<your user folder>", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+			}
+		}
 		foreach (var (name, mask) in a_names) {
-			a_text = Regex.Replace(a_text, @"(?<![\p{L}\p{N}])" + Regex.Escape(name) + @"(?![\p{L}\p{N}])", mask, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+			foreach (var form in new[] { name, System.Text.Json.JsonEncodedText.Encode(name).ToString() }.Distinct()) {
+				a_text = Regex.Replace(a_text, @"(?<![\p{L}\p{N}])" + Regex.Escape(form) + @"(?![\p{L}\p{N}])", mask, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+			}
 		}
 		return a_text;
 	}
@@ -78,7 +89,8 @@ public static class BugReport
 			"Run as administrator: " + (Environment.IsPrivilegedProcess ? "yes" : "no"),
 		};
 		if (a_setup != null) {
-			lines.Add($"Setup: {a_setup.Name} (profile {a_setup.Profile})");
+			// the setup file as it is now (a run keeps no copy of it): said so, since it may have been changed after the run
+			lines.Add($"Setup: {a_setup.Name} (profile {a_setup.Profile}) - as it is now; it may have been changed since the run");
 			lines.Add("Mod Organizer: " + FileVersion(a_setup.Mo2Exe));
 			try {
 				var mo2 = Mo2Instance.Load(a_setup.Mo2Exe, a_setup.Mo2Instance);

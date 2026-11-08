@@ -141,25 +141,41 @@
                 </Grid.ColumnDefinitions>
                 <CheckBox Grid.Column="0" IsChecked="{Binding On}" VerticalAlignment="Center" Margin="0,0,6,0"
                           AutomationProperties.Name="{Binding Name, StringFormat='Run {0}'}" IsTabStop="False"/>
-                <TextBlock Grid.Column="1" Text="{Binding Number}" Foreground="{DynamicResource Muted}" VerticalAlignment="Center"/>
+                <TextBlock x:Name="num" Grid.Column="1" Text="{Binding Number}" Foreground="{DynamicResource Muted}" VerticalAlignment="Center"/>
                 <StackPanel Grid.Column="2" VerticalAlignment="Center">
                   <TextBlock Text="{Binding Name}" FontWeight="SemiBold"/>
                   <TextBlock Text="left out: a new game has no save to keep clean" Style="{StaticResource MutedText}" TextWrapping="Wrap"
                              Visibility="{Binding LeftOut, Converter={StaticResource Vis}}"/>
-                  <TextBlock Text="{Binding Note}" Style="{StaticResource MutedText}" TextWrapping="Wrap"
+                  <TextBlock x:Name="note" Text="{Binding Note}" Style="{StaticResource MutedText}" TextWrapping="Wrap"
                              Foreground="{Binding State, Converter={StaticResource StateBrush}}"
                              Visibility="{Binding Note, Converter={StaticResource NotEmpty}}"/>
-                  <TextBlock Text="{Binding LastRun}" Style="{StaticResource MutedText}" TextWrapping="Wrap"
+                  <TextBlock x:Name="last" Text="{Binding LastRun}" Style="{StaticResource MutedText}" TextWrapping="Wrap"
                              Foreground="{Binding LastKind, Converter={StaticResource KindBrush}}"
                              Visibility="{Binding LastRun, Converter={StaticResource NotEmpty}}"/>
                 </StackPanel>
                 <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
-                  <TextBlock Text="{Binding Elapsed}" Foreground="{DynamicResource GoldLight}" Margin="0,0,8,0"/>
-                  <TextBlock Text="{Binding Usual}" Style="{StaticResource MutedText}" ToolTip="its usual time"/>
+                  <TextBlock x:Name="elapsed" Text="{Binding Elapsed}" Foreground="{DynamicResource GoldLight}" Margin="0,0,8,0"/>
+                  <TextBlock x:Name="usual" Text="{Binding Usual}" Style="{StaticResource MutedText}" ToolTip="its usual time"/>
                 </StackPanel>
-                <TextBlock Grid.Column="4" Text="{Binding Glyph}" HorizontalAlignment="Right" VerticalAlignment="Center" FontSize="{DynamicResource SizeBody}"
+                <TextBlock x:Name="glyph" Grid.Column="4" Text="{Binding Glyph}" HorizontalAlignment="Right" VerticalAlignment="Center" FontSize="{DynamicResource SizeBody}"
                            Foreground="{Binding State, Converter={StaticResource StateBrush}}"/>
               </Grid>
+              <!-- high contrast: a selected row is Windows' highlight, so its colored texts take the highlight text color (else
+                   black on black on a white-background palette) -->
+              <DataTemplate.Triggers>
+                <MultiDataTrigger>
+                  <MultiDataTrigger.Conditions>
+                    <Condition Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=ListBoxItem}}" Value="True"/>
+                    <Condition Binding="{Binding Source={x:Static SystemParameters.HighContrast}}" Value="True"/>
+                  </MultiDataTrigger.Conditions>
+                  <Setter TargetName="num" Property="Foreground" Value="{DynamicResource {x:Static SystemColors.HighlightTextBrushKey}}"/>
+                  <Setter TargetName="note" Property="Foreground" Value="{DynamicResource {x:Static SystemColors.HighlightTextBrushKey}}"/>
+                  <Setter TargetName="last" Property="Foreground" Value="{DynamicResource {x:Static SystemColors.HighlightTextBrushKey}}"/>
+                  <Setter TargetName="elapsed" Property="Foreground" Value="{DynamicResource {x:Static SystemColors.HighlightTextBrushKey}}"/>
+                  <Setter TargetName="usual" Property="Foreground" Value="{DynamicResource {x:Static SystemColors.HighlightTextBrushKey}}"/>
+                  <Setter TargetName="glyph" Property="Foreground" Value="{DynamicResource {x:Static SystemColors.HighlightTextBrushKey}}"/>
+                </MultiDataTrigger>
+              </DataTemplate.Triggers>
             </DataTemplate>
           </ListBox.ItemTemplate>
         </ListBox>

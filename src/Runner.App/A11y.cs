@@ -17,7 +17,8 @@ public static class A11y
 		if (string.IsNullOrWhiteSpace(a_text)) {
 			return;
 		}
-		var text = a_text.Length > 600 ? a_text[..600] + " ..." : a_text;
+		// a long message keeps its start and its end (what to do comes last - a list of files sits in the middle)
+		var text = a_text.Length > 600 ? a_text[..400] + " ... " + a_text[^190..] : a_text;
 		if (Heard != null) {
 			Heard(text, a_important);
 			return;

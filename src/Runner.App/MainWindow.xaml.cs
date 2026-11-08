@@ -51,6 +51,9 @@ public partial class MainWindow : Window
 		Theme.Applied += _vm.Repaint;
 	}
 
+	// which moments of the power countdown were already said (-1 = its start)
+	readonly HashSet<int> _powerSaid = [];
+
 	void Announce(object? a_s, System.ComponentModel.PropertyChangedEventArgs a_e)
 	{
 		switch (a_e.PropertyName) {
@@ -66,8 +69,16 @@ public partial class MainWindow : Window
 		case nameof(MainViewModel.Verdict) when _vm.Verdict != "":
 			A11y.Say(this, _vm.NowTitle + ": " + _vm.Verdict, true);
 			break;
-		case nameof(MainViewModel.PowerText) when _vm.PowerText != "":
-			A11y.Say(this, _vm.PowerText, true);
+		case nameof(MainViewModel.PowerText):
+			// the countdown changes every second: it is said once when it starts and at 30 and 10 seconds, never each second (a
+			// screen reader would be interrupted until the Cancel button is out of reach)
+			var left = System.Text.RegularExpressions.Regex.Match(_vm.PowerText, @"in (\d+) s") is { Success: true } m ? int.Parse(m.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture) : -1;
+			if (_vm.PowerText == "") {
+				_powerSaid.Clear();
+			} else if (_powerSaid.Count == 0 || (left is 30 or 10 && _powerSaid.Add(left))) {
+				_powerSaid.Add(-1);
+				A11y.Say(this, _vm.PowerText, true);
+			}
 			break;
 		case nameof(MainViewModel.Interrupted) when _vm.Interrupted != "":
 			A11y.Say(this, _vm.Interrupted, true);
@@ -434,7 +445,10 @@ public partial class MainWindow : Window
 		grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(2, GridUnitType.Star) });
 		grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 		grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(3, GridUnitType.Star) });
-		var list = new ListBox { ItemsSource = _vm.History, Background = Brushes2.Get("Panel2"), BorderBrush = Brushes2.Get("Line") };
+		var list = new ListBox { ItemsSource = _vm.History };
+		// the theme's colors as live references: a theme or Windows' high contrast changed while History is open repaints it too
+		list.SetResourceReference(BackgroundProperty, "Panel2");
+		list.SetResourceReference(BorderBrushProperty, "Line");
 		// a long verdict wraps instead of running off the right edge
 		ScrollViewer.SetHorizontalScrollBarVisibility(list, ScrollBarVisibility.Disabled);
 		AutomationPropertiesName(list, "Past runs");
@@ -492,6 +506,12 @@ public partial class MainWindow : Window
 		// an empty list says why it is empty (a blank box reads as broken)
 		var empty = new TextBlock { Text = "No runs of this setup yet - its runs show here, newest first, each with its log.", Style = (Style)FindResource("MutedText"),
 			Margin = new Thickness(14), IsHitTestVisible = false, Visibility = _vm.History.Count == 0 ? Visibility.Visible : Visibility.Collapsed };
+		// it follows the list: a first run that ends while History is open takes the hint away (the handler goes with the panel, so
+		// panels opened again and again leave nothing hanging on the list)
+		void Follow(object? a_s, System.Collections.Specialized.NotifyCollectionChangedEventArgs a_e) =>
+			empty.Visibility = _vm.History.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+		_vm.History.CollectionChanged += Follow;
+		empty.Unloaded += (_, _) => _vm.History.CollectionChanged -= Follow;
 		Grid.SetRow(list, 0);
 		Grid.SetRow(empty, 0);
 		Grid.SetRow(buttons, 1);
@@ -551,11 +571,16 @@ public partial class MainWindow : Window
 	async Task CloseWhenStopped(Journal a_run)
 	{
 		var until = DateTime.Now.AddMinutes(10);
-		while (DateTime.Now < until && Engine.Active() is { } j && string.Equals(j.Folder, a_run.Folder, StringComparison.OrdinalIgnoreCase)) {
+		// a queue's next setup that started before the stop reached the last one is stopped too (a stopped run ends the queue)
+		var stopped = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { a_run.Folder };
+		while (DateTime.Now < until && (Engine.Active() is not null || QueueRun.Read(AppPaths.Data) != null)) {
+			if (Engine.Active() is { } next && stopped.Add(next.Folder)) {
+				Commands.Send(next.Folder, "stop");
+			}
 			await Task.Delay(1000);
 		}
 		_stopping = false;
-		if (Engine.Active() is { } still && string.Equals(still.Folder, a_run.Folder, StringComparison.OrdinalIgnoreCase)) {
+		if (Engine.Active() is not null || QueueRun.Read(AppPaths.Data) != null) {
 			_vm.Say("The run did not stop in 10 minutes, so the window stays open. Press Stop now again.", "bad");
 			return;
 		}

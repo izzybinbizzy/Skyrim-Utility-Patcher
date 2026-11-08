@@ -205,8 +205,9 @@ public sealed class AcmosStep : IStep
 		a_ctx.Activity(Key, "painting roads into the terrain LOD");
 		string body;
 		using (var desk = new HiddenDesktop()) {
-			var proc = desk.Start(cmd, toolDir);
-			a_ctx.Control.Started.Add(proc.Id);
+			using var proc = desk.Start(cmd, toolDir);
+			// the run's own, at the setup's priority like every other tool
+			a_ctx.Control.Ours(proc.Id);
 			try {
 				Waits.Exit(a_ctx, Key, proc, a_s.Deadline(60));
 			} finally {

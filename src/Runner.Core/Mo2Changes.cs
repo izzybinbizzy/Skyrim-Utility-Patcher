@@ -243,12 +243,13 @@ public static class Mo2Changes
 	// rewritten as it was read
 	public static List<(string Mod, string What)>? Pending(Mo2Instance a_mo2, string a_dataDir, string a_profile)
 	{
-		var last = ReadLook(Path.Combine(Dir(a_dataDir, a_mo2), "last look.json"));
-		var file = Path.Combine(a_mo2.ProfileDir(a_profile), "modlist.txt");
-		if (last == null || !last.Profiles.TryGetValue(a_profile, out var before) || !File.Exists(file)) {
-			return null;
-		}
 		try {
+			// the baseline read inside the handler too: an unreadable last look means "not known", never an error
+			var last = ReadLook(Path.Combine(Dir(a_dataDir, a_mo2), "last look.json"));
+			var file = Path.Combine(a_mo2.ProfileDir(a_profile), "modlist.txt");
+			if (last == null || !last.Profiles.TryGetValue(a_profile, out var before) || !File.Exists(file)) {
+				return null;
+			}
 			return Compare(before, Pane(Files.DecodeText(ReadWhole(file, a_profile)).Split('\n')));
 		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
 			return null;

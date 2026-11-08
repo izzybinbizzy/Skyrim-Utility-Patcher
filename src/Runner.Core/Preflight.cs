@@ -160,8 +160,8 @@ public static class Duplicates
 				continue;
 			}
 			if (Holds(a_mo2.ModDir(mod), a_step) is { } file) {
-				yield return new Issue(a_step, false, $"\"{mod}\" also holds {file}, which {StepCatalog.Name(a_step)} makes - with both ticked, the one higher in Mod Organizer's " +
-					$"left pane wins and can hide the new output. Untick it, or add it to the step's \"Mods it replaces\" so every run keeps it off");
+				yield return new Issue(a_step, false, $"\"{mod}\" also holds {file}, which {StepCatalog.Name(a_step)} makes - with both ticked, the one LOWER in Mod Organizer's " +
+					$"left pane (higher priority) wins wherever their files overlap, so the two can mix or hide the new output. Untick it, or add it to the step's \"Mods it replaces\" so every run keeps it off");
 			}
 		}
 	}

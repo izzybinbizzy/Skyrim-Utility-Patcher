@@ -130,8 +130,10 @@ public static class Cli
 		}
 		// the first that did not finish names the queue's outcome, and judges the power setting of the last setup that ran
 		var notFinished = items.Select(i => i.Outcome).FirstOrDefault(o => o != null && o.State != RunState.Finished);
+		// a Stop anywhere in the queue keeps the PC on, whatever came before it (the player is there)
+		var forPower = items.Any(i => i.Outcome?.State == RunState.Stopped) ? RunState.Stopped : notFinished?.State ?? RunState.Finished;
 		if (items.LastOrDefault(i => i.Outcome is { Folder: not null }) is { } lastRan) {
-			PowerAfterRun(lastRan.SetupFile, notFinished?.State ?? RunState.Finished);
+			PowerAfterRun(lastRan.SetupFile, forPower);
 		}
 		return notFinished == null ? 0 : notFinished.State == RunState.Stopped ? 2 : 1;
 	}

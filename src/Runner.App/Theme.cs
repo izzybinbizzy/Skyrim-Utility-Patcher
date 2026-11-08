@@ -216,6 +216,9 @@ public static class Theme
 			Apply(name, false);
 		} catch (Exception e) when (e is not OutOfMemoryException) {
 			Reset();
+			// the built-in look, at the text size that was read (Settings shows it, and a later pick works from these sizes)
+			TakeSizes();
+			ApplyScale();
 		}
 	}
 

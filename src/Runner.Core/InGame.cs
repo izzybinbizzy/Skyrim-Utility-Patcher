@@ -74,7 +74,7 @@ public static partial class InGame
 	// writes SKSE\crash-<time>.log, Trainwreck SKSE\Crashlogs\crash-<time>.log, .NET Script Framework NetScriptFramework\Crash\Crash_<time>.txt
 	// into Mod Organizer's overwrite), so the failure points at the cause instead of only saying the game went
 	public static StepFailedException GameClosed(RunContext a_ctx, string a_while) =>
-		new($"the game closed {a_while}" + CrashNote(SkseLogs(a_ctx.Setup, a_ctx.Mo2), a_ctx.Mo2.OverwriteDir, a_ctx.Journal.Started));
+		new($"the game closed {a_while}" + CrashNote(SkseLogs(a_ctx.Setup, a_ctx.Mo2), a_ctx.Mo2.OverwriteDir, a_ctx.GameLaunched ?? a_ctx.Journal.Started));
 
 	public static string CrashNote(string a_skseLogs, string a_overwrite, DateTime a_since) =>
 		CrashLog(a_skseLogs, a_overwrite, a_since) is { } log ? $" - it crashed; its crash log: {log}" :
@@ -418,7 +418,7 @@ public static partial class InGame
 			var list = a_ctx.DevBench.Call("menu", new { action = "list" }, 10);
 			var menus = (list["menus"] ?? list["open"] ?? list["openMenus"]) as JsonArray ?? [];
 			var names = menus.Select(m => m is JsonObject mo ? (mo["name"] ?? mo["menu"])?.ToString() : m?.ToString()).OfType<string>()
-				.Where(n => n != "" && n != "HUD Menu" && n != "Cursor Menu").ToList();
+				.Where(n => n is not ("" or "HUD Menu" or "Cursor Menu" or "Main Menu" or "Loading Menu" or "Fader Menu")).ToList();
 			if (names.Count > 0) {
 				parts.Add("the game's open menus: " + string.Join(", ", names));
 			}
@@ -590,6 +590,7 @@ public static partial class InGame
 	public static bool StartAndLoad(RunContext a_ctx, string a_step, StepSettings a_s, string a_save)
 	{
 		var launched = DateTime.Now;
+		a_ctx.GameLaunched = launched;
 		LaunchGame(a_ctx, a_s);
 		var limit = TimeSpan.FromMinutes(a_s.Int("start_min", 8));
 		var sw = Stopwatch.StartNew();

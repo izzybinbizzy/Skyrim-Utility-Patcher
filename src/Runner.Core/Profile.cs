@@ -411,10 +411,64 @@ public sealed class Profile(Mo2Instance a_mo2, string a_name, Func<bool> a_mo2Ru
 		return changed.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
 	}
 
-	// untick (never remove) the plugins of these mods in plugins.txt
-	public List<string> DeactivatePlugins(IEnumerable<string> a_mods)
+	// plugins.txt's ticks as the file is now (name -> ticked)
+	public Dictionary<string, bool> PluginMarks()
 	{
-		var names = a_mods.SelectMany(m => Plugins.InMod(Mo2.ModDir(m))).Select(n => n.ToLowerInvariant()).ToHashSet();
+		var marks = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+		if (!File.Exists(PluginsTxt)) {
+			return marks;
+		}
+		foreach (var l in ReadPluginFile(PluginsTxt).Lines.Where(l => l.Length > 0 && !l.StartsWith('#'))) {
+			marks[l.TrimStart('*')] = l.StartsWith('*');
+		}
+		return marks;
+	}
+
+	// these plugins ticked or unticked as given (only lines the file has; a plugin it does not list is left to ActivatePlugins)
+	public void SetPluginMarks(IReadOnlyDictionary<string, bool> a_marks)
+	{
+		if (a_marks.Count == 0 || !File.Exists(PluginsTxt)) {
+			return;
+		}
+		MustBeClosed("the plugin list");
+		var (lines, nl, bom) = ReadPluginFile(PluginsTxt);
+		var changed = false;
+		for (int i = 0; i < lines.Count; ++i) {
+			if (lines[i].Length == 0 || lines[i].StartsWith('#') || !a_marks.TryGetValue(lines[i].TrimStart('*'), out var on) || lines[i].StartsWith('*') == on) {
+				continue;
+			}
+			lines[i] = on ? "*" + lines[i] : lines[i][1..];
+			changed = true;
+		}
+		if (changed) {
+			WritePluginFile(PluginsTxt, lines, nl, bom);
+		}
+	}
+
+	// the plugin files ticked mods other than a_except provide, and the game's own Data folder (lower case)
+	HashSet<string> ProvidedElsewhere(IEnumerable<string> a_except)
+	{
+		var except = new HashSet<string>(a_except, StringComparer.OrdinalIgnoreCase);
+		var provided = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		foreach (var mod in States().Where(s => s.Value == '+' && !except.Contains(s.Key)).Select(s => s.Key)) {
+			provided.UnionWith(Plugins.InMod(Mo2.ModDir(mod)));
+		}
+		var data = Path.Combine(Mo2.GameDir, "Data");
+		if (Directory.Exists(data)) {
+			provided.UnionWith(Plugins.InMod(data));
+		}
+		return provided;
+	}
+
+	// untick (never remove) the plugins of these mods in plugins.txt. a_keepProvided: a plugin another ticked mod (or the game's
+	// Data folder) still provides stays ticked - only that mod went off, not the plugin
+	public List<string> DeactivatePlugins(IEnumerable<string> a_mods, bool a_keepProvided = false)
+	{
+		var mods = a_mods.ToList();
+		var names = mods.SelectMany(m => Plugins.InMod(Mo2.ModDir(m))).Select(n => n.ToLowerInvariant()).ToHashSet();
+		if (a_keepProvided && names.Count > 0) {
+			names.ExceptWith(ProvidedElsewhere(mods).Select(n => n.ToLowerInvariant()));
+		}
 		var off = new List<string>();
 		if (names.Count == 0 || !File.Exists(PluginsTxt)) {
 			return off;

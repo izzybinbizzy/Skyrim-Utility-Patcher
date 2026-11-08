@@ -157,8 +157,9 @@ public static class Runner
 		// Stop ends this run's own game and tools at once - only a process it started, still the same process (started after
 		// this run began - a PID can be reused), and never Mod Organizer itself (the put-back closes that the normal way)
 		commands.OnStop = () => {
-			foreach (var pid in control.Started.ToList()) {
-				if (Procs.StartTime(pid) is { } t && t >= journal.Started.ToUniversalTime().AddSeconds(-2) &&
+			foreach (var pid in control.Started) {
+				// the very process that was started (its start time as recorded then), never one that got its PID since
+				if (control.Started.SameProcess(pid) && Procs.StartTime(pid) is { } t && t >= journal.Started.ToUniversalTime().AddSeconds(-2) &&
 				    !Procs.Image(pid).Equals("ModOrganizer.exe", StringComparison.OrdinalIgnoreCase)) {
 					log.Warn($"Stop: ending {Procs.Image(pid)} (process {pid}), started by this run");
 					Procs.KillTree(pid);
@@ -180,7 +181,8 @@ public static class Runner
 			// from here on an MO2 the player opens is waited for, never closed (Mo2Control.WaitForTheirs)
 			control.AllowCloseTheirs = true;
 			try {
-				control.Close();
+				// a Stop pressed while Mod Organizer is still closing ends the wait (nothing is changed yet)
+				control.Close(null, cts.Token);
 			} finally {
 				control.AllowCloseTheirs = false;
 			}
@@ -230,7 +232,17 @@ public static class Runner
 			}
 			if (playsave) {
 				var ps = todo.First(t => t.Key == "playsave");
-				if (!RunStep(ctx, ps)) {
+				// still the running run to the window while its game is up (the profile is already back - nothing to restore)
+				journal.InGameAfter = true;
+				journal.Save();
+				var made = false;
+				try {
+					made = RunStep(ctx, ps);
+				} finally {
+					journal.InGameAfter = false;
+					journal.Save();
+				}
+				if (!made) {
 					control.Close();
 					journal.State = RunState.Failed;
 					journal.Verdict = $"every tool finished; the save to play was not made: {journal.Step("playsave")?.Note}";
@@ -268,14 +280,15 @@ public static class Runner
 			log.Simple("ALL DONE: " + journal.Verdict);
 			return new RunOutcome(RunState.Finished, journal.Verdict, journal.Folder);
 		} catch (Exception e) when (snap0 == null) {
-			// nothing was switched yet: the run stops with the profile untouched
-			journal.State = RunState.Failed;
-			journal.Verdict = "stopped before anything was changed: " + Plain(e);
+			// nothing was switched yet: the run stops with the profile untouched (a Stop pressed this early reads as stopped)
+			var state = commands.Stopped ? RunState.Stopped : RunState.Failed;
+			journal.State = state;
+			journal.Verdict = "stopped before anything was changed: " + (commands.Stopped ? "Stop was pressed" : Plain(e));
 			journal.Ended = DateTime.Now;
 			journal.Save();
 			log.Error(journal.Verdict);
 			log.Simple("The run " + journal.Verdict + ". Nothing in Mod Organizer was changed.");
-			return new RunOutcome(RunState.Failed, journal.Verdict, journal.Folder);
+			return new RunOutcome(state, journal.Verdict, journal.Folder);
 		} catch (Exception e) {
 			log.Error("the run stopped: " + Plain(e));
 			return Finish(ctx, snap0, commands.Stopped ? RunState.Stopped : RunState.Failed, Plain(e));
@@ -441,15 +454,17 @@ public static class Runner
 	}
 
 	// this setup's own run backups (by the run-folder name the runner gives them), newest first, with their size in bytes
-	public static List<(DirectoryInfo Dir, long Bytes)> BackupsOf(Setup a_setup)
+	public static List<(DirectoryInfo Dir, long Bytes)> BackupsOf(Setup a_setup) => BackupDirsOf(a_setup).Select(d => (d, Files.SizeOf(d.FullName))).ToList();
+
+	// the same folders, newest first, without measuring them (pruning needs no sizes - a big LOD backup is never walked for it)
+	public static List<DirectoryInfo> BackupDirsOf(Setup a_setup)
 	{
 		var root = a_setup.BackupDir;
 		if (root == "" || !Directory.Exists(root)) {
 			return [];
 		}
 		var own = new System.Text.RegularExpressions.Regex(@"^\d{4}-\d\d-\d\d \d\d-\d\d-\d\d " + System.Text.RegularExpressions.Regex.Escape(a_setup.Name) + "$");
-		return new DirectoryInfo(root).GetDirectories().Where(d => own.IsMatch(d.Name)).OrderByDescending(d => d.Name, StringComparer.Ordinal)
-			.Select(d => (d, Files.SizeOf(d.FullName))).ToList();
+		return new DirectoryInfo(root).GetDirectories().Where(d => own.IsMatch(d.Name)).OrderByDescending(d => d.Name, StringComparer.Ordinal).ToList();
 	}
 
 	// all but the newest a_keep of this setup's run backups removed - never the running one (a_current) or one an unfinished run
@@ -464,7 +479,7 @@ public static class Runner
 		if (a_current != null) {
 			needed.Add(Path.GetFullPath(a_current));
 		}
-		foreach (var (d, _) in BackupsOf(a_setup).Skip(a_keep).Where(b => !needed.Contains(b.Dir.FullName))) {
+		foreach (var d in BackupDirsOf(a_setup).Skip(a_keep).Where(b => !needed.Contains(b.FullName))) {
 			try {
 				foreach (var f in d.EnumerateFiles("*", SearchOption.AllDirectories).Where(f => f.IsReadOnly)) {
 					f.IsReadOnly = false;
@@ -663,6 +678,24 @@ public static class Runner
 		return new RunOutcome(j.State, j.Verdict, j.Folder);
 	}
 
+	// the player's own changes laid back over a put-back's order files: their mods ticked / unticked (a mod they installed gets its
+	// line), the plugins of a mod they ticked as they had them where they had chosen (else ticked, as Mod Organizer does), and the
+	// plugins of a mod they unticked off unless another ticked mod still provides them
+	public static void ReapplyTheirs(RunContext a_ctx, IReadOnlyDictionary<string, char> a_theirs, IReadOnlyDictionary<string, bool> a_marks)
+	{
+		foreach (var m in a_theirs.Keys.Where(m => !a_ctx.Profile.States().ContainsKey(m) && Directory.Exists(a_ctx.Mo2.ModDir(m)))) {
+			a_ctx.Profile.EnsureMod(m, a_ctx.Log);
+		}
+		var listed = a_ctx.Profile.States();
+		var on = a_theirs.Where(p => p.Value == '+' && listed.ContainsKey(p.Key)).Select(p => p.Key).ToList();
+		var off = a_theirs.Where(p => p.Value == '-' && listed.ContainsKey(p.Key)).Select(p => p.Key).ToList();
+		a_ctx.Profile.SetMods(on, off, a_ctx.Log);
+		a_ctx.Profile.ActivatePlugins(on);
+		var theirPlugins = on.SelectMany(m => Plugins.InMod(a_ctx.Mo2.ModDir(m))).ToHashSet(StringComparer.OrdinalIgnoreCase);
+		a_ctx.Profile.SetPluginMarks(a_marks.Where(p => theirPlugins.Contains(p.Key)).ToDictionary(p => p.Key, p => p.Value, StringComparer.OrdinalIgnoreCase));
+		a_ctx.Profile.DeactivatePlugins(off, true);
+	}
+
 	public static void PutBack(RunContext a_ctx, Dictionary<string, byte[]>? a_snap)
 	{
 		a_ctx.Control.Close();
@@ -681,16 +714,13 @@ public static class Runner
 			foreach (var m in theirs.Keys.Where(m => !before.ContainsKey(m))) {
 				a_ctx.Profile.Added.Add(m);
 			}
+			// the player's plugin ticks as they left them, read before the order files go back
+			var marks = theirs.Count > 0 ? a_ctx.Profile.PluginMarks() : [];
 			a_ctx.Profile.Restore(a_snap);
 			if (theirs.Count > 0) {
-				var listed = a_ctx.Profile.States();
-				var on = theirs.Where(p => p.Value == '+' && listed.ContainsKey(p.Key)).Select(p => p.Key).ToList();
-				var off = theirs.Where(p => p.Value == '-' && listed.ContainsKey(p.Key)).Select(p => p.Key).ToList();
 				a_ctx.Log.Warn($"you changed {theirs.Count} mod(s) in Mod Organizer during the run - kept as you left them: " +
 					string.Join(", ", theirs.Select(p => (p.Value == '+' ? "on " : "off ") + p.Key)));
-				a_ctx.Profile.SetMods(on, off, a_ctx.Log);
-				a_ctx.Profile.ActivatePlugins(on);
-				a_ctx.Profile.DeactivatePlugins(off);
+				ReapplyTheirs(a_ctx, theirs, marks);
 			}
 		}
 		// an output left empty (its step failed, was stopped, or never ran) never stays in the mod list
