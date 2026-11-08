@@ -3726,6 +3726,49 @@ public static class Program
 		}
 	}
 
+	// the run's command watcher let go of while its look is still going (a Stop's OnStop ending a slow tool): Dispose returns after
+	// its wait, the look finishes later and sets the wait's event on the timer's thread - which must still be there (a released
+	// event would throw on that thread and end the program), and the look arms no new look (CodeRabbit on #24)
+	static void T_TheCommandWatcherLetsGoWhileALookIsHeld()
+	{
+		var dir = Path.Combine(Path.GetTempPath(), "SUP commands " + Guid.NewGuid().ToString("N"));
+		var keep = Commands.DisposeWait;
+		Commands.DisposeWait = TimeSpan.FromMilliseconds(200);
+		using var entered = new ManualResetEventSlim();
+		using var release = new ManualResetEventSlim();
+		using var finished = new ManualResetEventSlim();
+		var looks = 0;
+		try {
+			Directory.CreateDirectory(dir);
+			using var c = new Commands(new Journal { Folder = dir }, () => { }) {
+				OnStop = () => {
+					Interlocked.Increment(ref looks);
+					entered.Set();
+					release.Wait(TimeSpan.FromSeconds(10));
+					finished.Set();
+				},
+			};
+			Commands.Send(dir, "stop");
+			c.Start();
+			Check(entered.Wait(TimeSpan.FromSeconds(5)), "the look began (the stop seen)");
+			var sw = Stopwatch.StartNew();
+			c.Dispose();
+			Check(sw.Elapsed < TimeSpan.FromSeconds(3), $"Dispose returned after its wait, not the look's end ({sw.ElapsedMilliseconds} ms)");
+			release.Set();
+			Check(finished.Wait(TimeSpan.FromSeconds(5)), "the held look finished");
+			// the timer sets the event right after the callback returns - give it time, then the program must still be here
+			Thread.Sleep(1500);
+			Check(c.Stopped, "the stop was taken");
+			Equal(1, Volatile.Read(ref looks), "no new look after Dispose");
+		} finally {
+			Commands.DisposeWait = keep;
+			try {
+				Directory.Delete(dir, true);
+			} catch (IOException) {
+			}
+		}
+	}
+
 	static void T_EveryToolStepHasItsHelpPage()
 	{
 		foreach (var s in StepCatalog.All.Where(s => s.Key is not ("shaders" or "xlodgen"))) {

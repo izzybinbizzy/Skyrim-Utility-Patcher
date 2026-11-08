@@ -1000,6 +1000,9 @@ public sealed class Commands(Journal a_journal, Action a_cancel) : IDisposable
 		}
 	}
 
+	// how long Dispose waits for a look still going (the offline tests shorten it)
+	public static TimeSpan DisposeWait { get; set; } = TimeSpan.FromSeconds(10);
+
 	public bool TakeContinue() => _continue;
 
 	public void ClearContinue() => _continue = false;
@@ -1019,11 +1022,11 @@ public sealed class Commands(Journal a_journal, Action a_cancel) : IDisposable
 			return;
 		}
 		// a look still going finishes before the run lets go of what it uses. The event is released only once the timer has set it:
-		// a look still going after 10 s sets it later, and a released event there would throw on a timer thread and end the program
+		// a look still going after the wait sets it later, and a released event there would throw on a timer thread and end the program
 #pragma warning disable CA2000
 		var done = new ManualResetEvent(false);
 #pragma warning restore CA2000
-		if (!t.Dispose(done) || done.WaitOne(TimeSpan.FromSeconds(10))) {
+		if (!t.Dispose(done) || done.WaitOne(DisposeWait)) {
 			done.Dispose();
 		}
 	}
