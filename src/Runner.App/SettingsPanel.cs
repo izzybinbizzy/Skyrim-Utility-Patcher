@@ -334,6 +334,38 @@ public static class SettingsPanel
 		Field(stack, apply, "What MO2 changed - mods left out whose name starts with (one per line)", changes, "hideModsStartingWith", JsonValueKind.Array);
 
 		// the window's look for every setup (his ask 2026-10-27: themes his design agent makes from "Theme template.json")
+		// his checklist 476
+		Head("THE WINDOW'S LANGUAGE");
+		var languageNote = new TextBlock { Text = "English, or a language file in the Languages folder. A file holds each English text and its translation; what it leaves out stays English. Nothing is translated yet: this is ready for whoever wants to.",
+			Style = (Style)a_w.FindResource("MutedText"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 8) };
+		var languages = new ComboBox { MinWidth = 220, Margin = new Thickness(0, 0, 10, 0), ItemsSource = WindowWords.Available(), SelectedItem = WindowWords.Picked() };
+		System.Windows.Automation.AutomationProperties.SetName(languages, "The window's language");
+		languages.SelectionChanged += (_, _) => {
+			if (languages.SelectedItem is string picked && picked != WindowWords.Picked()) {
+				try {
+					WindowWords.Pick(picked);
+					languageNote.Text = "It applies the next time this program starts.";
+				} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+					a_vm.Say("The language could not be kept: " + e.Message, "bad");
+				}
+			}
+		};
+		var makeLanguage = new Button { Content = "Make a language file ...", Style = (Style)a_w.FindResource("Ghost"), ToolTip = "A file with the texts this window shows now, ready to translate. Press it again with History open to add those too." };
+		makeLanguage.Click += (_, _) => {
+			try {
+				var file = WindowWords.WriteTemplate(a_w);
+				a_vm.Say("Made: " + file, "good");
+				MainViewModel.OpenFolder(WindowWords.Folder);
+			} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+				a_vm.Say("The language file could not be made: " + e.Message, "bad");
+			}
+		};
+		stack.Children.Add(languageNote);
+		var languageRow = new StackPanel { Orientation = Orientation.Horizontal };
+		languageRow.Children.Add(languages);
+		languageRow.Children.Add(makeLanguage);
+		stack.Children.Add(languageRow);
+
 		Head("THE WINDOW'S LOOK");
 		var themeNote = new TextBlock { Text = "A theme is a copy of \"Theme template.json\" (in the Themes folder) with new values. It applies at once.",
 			Style = (Style)a_w.FindResource("MutedText"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 8) };

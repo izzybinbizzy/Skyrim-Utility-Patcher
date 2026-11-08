@@ -4686,6 +4686,46 @@ public static class Program
 		Check(ToolProof.Looks.All(l => StepCatalog.Known(l.Step)), "every look is at a step");
 	}
 
+	// his checklist 476: a language file's words reach what no binding fills, what it leaves out stays English, and one that does not read changes nothing
+	static void T_TheWindowCanBeTranslated()
+	{
+		Exception? failed = null;
+		var t = new Thread(() => {
+			try {
+				var bound = new System.Windows.Controls.TextBlock();
+				System.Windows.Data.BindingOperations.SetBinding(bound, System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("Now") { Source = new { Now = "Start" } });
+				var button = new System.Windows.Controls.Button { Content = "Start", ToolTip = "Starts it" };
+				System.Windows.Automation.AutomationProperties.SetName(button, "Start");
+				var left = new System.Windows.Controls.TextBlock { Text = "Not in the file" };
+				var panel = new System.Windows.Controls.StackPanel();
+				panel.Children.Add(button);
+				panel.Children.Add(left);
+				panel.Children.Add(bound);
+				panel.Children.Add(new System.Windows.Controls.ContentControl { Content = new System.Windows.Controls.TextBlock { Text = "Inside" } });
+				Equal("Inside|Not in the file|Start|Starts it", string.Join("|", ToolRunner.App.WindowWords.Seen(panel)), "what a translator gets");
+				ToolRunner.App.WindowWords.Use(new Dictionary<string, string> { ["Start"] = "Starten", ["Starts it"] = "Startet es", ["Inside"] = "Innen", ["Not in the file"] = " " });
+				ToolRunner.App.WindowWords.Tree(panel);
+				Equal("Starten", button.Content?.ToString(), "a button");
+				Equal("Startet es", button.ToolTip?.ToString(), "its tool tip");
+				Equal("Starten", System.Windows.Automation.AutomationProperties.GetName(button), "what a screen reader says");
+				Equal("Not in the file", left.Text, "an empty translation stays English");
+				Equal("Start", bound.Text, "what a binding fills is left alone");
+			} catch (Exception e) {
+				failed = e;
+			} finally {
+				ToolRunner.App.WindowWords.Use(new Dictionary<string, string>());
+			}
+		});
+		t.SetApartmentState(ApartmentState.STA);
+		t.Start();
+		t.Join();
+		if (failed != null) {
+			throw new InvalidOperationException("the language test: " + failed.Message, failed);
+		}
+		Check(ToolRunner.App.WindowWords.Read("not json", out var problem) == null && problem != "", "a file that does not read says why");
+		Equal("Starten", ToolRunner.App.WindowWords.Read("{ \"Start\": \"Starten\", }", out _)?["Start"], "a file a person wrote reads");
+	}
+
 	static void T_EveryToolStepHasItsHelpPage()
 	{
 		foreach (var s in StepCatalog.All.Where(s => s.Key is not ("shaders" or "xlodgen"))) {

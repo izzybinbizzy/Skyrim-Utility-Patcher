@@ -82,12 +82,18 @@ public partial class App : Application
 		// the theme picked last time, before the window is drawn
 		Theme.ApplySaved();
 		WindowFrame.PaintEveryWindowOnOpen();
+		// his checklist 476
+		var languageProblem = WindowWords.LoadPicked();
+		WindowWords.OnEveryWindow();
 		var w = new MainWindow();
 		if (Theme.Icon is { } icon) {
 			w.Icon = icon;
 		}
 		MainWindow = w;
 		w.Show();
+		if (languageProblem != "") {
+			w.Say(languageProblem);
+		}
 		// his checklist 468: started from Mod Organizer's Tools menu, on the profile it shows
 		if (args.Length == 6 && args[0] == "--for-profile" && args[2] == "--mo2" && args[4] == "--base") {
 			w.ShowProfile(args[3], args[5], args[1]);
