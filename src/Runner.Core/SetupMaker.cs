@@ -71,7 +71,7 @@ public static class SetupMaker
 			Add("synthesis", true, new JsonObject { ["executable"] = syn.Title, ["output_mod"] = Out("Synthesis"), ["deadline_min"] = 90 });
 		}
 		if (ByBinary(mo2, "LandscapeFixer.exe") is { } lf) {
-			Add("landscapefixer", true, new JsonObject { ["executable"] = lf.Title, ["output_mod"] = Out("LandscapeFixer Output"), ["tool_writes"] = "LandscapeFixer Output", ["deadline_min"] = 60 });
+			Add("landscapefixer", true, new JsonObject { ["executable"] = lf.Title, ["image"] = Path.GetFileName(lf.Binary), ["output_mod"] = Out("LandscapeFixer Output"), ["tool_writes"] = "LandscapeFixer Output", ["deadline_min"] = 60 });
 		}
 		var dyn = ByBinary(mo2, "DynDOLODx64.exe", "DynDOLOD.exe");
 		var tex = ByBinary(mo2, "TexGenx64.exe", "TexGen.exe");

@@ -29,7 +29,8 @@ public abstract class LauncherStep : IStep
 	void PointAtThisRun(RunContext a_ctx, string a_output)
 	{
 		var file = SettingsFile(a_ctx);
-		var text = PointedAt(File.Exists(file) ? File.ReadAllText(file) : null, a_ctx.Mo2.BaseDir, a_ctx.Profile.Name, a_ctx.Mo2.GameDir, a_output);
+		// the instance is the folder that holds ModOrganizer.ini (its base folder can point elsewhere - a mods folder moved off it)
+		var text = PointedAt(File.Exists(file) ? File.ReadAllText(file) : null, Path.GetDirectoryName(a_ctx.Mo2.IniPath)!, a_ctx.Profile.Name, a_ctx.Mo2.GameDir, a_output);
 		StepKit.KeepFile(a_ctx, file);
 		Directory.CreateDirectory(Path.GetDirectoryName(file)!);
 		Files.WriteAtomic(file, text);
@@ -58,7 +59,9 @@ public abstract class LauncherStep : IStep
 		if (a_translations != null && Directory.Exists(a_translations)) {
 			foreach (var f in Directory.EnumerateFiles(a_translations, "*.json")) {
 				try {
-					if (JsonNode.Parse(Files.ReadSharedText(f))?["run"]?["generate"] is JsonValue v && v.TryGetValue<string>(out var n) && n.Trim() != "") {
+					// a file of another shape (a list, a plain value) is passed over - indexing it by name would throw and stop the step
+					if (JsonNode.Parse(Files.ReadSharedText(f)) is JsonObject root && root["run"] is JsonObject run &&
+					    run["generate"] is JsonValue v && v.TryGetValue<string>(out var n) && n.Trim() != "") {
 						names.Add(n.Trim());
 					}
 				} catch (Exception e) when (e is JsonException or IOException or UnauthorizedAccessException) {
@@ -91,7 +94,8 @@ public abstract class LauncherStep : IStep
 	{
 		var mod = a_s.OutputMod!;
 		var name = StepCatalog.Name(Key);
-		var image = a_s.Str("image") ?? a_s.Req("executable") + ".exe";
+		// the process to watch: the setup's own, else the program MO2's entry starts (its title need not be the file's name)
+		var image = a_s.Str("image") ?? (a_ctx.Mo2.Executable(a_s.Req("executable"))?.Binary is { Length: > 0 } binary ? Path.GetFileName(binary) : a_s.Req("executable") + ".exe");
 		StepKit.ParkMod(a_ctx, Key, mod);
 		var tw = a_s.Str("tool_writes");
 		var toolDir = tw is { Length: > 0 } ? a_ctx.Mo2.ModDir(tw) : null;
@@ -244,7 +248,7 @@ public sealed class PgPatcherStep : IStep
 					game["dir"] = a_ctx.Mo2.GameDir;
 				}
 				if (conf["params"]?["modmanager"] is JsonObject manager && manager.ContainsKey("mo2instancedir")) {
-					manager["mo2instancedir"] = a_ctx.Mo2.BaseDir;
+					manager["mo2instancedir"] = Path.GetDirectoryName(a_ctx.Mo2.IniPath)!;
 				}
 				Files.WriteAtomic(live, conf.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
 				a_ctx.Log.Detail($"PGPatcher settings: {a_s.Str("settings") ?? "its own"} (output {mod})");
@@ -325,7 +329,15 @@ public sealed class SynthesisStep : IStep
 				string? runLog = null;
 				UseMo2Game(a_ctx, exePath);
 				using var proc = a_ctx.Control.RunExecutable(a_s.Req("executable"), image, null, a_ctx.Cancel);
-				System.Windows.Automation.AutomationElement Win() => Window(a_ctx, image, TimeSpan.FromMinutes(10));
+				// the first look waits for its window to come; a later one only briefly (a gone window is caught by Press's exit check,
+				// never waited on for minutes)
+				var found = false;
+				System.Windows.Automation.AutomationElement Win()
+				{
+					var w = Window(a_ctx, image, found ? TimeSpan.FromSeconds(30) : TimeSpan.FromMinutes(10));
+					found = true;
+					return w;
+				}
 				Press(a_ctx, Win, proc);
 				a_ctx.Activity(Key, "Synthesis is running its patchers");
 				// judged by its window (its timers and patcher states change while it works), never by its CPU alone; a patcher
@@ -455,8 +467,28 @@ public sealed class SynthesisStep : IStep
 		}
 	}
 
-	public static string WithDataFolder(string a_settings, string a_data) =>
-		Regex.Replace(a_settings, @"""DataPathOverride""\s*:\s*null", m => "\"DataPathOverride\": " + System.Text.Json.JsonSerializer.Serialize(a_data));
+	// every profile whose data folder is unset (null or left out) gets the game MO2 runs; one the player set is kept
+	public static string WithDataFolder(string a_settings, string a_data)
+	{
+		JsonNode? root;
+		try {
+			root = JsonNode.Parse(a_settings);
+		} catch (System.Text.Json.JsonException) {
+			return a_settings;
+		}
+		// (a file of another layout keeps the old way: every unset value named in it is set)
+		if (root is not JsonObject top || top["Profiles"] is not JsonArray profiles) {
+			return Regex.Replace(a_settings, @"""DataPathOverride""\s*:\s*null", m => "\"DataPathOverride\": " + System.Text.Json.JsonSerializer.Serialize(a_data));
+		}
+		var changed = false;
+		foreach (var p in profiles.OfType<JsonObject>()) {
+			if (p["DataPathOverride"] is null) {
+				p["DataPathOverride"] = a_data;
+				changed = true;
+			}
+		}
+		return changed ? top.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true }) : a_settings;
+	}
 
 	// found again each time: the window seen first can be its start-up window, gone a moment later, and a gone window reads as empty
 	static System.Windows.Automation.AutomationElement Window(RunContext a_ctx, string a_image, TimeSpan a_wait) =>

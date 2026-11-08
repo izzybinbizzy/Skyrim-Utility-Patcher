@@ -540,7 +540,8 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 				}
 				continue;
 			}
-			var ok = Uia.Button(box.Element, "Yes", "OK", "Close", "Exit");
+			// a one-button notice is pressed by its only button whatever its words (a Mod Organizer in another language)
+			var ok = box.Buttons.Count == 1 ? box.Buttons[0] : Uia.Button(box.Element, "Yes", "OK", "Close", "Exit");
 			if (ok != null) {
 				_log.Detail($"Mod Organizer asked on close: {Trim(box.Text)} - {Uia.Name(ok)}");
 				Uia.Press(ok);

@@ -392,7 +392,8 @@ public static class Program
 		var old = new[] { "cleansave", "xlodgen", "acmos", "grass", "landscapefixer", "pgpatcher", "treelodgen", "texgen", "dyndolod", "synthesis", "pandora", "shaders" };
 		var w = StepCatalog.OrderWarnings(old);
 		Check(w.Any(x => x.StartsWith("Synthesis runs after DynDOLOD", StringComparison.Ordinal)), "Synthesis after DynDOLOD is warned");
-		Equal(1, w.Count, "that one warning and no other: " + string.Join(" | ", w));
+		Check(w.Any(x => x.StartsWith("Landscape Fixer runs after xLODGen", StringComparison.Ordinal)), "Landscape Fixer after xLODGen is warned");
+		Equal(2, w.Count, "those two warnings and no other: " + string.Join(" | ", w));
 		Equal(0, StepCatalog.OrderWarnings(StepCatalog.DefaultOrder.ToList()).Count, "the default order is safe");
 	}
 
@@ -3160,6 +3161,45 @@ public static class Program
 		Check(simple[^1].StartsWith("Failed: stopped at PGPatcher", StringComparison.Ordinal), "the verdict last: " + all);
 		var detailed = File.ReadAllText(Path.Combine(r.Folder!, "log.txt"));
 		Check(detailed.Contains("! what it means: A plugin needs a master", StringComparison.Ordinal), "the detailed log says what it means too");
+	}
+
+	// ------------------------------------------------------------------ CodeRabbit on PR #24
+	// Synthesis is pointed at the game MO2 runs in every profile whose data folder is unset - null or left out - while a folder the
+	// player set is kept, and its type marker stays first (Synthesis's reader needs it there)
+	static void T_SynthesisDataFolderIsSetWhereverItIsUnset()
+	{
+		var text = """
+			{ "Version": 2, "Profiles": [
+			  { "$type": "SynthesisProfile", "Nickname": "A", "DataPathOverride": null },
+			  { "$type": "SynthesisProfile", "Nickname": "B" },
+			  { "$type": "SynthesisProfile", "Nickname": "C", "DataPathOverride": "E:\\Theirs\\Data" } ] }
+			""";
+		var set = JsonNode.Parse(SynthesisStep.WithDataFolder(text, "G:\\Game\\Data"))!;
+		Equal("G:\\Game\\Data", set["Profiles"]?[0]?["DataPathOverride"]?.ToString(), "a null one is set");
+		Equal("G:\\Game\\Data", set["Profiles"]?[1]?["DataPathOverride"]?.ToString(), "a left-out one is set");
+		Equal("E:\\Theirs\\Data", set["Profiles"]?[2]?["DataPathOverride"]?.ToString(), "the player's own is kept");
+		Equal("$type", (set["Profiles"]?[1] as JsonObject)?.First().Key, "the type marker stays first");
+		var done = SynthesisStep.WithDataFolder(SynthesisStep.WithDataFolder(text, "G:\\Game\\Data"), "G:\\Game\\Data");
+		Equal(SynthesisStep.WithDataFolder(text, "G:\\Game\\Data"), done, "a second pass changes nothing");
+	}
+
+	// a translation file of another shape (a list, a plain value, "run" not an object) is passed over, never stopping the step
+	static void T_LandscapeFixerSkipsOddTranslationFiles()
+	{
+		var dir = Path.Combine(Path.GetTempPath(), "SUP odd translations " + Guid.NewGuid().ToString("N"));
+		Directory.CreateDirectory(dir);
+		try {
+			File.WriteAllText(Path.Combine(dir, "list.json"), "[1, 2]");
+			File.WriteAllText(Path.Combine(dir, "value.json"), "\"just text\"");
+			File.WriteAllText(Path.Combine(dir, "run.json"), "{ \"run\": [\"Generate\"] }");
+			File.WriteAllText(Path.Combine(dir, "de.json"), "{ \"run\": { \"generate\": \"Erzeugen\" } }");
+			Equal("Erzeugen, Generate, Start", string.Join(", ", LauncherStep.StartButtonNames(dir, ["Generate", "Start"])), "the good file is read, the odd ones passed over");
+		} finally {
+			try {
+				Directory.Delete(dir, true);
+			} catch (IOException) {
+			}
+		}
 	}
 
 	// ------------------------------------------------------------------ the audit of 2026-11-07

@@ -39,6 +39,8 @@ public static class StepCatalog
 		("wryebash", "dyndolod", "DynDOLOD should be generated after every other patch (dyndolod.info)"),
 		("landscapefixer", "pgpatcher", "Landscape Fixer's author: run it before PGPatcher, xLODGen, TexGen and DynDOLOD"),
 		("landscapefixer", "dyndolod", "Landscape Fixer's author: run it before PGPatcher, xLODGen, TexGen and DynDOLOD"),
+		("landscapefixer", "xlodgen", "Landscape Fixer's author: run it before PGPatcher, xLODGen, TexGen and DynDOLOD"),
+		("landscapefixer", "texgen", "Landscape Fixer's author: run it before PGPatcher, xLODGen, TexGen and DynDOLOD"),
 		("pgpatcher", "texgen", "PGPatcher must run before TexGen and DynDOLOD (dyndolod.info)"),
 		("pgpatcher", "dyndolod", "PGPatcher must run before TexGen and DynDOLOD (dyndolod.info)"),
 		("pgpatcher", "treelodgen", "TreeLODGen names its models by what PGPatcher changed"),

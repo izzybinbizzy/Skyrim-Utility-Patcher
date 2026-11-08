@@ -27,7 +27,8 @@ public sealed class XLodGenStep : IStep
 			try {
 				// xLODGen writes where its -o: says - and that is in Mod Organizer's entry for it, not here: the step puts its own
 				// output folder into the arguments it starts xLODGen with (the trial of 2026-10-27 21:36 wrote into another folder)
-				var args = a_s.Str("args") ?? WithData(WithOutput(a_ctx.Mo2.Executable(a_s.Req("executable"))?.Arguments ?? "", outDir), a_ctx.Mo2.GameDir);
+				// the game MO2 runs is named whatever the arguments came from (a setup's own too), unless they name one themselves
+				var args = WithData(a_s.Str("args") ?? WithOutput(a_ctx.Mo2.Executable(a_s.Req("executable"))?.Arguments ?? "", outDir), a_ctx.Mo2.GameDir);
 				a_ctx.Log.Detail("xLODGen's arguments: " + args);
 				using var proc = a_ctx.Control.RunExecutable(a_s.Req("executable"), image, args, a_ctx.Cancel);
 				var main = StepKit.WaitWindow(a_ctx, image, t => t.Contains("LODGen", StringComparison.Ordinal), TimeSpan.FromMinutes(10), "xLODGen's window");
@@ -439,7 +440,7 @@ public abstract class DynDolodFamily : IStep
 		StepKit.ParkDir(a_ctx, outDir, Tool + " output");
 		using (new Toggle(a_ctx, a_s.List("enable_during"), [.. ExtraOff(a_s), .. a_s.List("disable_during")], Tool, a_ctx.Cancel)) {
 			try {
-				var args = a_s.Str("args") ?? XLodGenStep.WithData(a_ctx.Mo2.Executable(a_s.Req("executable"))?.Arguments ?? "", a_ctx.Mo2.GameDir);
+				var args = XLodGenStep.WithData(a_s.Str("args") ?? a_ctx.Mo2.Executable(a_s.Req("executable"))?.Arguments ?? "", a_ctx.Mo2.GameDir);
 				using var proc = a_ctx.Control.RunExecutable(a_s.Req("executable"), image, args, a_ctx.Cancel);
 				var main = StepKit.WaitWindow(a_ctx, image, t => Regex.IsMatch(t, "^" + Tool + @" \d"), TimeSpan.FromMinutes(5), Tool + "'s window");
 				a_ctx.Activity(Key, Tool + " is reading the load order");
