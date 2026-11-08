@@ -4319,6 +4319,45 @@ public static class Program
 	// his checklist 464: before the first step that loads a save the player's saves are copied into the run's backup - saves and co-saves,
 	// nothing else, once a run, the original untouched; the setup can switch it off; no room, no folder, a Stop or a copy that cannot be
 	// made never stops the run or leaves a part behind
+	// a save unchanged since the last run's copy shares that copy's file; a changed one gets its own
+	static void T_UnchangedSavesAreSharedBetweenBackups()
+	{
+		using var f = new FakeMo2();
+		File.WriteAllText(Path.Combine(f.ProfileDir, "settings.ini"), "[General]\r\nLocalSaves=true\r\n");
+		var saves = InGame.SavesDir(ProfileOf(f));
+		Directory.CreateDirectory(saves);
+		File.WriteAllText(Path.Combine(saves, "Old.ess"), "unchanged");
+		File.WriteAllText(Path.Combine(saves, "New.ess"), "changed since");
+		var earlier = Path.Combine(f.Backups, "2026-01-01 00-00-00 Test", InGame.SavesCopyFolder);
+		Directory.CreateDirectory(earlier);
+		File.Copy(Path.Combine(saves, "Old.ess"), Path.Combine(earlier, "Old.ess"));
+		File.WriteAllText(Path.Combine(earlier, "New.ess"), "older words");
+		f.WriteSetup(("cleansave", []));
+		var ctx = StepContext(f, "cleansave");
+		var copy = InGame.CopySaves(ctx) ?? throw new InvalidOperationException("nothing copied");
+		Equal("unchanged", File.ReadAllText(Path.Combine(copy, "Old.ess")), "the unchanged save is there");
+		Equal("changed since", File.ReadAllText(Path.Combine(copy, "New.ess")), "the changed one as it is now");
+		File.AppendAllText(Path.Combine(earlier, "Old.ess"), "!");
+		Equal("unchanged!", File.ReadAllText(Path.Combine(copy, "Old.ess")), "one file under two names");
+		Equal("changed since", File.ReadAllText(Path.Combine(copy, "New.ess")), "the changed one has its own");
+		Directory.Delete(Path.GetDirectoryName(earlier)!, true);
+		Equal("unchanged!", File.ReadAllText(Path.Combine(copy, "Old.ess")), "the older backup going takes nothing from this one");
+	}
+
+	// "Learn its settings" cut off with a tool's mod switched on: the next run puts that right before it reads the profile
+	static void T_ALearnCutOffLeavesNoModOn()
+	{
+		using var f = new FakeMo2();
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => { }));
+		var setup = f.WriteSetup(("landscapefixer", []));
+		File.WriteAllText(ToolSettings.SwitchRecord(setup), "Replaced");
+		Check(ProfileOf(f).IsOn("Replaced"), "(left on)");
+		Equal(RunState.Finished, Runner.Run(new RunRequest(f.SetupFile, f.Data)).State, "the run finished");
+		Check(!ProfileOf(f).IsOn("Replaced"), "off again, and it stays off after the put-back");
+		Check(!File.Exists(ToolSettings.SwitchRecord(setup)), "the record is gone");
+		Check(ProfileOf(f).IsOn("Base Mod"), "nothing else moved");
+	}
+
 	static void T_TheSavesAreCopiedBeforeAnInGameStep()
 	{
 		using var f = new FakeMo2();

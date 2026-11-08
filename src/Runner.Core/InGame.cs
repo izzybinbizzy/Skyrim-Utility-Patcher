@@ -1058,7 +1058,10 @@ public static partial class InGame
 			}
 			var files = new DirectoryInfo(from).EnumerateFiles().Where(f => f.Extension.Equals(".ess", StringComparison.OrdinalIgnoreCase) ||
 				f.Extension.Equals(".skse", StringComparison.OrdinalIgnoreCase)).ToList();
-			var bytes = files.Sum(f => f.Length);
+			// a save unchanged since the last run's copy is linked to that copy, not copied again: only what changed takes room. Pruning that backup leaves this one whole
+			var earlier = Runner.BackupDirsOf(a_ctx.Setup).Select(d => Path.Combine(d.FullName, SavesCopyFolder)).FirstOrDefault(d => Directory.Exists(d) && !Files.SamePath(d, to));
+			FileInfo? Same(FileInfo a_f) => earlier != null && new FileInfo(Path.Combine(earlier, a_f.Name)) is { Exists: true } e && e.Length == a_f.Length && e.LastWriteTimeUtc == a_f.LastWriteTimeUtc ? e : null;
+			var bytes = files.Where(f => Same(f) == null).Sum(f => f.Length);
 			var mb = bytes / 1048576.0;
 			Directory.CreateDirectory(a_ctx.BackupFolder);
 			// the run's outputs and backups come first: the room the pre-check promised them stays free
@@ -1073,12 +1076,15 @@ public static partial class InGame
 			Directory.CreateDirectory(part);
 			foreach (var f in files) {
 				a_ctx.Cancel.ThrowIfCancellationRequested();
-				f.CopyTo(Path.Combine(part, f.Name), false);
+				var dest = Path.Combine(part, f.Name);
+				if (Same(f) is not { } same || !Native.HardLink(dest, same.FullName)) {
+					f.CopyTo(dest, false);
+				}
 			}
 			// whole or not at all: a copy cut off part way is never taken for a full one
 			Directory.Move(part, to);
 			var saves = files.Count(f => f.Extension.Equals(".ess", StringComparison.OrdinalIgnoreCase));
-			a_ctx.Log.Detail($"your saves copied first: {saves} save(s), {mb:0} MB, into the run's backup ({SavesCopyFolder})");
+			a_ctx.Log.Detail($"your saves copied first: {saves} save(s), {mb:0} MB new, into the run's backup ({SavesCopyFolder})");
 			return to;
 		} catch (OperationCanceledException) {
 			DropPart(part);

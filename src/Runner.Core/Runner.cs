@@ -197,6 +197,7 @@ public static class Runner
 				control.AllowCloseTheirs = false;
 			}
 			NoteChanges(mo2, a_req.DataDir, RunWho(journal), log);
+			ToolSettings.UndoLeftSwitch(setup, profile, log);
 			BackupProfile(ctx);
 			foreach (var s in todo) {
 				if (new StepSettings(s.Settings).OutputMod is { } om) {

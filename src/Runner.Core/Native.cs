@@ -9,6 +9,12 @@ namespace ToolRunner;
 // through UI Automation or posted messages, text read with WM_GETTEXT, a list photographed with PrintWindow.
 public static partial class Native
 {
+	[DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+	static extern bool CreateHardLinkW(string a_new, string a_existing, nint a_security);
+
+	// one file under a second name; false when the volume or the file's link count refuses it
+	public static bool HardLink(string a_new, string a_existing) => CreateHardLinkW(a_new, a_existing, 0);
+
 	public const uint WM_CLOSE = 0x0010, WM_GETTEXT = 0x000D, WM_GETTEXTLENGTH = 0x000E, WM_KEYDOWN = 0x0100, WM_KEYUP = 0x0101,
 		WM_CHAR = 0x0102, WM_MOUSEMOVE = 0x0200, WM_LBUTTONDOWN = 0x0201, WM_LBUTTONUP = 0x0202, BM_CLICK = 0x00F5;
 	public const uint LB_SETCURSEL = 0x0186, LB_SETTOPINDEX = 0x0197, LB_GETCOUNT = 0x018B, LB_GETITEMRECT = 0x0198;
