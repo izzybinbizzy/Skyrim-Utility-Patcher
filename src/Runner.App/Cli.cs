@@ -30,7 +30,7 @@ public static class Cli
 		// runs at a set time are gone: a task an older version left is cleared on the command line too (a player who never
 		// opens the window), before the command itself
 		try {
-			Schedule.RemoveLeftovers();
+			Schedule.RemoveLeftoversOnce(AppPaths.Data);
 		} catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) {
 		}
 		try {
@@ -42,6 +42,7 @@ public static class Cli
 				"preview" => Preview(a_args),
 				"lod" => Lod(a_args),
 				"restore" => RestoreCmd(a_args),
+				"undo" => UndoCmd(a_args),
 				"stop" or "stop-after" => Stop(a_args[0]),
 				"import" => Import(a_args),
 				"updates" => Updates(a_args),
@@ -280,6 +281,24 @@ public static class Cli
 			Console.WriteLine($"{r.When.ToString("yyyy-MM-dd HH:mm", InvariantCulture)}  {r.Mod}: {r.What}  [{(r.Profiles.Count == 0 ? "Mod Organizer" : string.Join(", ", r.Profiles))}]  {r.Who}");
 		}
 		return 0;
+	}
+
+	// the setup's last run undone: undo --setup <file>
+	static int UndoCmd(string[] a_args)
+	{
+		if (Opt(a_args, "--setup") is not { } s) {
+			Console.WriteLine("undo needs --setup <file>");
+			return 3;
+		}
+		var setup = Path.GetFullPath(s);
+		var j = Journal.All(AppPaths.Runs).Where(j => !j.Undone && string.Equals(j.SetupFile, setup, StringComparison.OrdinalIgnoreCase)).OrderByDescending(j => j.Started).FirstOrDefault();
+		if (j == null) {
+			Console.WriteLine("nothing to undo: this setup has no run");
+			return 0;
+		}
+		var r = Runner.Undo(j);
+		Console.WriteLine(r.Verdict);
+		return r.State == RunState.Restored ? 0 : 1;
 	}
 
 	static int RestoreCmd(string[] a_args)

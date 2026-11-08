@@ -491,9 +491,38 @@ public partial class MainWindow : Window
 				report.IsEnabled = true;
 			}
 		};
+		// his checklist 454: asked first; the box names what it does, and a run that cannot be undone says why
+		var undo = new Button { Content = "Undo this run ...", Style = (Style)FindResource("Ghost"), Margin = new Thickness(8, 0, 0, 0),
+			ToolTip = "Puts each output and your mod and plugin lists back as they were before this run - only the setup's last run" };
+		undo.Click += async (_, _) => {
+			if (list.SelectedItem is not HistoryRow row) {
+				_vm.Say("Pick a run first.", "warn");
+				return;
+			}
+			try {
+				if (RunUndo.WhyNot(Journal.Load(row.Folder), Engine.Runs()) is { } why) {
+					_vm.Say("It cannot be undone: " + why + ".", "bad");
+					return;
+				}
+			} catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Text.Json.JsonException) {
+				_vm.Say("It cannot be undone: " + e.Message, "bad");
+				return;
+			}
+			if (!Ask.Show(this, "Undo this run?", "Each output goes back to what it was before this run, and your mod and plugin lists too. Mod Organizer closes for it. What you " +
+				"changed in Mod Organizer since is kept, and this run's outputs stay in its backup.", "Undo the run", "Keep it")) {
+				return;
+			}
+			undo.IsEnabled = false;
+			try {
+				await _vm.Undo(row.Folder).ConfigureAwait(true);
+			} finally {
+				undo.IsEnabled = true;
+			}
+		};
 		var buttons = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 10, 0, 10) };
 		buttons.Children.Add(open);
 		buttons.Children.Add(report);
+		buttons.Children.Add(undo);
 		list.SelectionChanged += (_, _) => {
 			if (list.SelectedItem is HistoryRow r) {
 				var p = MainViewModel.LogFile(r.Folder, _vm.DetailedLog);

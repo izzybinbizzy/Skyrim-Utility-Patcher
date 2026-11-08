@@ -314,6 +314,12 @@ public static class SettingsPanel
 		// his checklist 479: the tools at a lower priority, so the PC stays smooth while they work (a run may take a little longer)
 		work["lowerPriority"] ??= false;
 		Field(stack, apply, "Run the tools at a lower priority (the PC stays smoother; a run may take a little longer)", work, "lowerPriority", JsonValueKind.True);
+		// his checklist 459: off unless asked for - it changes the game's own saving switch in the run's game
+		work["forceSave"] ??= false;
+		Field(stack, apply, "Force the save if a mod blocks saving (the run's game only: its saving is switched back on once, then it saves again)", work, "forceSave", JsonValueKind.True);
+		// his checklist 454
+		work["zipBackups"] ??= true;
+		Field(stack, apply, "Keep a run's old outputs as a zip in its backup (much smaller; a little longer at the run's end)", work, "zipBackups", JsonValueKind.True);
 		// his checklist 464
 		work["copySaves"] ??= true;
 		Field(stack, apply, "Copy your saves into the run's backup before the first step that loads a save", work, "copySaves", JsonValueKind.True);

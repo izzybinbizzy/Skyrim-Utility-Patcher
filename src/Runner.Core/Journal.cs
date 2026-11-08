@@ -139,6 +139,8 @@ public sealed class Journal
 
 	// set when putting the profile back failed (e.g. a file locked): the window keeps offering Restore until it worked
 	public bool NeedsRestore { get; set; }
+	// the player undid this run (his checklist 454): its outputs are no longer in the profile
+	public bool Undone { get; set; }
 
 	public bool Unfinished => State == RunState.Running || NeedsRestore;
 

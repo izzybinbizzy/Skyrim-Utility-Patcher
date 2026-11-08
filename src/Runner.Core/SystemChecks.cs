@@ -29,7 +29,7 @@ public static partial class SystemChecks
 		Guard("the plugin limit", () => PluginLimit(CountPlugins(a_profile)));
 		Guard("whether Windows waits to restart", () => Power(RestartPending(), null));
 		Guard("the battery", () => Power(false, Battery()));
-		Guard("whether Steam is updating the game", () => SteamUpdate(a_mo2.GameDir, Procs.Running("steam.exe")));
+		Guard("whether Steam is updating the game", () => SteamUpdate(a_mo2.GameDir, SteamRunning()));
 		Guard("the folders' path lengths", () => LongPaths(folders.Select(f => f.Dir)));
 		Guard("the PC's memory", () => Memory(MemoryProbe()));
 		var notes = new List<Issue>();
@@ -65,6 +65,8 @@ public static partial class SystemChecks
 	const long SteamPaused = 0x200;
 	const long SteamWorking = 0x100 | 0x800 | 0x1000 | 0x10000 | 0x20000 | 0x40000 | 0x80000 | 0x100000 | 0x200000 | 0x400000 | 0x800000;
 
+	public static Func<bool> SteamRunning { get; set; } = () => Procs.Running("steam.exe");
+
 	public static IEnumerable<Issue> SteamUpdate(string a_gameDir, bool a_steamRunning)
 	{
 		var folder = Path.TrimEndingDirectorySeparator(a_gameDir);
@@ -88,6 +90,8 @@ public static partial class SystemChecks
 		}
 		if (a_steamRunning && (flags & SteamPaused) == 0 && (flags & SteamWorking) != 0) {
 			yield return new Issue("", true, "Steam is updating or checking Skyrim right now - wait until it has finished (a new game version stops SKSE and its plugins until they are updated), then start again");
+		} else if (!a_steamRunning && (flags & SteamPaused) == 0 && (flags & SteamWorking) != 0) {
+			yield return new Issue("", false, "Steam was closed in the middle of updating or checking Skyrim, so its folder may be half written - start Steam and let it finish first");
 		} else if ((flags & (SteamUpdateWaiting | SteamWorking)) != 0) {
 			yield return new Issue("", false, "Steam has an update waiting for Skyrim - it may start during the run, and a new game version stops SKSE and its plugins until they are updated. " +
 				"Let it finish first if you want it, or hold it back in Steam's settings for the game");
