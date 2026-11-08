@@ -148,8 +148,10 @@ public static class Runner
 			BackupFolder = journal.BackupDir, Guide = a_guide?.Invoke(journal) ?? new FileGuide(journal, commands.TakeContinue, commands.ClearContinue),
 		};
 		log.Say($"Skyrim Utility Patcher - {setup.Name} (profile {setup.Profile}), steps: {string.Join(", ", todo.Select(s => StepCatalog.Name(s.Key)))}");
+		log.Simple($"{setup.Name} started: {todo.Count} step(s) - {string.Join(", ", todo.Select(s => StepCatalog.Name(s.Key)))}");
 		foreach (var w in check) {
 			log.Warn($"{StepCatalog.Name(w.Step)}: {w.Text}");
+			log.Simple($"Note: {StepCatalog.Name(w.Step)}: {w.Text}");
 		}
 		Native.KeepAwake(true);
 		// Stop ends this run's own game and tools at once - only a process it started, still the same process (started after
@@ -232,6 +234,7 @@ public static class Runner
 					control.Close();
 					journal.State = RunState.Failed;
 					journal.Verdict = $"every tool finished; the save to play was not made: {journal.Step("playsave")?.Note}";
+					log.Simple("Done, except the save to play: " + journal.Verdict);
 					SaySaves(ctx);
 					journal.Ended = DateTime.Now;
 					journal.Save();
@@ -262,6 +265,7 @@ public static class Runner
 			journal.Ended = DateTime.Now;
 			journal.Save();
 			log.Say("ALL DONE: " + journal.Verdict);
+			log.Simple("ALL DONE: " + journal.Verdict);
 			return new RunOutcome(RunState.Finished, journal.Verdict, journal.Folder);
 		} catch (Exception e) when (snap0 == null) {
 			// nothing was switched yet: the run stops with the profile untouched
@@ -270,6 +274,7 @@ public static class Runner
 			journal.Ended = DateTime.Now;
 			journal.Save();
 			log.Error(journal.Verdict);
+			log.Simple("The run " + journal.Verdict + ". Nothing in Mod Organizer was changed.");
 			return new RunOutcome(RunState.Failed, journal.Verdict, journal.Folder);
 		} catch (Exception e) {
 			log.Error("the run stopped: " + Plain(e));
@@ -434,6 +439,7 @@ public static class Runner
 		var step = StepRegistry.For(a_s.Key);
 		a_ctx.Log.Say("");
 		a_ctx.Log.Say($"=== {StepCatalog.Name(a_s.Key)} ===");
+		a_ctx.Log.Simple($"{a_ctx.Journal.Steps.IndexOf(r) + 1}/{a_ctx.Journal.Steps.Count} {StepCatalog.Name(a_s.Key)} started");
 		r.State = StepState.Running;
 		r.Started ??= DateTime.Now;
 		r.Activity = "starting";
@@ -462,6 +468,13 @@ public static class Runner
 			r.Activity = "";
 			a_ctx.Journal.Save();
 			a_ctx.Log.Error($"{StepCatalog.Name(a_s.Key)} {(stopped ? "STOPPED" : "FAILED")}: {r.Note}");
+			var why = stopped ? null : ToolErrors.Explain(a_s.Key, r.Note);
+			if (why != null) {
+				a_ctx.Log.Warn($"what it means: {why.What} What to do: {why.Todo}{(why.Help != null ? " Help: " + why.Help : "")}");
+			}
+			foreach (var line in ToolErrors.Simple(StepCatalog.Name(a_s.Key), r.State, r.Note, why)) {
+				a_ctx.Log.Simple(line);
+			}
 			try {
 				StepKit.CloseTool(a_ctx, new StepSettings(a_s.Settings).Str("image"));
 				InGame.CloseGame(a_ctx);
@@ -489,6 +502,7 @@ public static class Runner
 		r.Progress = null;
 		a_ctx.Journal.Save();
 		a_ctx.Log.Say($"=== {StepCatalog.Name(a_s.Key)} done in {sw.Elapsed.TotalMinutes:0.0} min ===");
+		a_ctx.Log.Simple($"{StepCatalog.Name(a_s.Key)} finished in {sw.Elapsed.TotalMinutes:0.0} min");
 		return true;
 	}
 
@@ -565,6 +579,7 @@ public static class Runner
 			j.Verdict = $"the profile could NOT be put back ({Plain(e)}) - press \"Put my profile back\" once Mod Organizer can close";
 			j.Save();
 			a_ctx.Log.Error(j.Verdict);
+			a_ctx.Log.Simple("Stopped: " + j.Verdict);
 			return new RunOutcome(j.State, j.Verdict, j.Folder);
 		}
 		if (notBack.Count > 0 || filesNotBack.Count > 0) {
@@ -575,6 +590,7 @@ public static class Runner
 				" (kept off / in the backup) - press \"Put my profile back\" once the files are free";
 			j.Save();
 			a_ctx.Log.Error(j.Verdict);
+			a_ctx.Log.Simple("Stopped: " + j.Verdict);
 			return new RunOutcome(j.State, j.Verdict, j.Folder);
 		}
 		var failed = j.Steps.FirstOrDefault(r => r.State is StepState.Failed or StepState.Stopped);
@@ -588,6 +604,7 @@ public static class Runner
 			SaySaves(a_ctx);
 			j.Ended = DateTime.Now;
 			a_ctx.Log.Say(j.Verdict);
+			a_ctx.Log.Simple((a_state == RunState.Stopped ? "Stopped: " : "Failed: ") + j.Verdict);
 			// a failed or stopped run's backups are pruned too (they piled up until the next finished run - the fourth review, L7);
 			// a folder an unfinished run still names is never touched
 			j.Save();

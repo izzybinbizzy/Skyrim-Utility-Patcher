@@ -359,7 +359,7 @@ public partial class MainWindow : Window
 		var open = new Button { Content = "Open its folder", Style = (Style)FindResource("Ghost"), Margin = new Thickness(0, 10, 0, 10), HorizontalAlignment = HorizontalAlignment.Left };
 		list.SelectionChanged += (_, _) => {
 			if (list.SelectedItem is HistoryRow r) {
-				var p = Path.Combine(r.Folder, "log.txt");
+				var p = MainViewModel.LogFile(r.Folder, _vm.DetailedLog);
 				try {
 					log.Text = File.Exists(p) ? Tail(p, 150_000) : "(no log)";
 					log.ScrollToEnd();
