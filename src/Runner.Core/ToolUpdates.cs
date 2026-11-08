@@ -25,6 +25,10 @@ public static partial class ToolUpdates
 		["acmos"] = new("79205", null, "https://www.nexusmods.com/skyrimspecialedition/mods/79205?tab=files"),
 		["grass"] = new("194151", null, "https://www.nexusmods.com/skyrimspecialedition/mods/194151?tab=files"),
 		["anvillod"] = new("194477", null, "https://www.nexusmods.com/skyrimspecialedition/mods/194477?tab=files"),
+		["easynpc"] = new("52313", null, "https://www.nexusmods.com/skyrimspecialedition/mods/52313?tab=files"),
+		["smash"] = new("39378", null, "https://www.nexusmods.com/skyrimspecialedition/mods/39378?tab=files"),
+		["reqtificator"] = new("60888", null, "https://www.nexusmods.com/skyrimspecialedition/mods/60888?tab=files"),
+		["upf"] = new(null, "z-edit/zedit", "https://github.com/z-edit/zedit/releases"),
 		// its Nexus page says "MOVED" (read 2026-10-27): its releases are on GitHub
 		["wryebash"] = new(null, "wrye-bash/wrye-bash", "https://github.com/wrye-bash/wrye-bash/releases"),
 		["synthesis"] = new(null, "Mutagen-Modding/Synthesis", "https://github.com/Mutagen-Modding/Synthesis/releases"),

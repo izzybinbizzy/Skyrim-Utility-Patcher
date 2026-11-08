@@ -63,6 +63,16 @@ public static class SetupMaker
 		}
 		var dynDll = states.Any(s => s.Value == '+' && Directory.Exists(mo2.ModDir(s.Key)) && File.Exists(Path.Combine(mo2.ModDir(s.Key), "SKSE", "Plugins", "DynDOLOD.dll")));
 		Add("cleansave", false, new JsonObject { ["launch_executable"] = skse, ["interior_cell"] = "QASmoke", ["wait_s"] = 60, ["dyndolod_wait_s"] = 30, ["dyndolod_off"] = dynDll, ["save"] = "" });
+		// the guided patchers, each only where Mod Organizer's list holds it: off, for the same reason as Wrye Bash below
+		void Guided(string a_key, string a_output, Mo2Executable? a_entry)
+		{
+			if (a_entry != null) {
+				Add(a_key, false, new JsonObject { ["executable"] = a_entry.Title, ["image"] = Path.GetFileName(a_entry.Binary), ["output_mod"] = Out(a_output) });
+			}
+		}
+		Guided("easynpc", "EasyNPC Merge", ByBinary(mo2, "EasyNPC.exe"));
+		Guided("upf", "zEdit Patch", ByBinary(mo2, "zEdit.exe"));
+		Guided("smash", "Smashed Patch", ByBinary(mo2, "MatorSmash.exe", "Mator Smash.exe"));
 		// off by default: a guided step waits for the player, and a run left alone should not
 		if (ByBinary(mo2, "Wrye Bash.exe") is { } wb) {
 			Add("wryebash", false, new JsonObject { ["executable"] = wb.Title, ["output_mod"] = Out("Bashed Patch") });
@@ -70,6 +80,9 @@ public static class SetupMaker
 		if (ByBinary(mo2, "Synthesis.exe") is { } syn) {
 			Add("synthesis", true, new JsonObject { ["executable"] = syn.Title, ["output_mod"] = Out("Synthesis"), ["deadline_min"] = 90 });
 		}
+		// ReqTificator is a Java program: its entry names java or a script, so it goes by its title too
+		Guided("reqtificator", "Requiem Patch", ByBinary(mo2, "Reqtificator.exe", "Reqtificator.bat") ??
+			mo2.Executables.FirstOrDefault(e => e.Title.Contains("reqtificator", StringComparison.OrdinalIgnoreCase)));
 		if (ByBinary(mo2, "LandscapeFixer.exe") is { } lf) {
 			Add("landscapefixer", true, new JsonObject { ["executable"] = lf.Title, ["image"] = Path.GetFileName(lf.Binary), ["output_mod"] = Out("LandscapeFixer Output"), ["tool_writes"] = "LandscapeFixer Output", ["deadline_min"] = 60 });
 		}

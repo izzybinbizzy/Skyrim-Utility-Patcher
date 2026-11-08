@@ -1573,6 +1573,22 @@ public static class Program
 		Check(File.Exists(Path.Combine(f.Mods, "Output A", "OutA.esp")), "the old output is still there");
 		Check(ProfileOf(f).IsOn("Output A"), "and switched back on");
 		Equal(1, StepCatalog.DefaultOrder.ToList().IndexOf("synthesis") - StepCatalog.DefaultOrder.ToList().IndexOf("wryebash"), "Wrye Bash sits right before Synthesis");
+		// his checklist 436: the patchers with no unattended route are guided the same way, and made only for what Mod Organizer's list holds, switched off
+		foreach (var key in new[] { "easynpc", "upf", "smash", "reqtificator" }) {
+			Check(StepRegistry.For(key) is GuidedToolStep, key + " is a step");
+			Check(StepCatalog.DefaultOrder.ToList().IndexOf(key) < StepCatalog.DefaultOrder.ToList().IndexOf("dyndolod"), key + " comes before the LOD tools");
+		}
+		var iniFile = Path.Combine(f.Instance, "ModOrganizer.ini");
+		var smash = Path.Combine(f.Root, "tools", "MatorSmash.exe");
+		Directory.CreateDirectory(Path.GetDirectoryName(smash)!);
+		File.WriteAllText(smash, "");
+		File.WriteAllText(iniFile, ToolFinder.WithExecutable(ToolFinder.WithExecutable(File.ReadAllText(iniFile), "Smash", smash, ""), "Run Reqtificator", Path.Combine(f.Root, "tools", "javaw.exe"), "-jar x.jar"));
+		var made = SetupMaker.Make(f.Exe, f.Instance, "Test", "made", f.Data);
+		var smashStep = made.Steps.Single(s => s.Key == "smash");
+		Check(!smashStep.On && Setup.Str(smashStep.Settings, "image") == "MatorSmash.exe", "Smash: its program, switched off");
+		var req = made.Steps.Single(s => s.Key == "reqtificator");
+		Check(!req.On && Setup.Str(req.Settings, "executable") == "Run Reqtificator" && Setup.Str(req.Settings, "image") == "javaw.exe", "ReqTificator by its title: " + req.Settings.ToJsonString());
+		Check(!made.Steps.Any(s => s.Key is "easynpc" or "upf"), "and none for what the list does not hold");
 	}
 
 	// a command whose program path is quoted (a path with spaces) runs as written - cmd's own quoting, not Windows' escaping

@@ -210,11 +210,15 @@ public sealed class AddOnStep(string a_key) : IStep
 	}
 
 	// what the tool wrote into overwrite, each file at its own place in the output mod; a tool that wrote nothing, or not the file it promised, failed
-	public static void Collect(RunContext a_ctx, string a_step, string a_mod, string? a_makes, IReadOnlyDictionary<string, DateTime> a_before)
+	public static void Collect(RunContext a_ctx, string a_step, string a_mod, string? a_makes, IReadOnlyDictionary<string, DateTime> a_before, bool a_nothingIsFine = false)
 	{
 		var ow = a_ctx.Mo2.OverwriteDir;
 		var fresh = Runner.OverwriteFiles(a_ctx).Where(n => !a_before.TryGetValue(n.Key, out var t) || t != n.Value).Select(n => n.Key).ToList();
 		if (fresh.Count == 0) {
+			if (a_nothingIsFine) {
+				a_ctx.Log.Detail($"{StepCatalog.Name(a_step)} wrote nothing into overwrite");
+				return;
+			}
 			throw new StepFailedException($"{StepCatalog.Name(a_step)} wrote nothing");
 		}
 		if (a_makes != null && !fresh.Any(f => Files.SamePath(Path.GetRelativePath(ow, f), a_makes) || string.Equals(Path.GetRelativePath(ow, f).Replace('\\', '/'), a_makes.Replace('\\', '/'), StringComparison.OrdinalIgnoreCase))) {

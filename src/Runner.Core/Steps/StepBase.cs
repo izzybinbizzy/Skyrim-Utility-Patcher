@@ -27,7 +27,7 @@ public static class StepRegistry
 		new ShaderStep(), new CleanSaveStep(), new WryeBashStep(), new SynthesisStep(), new LandscapeFixerStep(), new PgPatcherStep(),
 		new XLodGenStep(), new AcmosStep(), new GrassStep(), new TreeLodGenStep(), new TexGenStep(), new DynDolodStep(),
 		new AnvilLodStep(), new PandoraStep(), new PlaySaveStep(),
-	}.ToDictionary(s => s.Key);
+	}.Concat(GuidedToolStep.All).ToDictionary(s => s.Key);
 
 	public static IReadOnlyDictionary<string, IStep> All => Steps;
 
