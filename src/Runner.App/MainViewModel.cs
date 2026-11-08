@@ -195,6 +195,24 @@ public sealed partial class MainViewModel : Observable
 	}
 
 
+	// the setup of this Mod Organizer and profile, selected; false when there is none
+	public bool SelectFor(string a_mo2Exe, string a_base, string a_profile)
+	{
+		foreach (var item in Setups) {
+			try {
+				var s = ToolRunner.Setup.Load(item.File);
+				if (string.Equals(s.Profile, a_profile, StringComparison.OrdinalIgnoreCase) && Files.SamePath(s.Mo2Exe, a_mo2Exe) &&
+				    Files.SamePath(Mo2Instance.Load(s.Mo2Exe, s.Mo2Instance).BaseDir, a_base)) {
+					SelectedSetup = item;
+					return true;
+				}
+			} catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or InvalidDataException or System.Text.Json.JsonException) {
+				// a setup that does not read is no match
+			}
+		}
+		return false;
+	}
+
 	public void LoadSteps()
 	{
 		Steps.Clear();

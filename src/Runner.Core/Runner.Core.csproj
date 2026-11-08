@@ -21,6 +21,7 @@
   <ItemGroup>
     <EmbeddedResource Include="AddOn\init.py" LogicalName="RootBuilderProfiles.init" />
     <EmbeddedResource Include="AddOn\core.py" LogicalName="RootBuilderProfiles.core" />
+    <EmbeddedResource Include="AddOn\menu.py" LogicalName="MenuEntry" />
   </ItemGroup>
 
 </Project>

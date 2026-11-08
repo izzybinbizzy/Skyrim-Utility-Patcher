@@ -88,6 +88,10 @@ public partial class App : Application
 		}
 		MainWindow = w;
 		w.Show();
+		// his checklist 468: started from Mod Organizer's Tools menu, on the profile it shows
+		if (args.Length == 6 && args[0] == "--for-profile" && args[2] == "--mo2" && args[4] == "--base") {
+			w.ShowProfile(args[3], args[5], args[1]);
+		}
 		// runs at a set time are gone (his checklist answer 451): a task an older version made is cleared away, off the
 		// window's thread (a failure leaves it; it can start nothing that is not there)
 		_ = Task.Run(() => {

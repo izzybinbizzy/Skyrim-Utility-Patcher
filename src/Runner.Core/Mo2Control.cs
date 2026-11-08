@@ -97,7 +97,7 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 				continue;
 			}
 			var image = Procs.Image(pid);
-			if (image == "" || image.Equals("ModOrganizer.exe", StringComparison.OrdinalIgnoreCase)) {
+			if (image == "" || image.Equals("ModOrganizer.exe", StringComparison.OrdinalIgnoreCase) || IsThisProgram(image)) {
 				continue;
 			}
 			if (a_windowed && Native.TopWindowsOf([pid]).Count == 0) {
@@ -107,6 +107,9 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 		}
 		return outList;
 	}
+
+	// this program started from Mod Organizer's Tools menu (his checklist 468) is its child, and never a program the run waits for
+	public static bool IsThisProgram(string a_image) => Journal.IsRunnerName(Path.GetFileNameWithoutExtension(a_image));
 
 	public bool Running => IsRunning();
 

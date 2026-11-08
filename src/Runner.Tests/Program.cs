@@ -4491,6 +4491,24 @@ public static class Program
 		Check(read["General"]["x"] == "1" && read["customExecutables"]["size"] == "1" && read["customExecutables"][@"1\title"] == "A", "a list that was not there is made: " + made);
 	}
 
+	// his checklist 468: the Tools menu entry points at the program that added it, and a run never waits for that program under Mod Organizer
+	static void T_TheToolsMenuEntryOpensThisProgram()
+	{
+		using var f = new FakeMo2();
+		var mo2 = Mo2Instance.Load(f.Exe, f.Instance);
+		const string Program = @"D:\Tools\Skyrim Utility Patcher.exe";
+		Check(!Mo2MenuEntry.IsCurrent(mo2, Program), "not there yet");
+		Mo2MenuEntry.Add(mo2, Program);
+		Check(Mo2MenuEntry.IsCurrent(mo2, Program), "added");
+		var file = Path.Combine(Path.GetDirectoryName(f.Exe)!, "plugins", "skyrimutilitypatcher.py");
+		var text = File.ReadAllText(file);
+		Check(text.Contains("PROGRAM = r\"" + Program + "\"", StringComparison.Ordinal) && !text.Contains("@PROGRAM@", StringComparison.Ordinal), "it points at the program");
+		Check(text.Contains("\"--for-profile\"", StringComparison.Ordinal) && text.Contains("\"--mo2\"", StringComparison.Ordinal) && text.Contains("\"--base\"", StringComparison.Ordinal), "and asks for what the window takes");
+		Check(!Mo2MenuEntry.IsCurrent(mo2, @"E:\Moved\Skyrim Utility Patcher.exe"), "a program moved since is offered it again");
+		Check(Mo2Control.IsThisProgram(Brand.Name + ".exe"), "this program under Mod Organizer is not one a run waits for");
+		Check(!Mo2Control.IsThisProgram("SSEEdit.exe"), "another program is");
+	}
+
 	static void T_EveryToolStepHasItsHelpPage()
 	{
 		foreach (var s in StepCatalog.All.Where(s => s.Key is not ("shaders" or "xlodgen"))) {

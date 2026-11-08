@@ -412,6 +412,33 @@ public static class SettingsPanel
 
 		NewVersions(a_w, stack);
 
+		// his checklist 468: the program in Mod Organizer's Tools menu
+		if (a_vm.Setup is { } menuSetup && Environment.ProcessPath is { } program) {
+			try {
+				var menuMo2 = Mo2Instance.Load(menuSetup.Mo2Exe, menuSetup.Mo2Instance);
+				Head("MOD ORGANIZER'S TOOLS MENU");
+				var menuNote = new TextBlock { Style = (Style)a_w.FindResource("MutedText"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 8),
+					Text = Mo2MenuEntry.IsCurrent(menuMo2, program) ? "This program is in Mod Organizer's Tools menu. It opens here on the profile Mod Organizer shows." :
+						"An entry in Mod Organizer's Tools menu that opens this program on the profile Mod Organizer shows. It is one small file in Mod Organizer's plugins folder." };
+				stack.Children.Add(menuNote);
+				if (!Mo2MenuEntry.IsCurrent(menuMo2, program)) {
+					var addMenu = new Button { Content = "Add it to the Tools menu", Style = (Style)a_w.FindResource("Ghost"), HorizontalAlignment = HorizontalAlignment.Left };
+					addMenu.Click += (_, _) => {
+						try {
+							Mo2MenuEntry.Add(menuMo2, program);
+							menuNote.Text = "Added. It shows the next time Mod Organizer starts.";
+							addMenu.IsEnabled = false;
+						} catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException) {
+							a_vm.Say("The entry could not be added: " + e.Message, "bad");
+						}
+					};
+					stack.Children.Add(addMenu);
+				}
+			} catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException) {
+				a_vm.Say("Mod Organizer could not be read for its plugins: " + e.Message, "warn");
+			}
+		}
+
 		// his checklist 492: our add-on, only where Root Builder is in this setup's Mod Organizer
 		if (a_vm.Setup is { } rootSetup) {
 			try {
