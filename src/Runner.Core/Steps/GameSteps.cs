@@ -229,7 +229,7 @@ public sealed class GrassStep : IStep
 // mod, its output mod, an optional settings mod). The cache the profile itself runs is built first, with every ticked shader
 // mod on as the game loads them; a shader mod that is switched off gets one only when the setup asks (Plan). A cache is rebuilt
 // only when its shader mod (or its settings) changed since the cache was made - the setup's "shaderRebuild" (his "configurable").
-public sealed partial class ShaderStep : IStep
+public sealed class ShaderStep : IStep
 {
 	public string Key => "shaders";
 
@@ -253,8 +253,15 @@ public sealed partial class ShaderStep : IStep
 		}
 		if (caches.Count > 0 && caches.All(c => !a_c.States.ContainsKey(c.ShaderMod))) {
 			yield return new Issue(Key, true, "none of the shader mods is in this profile");
-		} else if (caches.Count > 0 && !a_s.Bool("build_for_off", false) && caches.All(c => !a_c.States.TryGetValue(c.ShaderMod, out var f) || f != '+')) {
-			yield return new Issue(Key, false, "no shader mod is ticked in this profile - this step will build nothing (a cache is built for the shader mod the profile runs)");
+		} else if (caches.Count > 0 && !a_s.Bool("build_for_off", false)) {
+			// said before every run, not only in its log: a setup made when every listed cache was built would lose one silently
+			var off = caches.Where(c => a_c.States.TryGetValue(c.ShaderMod, out var f) && f == '-').Select(c => c.ShaderMod).ToList();
+			if (off.Count == caches.Count(c => a_c.States.ContainsKey(c.ShaderMod))) {
+				yield return new Issue(Key, false, "no shader mod is ticked in this profile - this step will build nothing (a cache is built for the shader mod the profile runs)");
+			} else if (off.Count > 0) {
+				yield return new Issue(Key, false, $"{string.Join(", ", off)}: switched off in this profile, so its cache is not built - to build it too (you switch between shader mods), " +
+					"set \"Also build the cache of a shader mod that is switched off\" on this step");
+			}
 		}
 		if (a_s.Str("on_crash") is { Length: > 0 } how && how.Trim().ToLowerInvariant() is not ("ask" or "restart" or "stop")) {
 			yield return new Issue(Key, true, $"\"on_crash\" is \"{how}\" - it is \"ask\", \"restart\" or \"stop\"");
@@ -443,10 +450,8 @@ public sealed partial class ShaderStep : IStep
 			// the layers are part of this cache (hashed with it); every other cache's mods are left out of its fingerprint
 			var theirs = OtherCacheMods(all, c).Except(b.Layers, StringComparer.OrdinalIgnoreCase).ToList();
 			if (mode == ShaderRebuild.WhenChanged && UpToDate(a_ctx.Mo2, c, a_ctx.Profile, theirs, b.Layers)) {
+				// left exactly as the player has it: a cache this run did not build is never recorded as this run's output
 				a_ctx.Log.Detail($"the {c.ShaderMod} cache is current (nothing it depends on changed) - not rebuilt");
-				if (b.Runs) {
-					Keep(a_ctx, all, c, st, false);
-				}
 				continue;
 			}
 			StepKit.EnsureOutput(a_ctx, c.OutputMod);
@@ -456,7 +461,7 @@ public sealed partial class ShaderStep : IStep
 			a_ctx.Log.Detail($"the {c.ShaderMod} cache -> {c.OutputMod}" + (b.Runs ? " (the one this profile runs)" : " (switched off in this profile; the setup asks for it too)"));
 			Compile(a_ctx, a_s, b, theirs);
 			if (b.Runs) {
-				Keep(a_ctx, all, c, st, true);
+				Keep(a_ctx, all, c, st);
 			}
 			++built;
 		}
@@ -468,14 +473,9 @@ public sealed partial class ShaderStep : IStep
 	// the cache the profile runs stays on from here whatever comes later in the step (a finished part is never lost to a later
 	// failure), and the cache mod of every other shader mod of the setup goes off: two cache mods ticked at once hand the game
 	// one cache's files for the other's shader mod, and it throws the cache away
-	// a_built: this run compiled it (one found current is only switched on - it is not this run's output to undo)
-	static void Keep(RunContext a_ctx, List<Cache> a_all, Cache a_c, Dictionary<string, char> a_states, bool a_built)
+	static void Keep(RunContext a_ctx, List<Cache> a_all, Cache a_c, Dictionary<string, char> a_states)
 	{
-		if (a_built) {
-			a_ctx.Finished(a_c.OutputMod);
-		} else {
-			a_ctx.SetAfter(a_c.OutputMod);
-		}
+		a_ctx.Finished(a_c.OutputMod);
 		var others = a_all.Where(o => o != a_c && !o.OutputMod.Equals(a_c.OutputMod, StringComparison.OrdinalIgnoreCase) && a_states.TryGetValue(o.OutputMod, out var f) && f == '+')
 			.Select(o => o.OutputMod).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
 		if (others.Count == 0) {
@@ -503,18 +503,6 @@ public sealed partial class ShaderStep : IStep
 	// fraction of one or two). A PC whose main menu sits above this line is never read as quiet - the quiet fallback ends it
 	public static double IdleLine(double a_peak) => Math.Max(0.75, Math.Min(2.0, a_peak * 0.35));
 
-	[GeneratedRegex(@"\[ShaderTiming\].*\bremaining=(\d+)")]
-	private static partial Regex RemainingLine();
-
-	// the newest "remaining=N" in a shader log (null = none). Bottled Shaders writes that line only for a SLOW shader, so a last
-	// N above 0 says nothing about now - only 0 is a verdict (his run of 2026-11-10: its last line read remaining=549, five
-	// minutes before the compile's real end, and no line after it said done)
-	public static int? Remaining(string a_logText)
-	{
-		var m = RemainingLine().Matches(a_logText);
-		return m.Count == 0 ? null : int.Parse(m[^1].Groups[1].Value, InvariantCulture);
-	}
-
 	// Is the compile over? In order: (1) the shader mod says so - Open Shaders' "Shader compilation completed", or a last
 	// "remaining=0"; (2) the game itself went quiet - it was seen compiling (BusyCores), no shader has landed for a_idle and its
 	// processor use has stayed under IdleLine of its peak that long (a long gap WITH the processor busy is a slow shader, never
@@ -527,7 +515,8 @@ public sealed partial class ShaderStep : IStep
 			return (done.Trim(), true);
 		}
 		var enough = a_l.Files >= a_minFiles;
-		if (Remaining(a_l.LogText) == 0 && enough && a_l.SinceNewFile > TimeSpan.FromSeconds(30)) {
+		// (a last count above 0 says nothing about now: Bottled Shaders writes that line only for a slow shader - InGame.RemainingIn)
+		if (InGame.RemainingIn(a_l.LogText) == 0 && enough && a_l.SinceNewFile > TimeSpan.FromSeconds(30)) {
 			return ($"compile finished: remaining=0 ({a_l.Files} files)", true);
 		}
 		if (!a_l.Sane || !enough) {
@@ -697,17 +686,21 @@ public sealed partial class ShaderStep : IStep
 					}
 					// a game ended by Stop is never started again
 					a_ctx.Cancel.ThrowIfCancellationRequested();
+					// the time spent waiting for the player's answer is not the compile's: it never counts against the step's limit
+					total.Stop();
 					GameEnded(a_ctx, a_s, c, ++restarts, Files.CountFiles(owCache));
+					total.Start();
 					a_ctx.Pause(TimeSpan.FromSeconds(5));
 				}
+				a_ctx.Log.Detail(result);
+				// (a Stop in this pause leaves through the catch below, which closes the game before Mod Organizer is asked to close)
+				a_ctx.Pause(TimeSpan.FromSeconds(a_s.Int("settle_s", 30)));
 			} catch {
 				InGame.CloseGame(a_ctx);
 				throw;
 			} finally {
 				g?.Dispose();
 			}
-			a_ctx.Log.Detail(result);
-			a_ctx.Pause(TimeSpan.FromSeconds(a_s.Int("settle_s", 30)));
 			InGame.CloseGame(a_ctx);
 			count = Files.CountFiles(owCache);
 			if (count < minFiles) {

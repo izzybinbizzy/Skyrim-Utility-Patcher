@@ -570,8 +570,12 @@ public static class Program
 		var logs = Path.Combine(f.Root, "Logs");
 		Directory.CreateDirectory(logs);
 		var log = Path.Combine(logs, "BottledShaders.log");
-		File.WriteAllText(log, "[2026-10-26 17:50:34.017] [info] [ShaderTiming] x remaining=2707\n");
+		string Dated(double a_minutesAgo) => DateTime.Now.AddMinutes(-a_minutesAgo).ToString("yyyy-MM-dd HH:mm:ss.fff", System.Globalization.CultureInfo.InvariantCulture);
+		File.WriteAllText(log, $"[{Dated(0.5)}] [info] [ShaderTiming] x remaining=2707\n");
 		Check(InGame.Compiling(logs, f.Overwrite, DateTime.Now.AddMinutes(-1)), "dated stamp, remaining > 0");
+		// a count above 0 that is old by its own date, under newer lines of other kinds (Bottled Shaders ends a compile that way)
+		File.WriteAllText(log, $"[{Dated(7)}] [info] [ShaderTiming] Very slow x remaining=549\n[{Dated(0.1)}] [info] [ReverseZ.cpp:683] ReverseZ: camera\n");
+		Check(!InGame.Compiling(logs, f.Overwrite, DateTime.Now.AddMinutes(-10)), "a slow-shader count 7 minutes old is not a compile, whatever the log gained since");
 		File.WriteAllText(log, "[17:50:34.017] [info] [ShaderTiming] x remaining=0\n");
 		Check(!InGame.Compiling(logs, f.Overwrite, DateTime.Now.AddMinutes(-1)), "remaining 0 = done");
 		var open = Path.Combine(logs, "OpenShaders.log");
@@ -5078,8 +5082,8 @@ public static class Program
 		var (min, quiet, idle) = (50, TimeSpan.FromMinutes(5), TimeSpan.FromSeconds(45));
 		var slow = "[2026-11-10 12:07:56.657] [info] [46528] [ShaderCache.cpp:3537] [ShaderTiming] Very slow 12370ms | queue_wait=183805ms | remaining=549 | defines=1\n";
 		var bottled = "[2026-11-10 12:04:00.425] [info] Loaded CommunityShaders 1-9-0-0\n" + slow + string.Concat(Enumerable.Repeat("[2026-11-10 12:13:38.804] [info] [ReverseZ.cpp:683] ReverseZ: camera\n", 400));
-		Equal<int?>(549, ShaderStep.Remaining(bottled), "its last count is read however many lines follow it");
-		Equal<int?>(null, ShaderStep.Remaining("Open Shaders 2.20.0\n"), "a log without such lines");
+		Equal<int?>(549, InGame.RemainingIn(bottled), "its last count is read however many lines follow it");
+		Equal<int?>(null, InGame.RemainingIn("Open Shaders 2.20.0\n"), "a log without such lines");
 		ShaderStep.Look At(string a_log, int a_files, double a_sinceFile, double? a_cores, double a_peak, double a_low, bool a_sane = true, double a_sinceLog = 400, int? a_new = null) =>
 			new(a_log, a_files, a_new ?? a_files, TimeSpan.FromSeconds(a_sinceFile), TimeSpan.FromSeconds(a_sinceLog), a_cores, a_peak, TimeSpan.FromSeconds(a_low), a_sane);
 
@@ -5124,9 +5128,14 @@ public static class Program
 		Check(InGame.LogFolders(setup, mo2).Count == 1, "a plugin that maps nothing is not read as one");
 		File.WriteAllText(Path.Combine(plugins, "SKSELogRedirector.py"),
 			$"import mobase\nTARGET = r\"{real}\"\nMISSING = 'C:\\\\no\\\\such folder'\nclass R(mobase.IPluginFileMapper):\n    def mappings(self):\n        return [\"SKSE\", \"Logs\"]\n");
+		Check(InGame.LogFolders(setup, mo2).Count == 1, "a folder it names that holds no log is not taken for a log folder");
+		File.WriteAllText(Path.Combine(real, "BottledShaders.log"), "x");
 		var folders = InGame.LogFolders(setup, mo2);
 		Check(folders.Count == 2 && folders[0] == usual && Files.SamePath(folders[1], real), "the folder the mapper names, after the usual one: " + string.Join(" | ", folders));
-		File.WriteAllText(Path.Combine(real, "BottledShaders.log"), "x");
+		File.AppendAllText(Path.Combine(plugins, "SKSELogRedirector.py"), $"ROOT = \"{Path.GetPathRoot(real)!.Replace("\\", "\\\\")}\"\n");
+		Check(InGame.LogFolders(setup, mo2).Count == 2, "a drive's root is never one (every such folder is searched for crash logs)");
+		Check(InGame.IsCrashReport("crash-2026-11-10-12-03-27.log") && InGame.IsCrashReport("crash_2026.log") && InGame.IsCrashReport("SkyrimDiag_Crash_20261110_120327_711_SkyrimDiagReport.txt") &&
+			!InGame.IsCrashReport("SkyrimDiag_Crash_20261110_120327_711.dmp") && !InGame.IsCrashReport("SkyrimDiagHelper.previous.2.log"), "a crash report by its name, never a dump or a helper's own log");
 		Equal<string?>(Path.Combine(real, "BottledShaders.log"), InGame.NewestShaderLog(folders), "the shader log is found there");
 		var since = DateTime.Now.AddMinutes(-1);
 		var crash = Path.Combine(real, "crash-2026-11-10-12-03-27.log");

@@ -142,7 +142,9 @@ public static class Runner
 		using var cts = new CancellationTokenSource();
 		var commands = new Commands(journal, cts.Cancel);
 		Mo2Control? forThisRun = null;
-		var profile = new Profile(mo2, setup.Profile, () => forThisRun?.HeldOpen != true && new Mo2Control(mo2, setup.Profile, RunLog.Null).Running);
+		// one view of "is Mod Organizer open" for the run and for its order files: the run's own control, which also knows the copy
+		// it started a moment ago (two views once disagreed inside a second, and a put-back failed on it)
+		var profile = new Profile(mo2, setup.Profile, () => forThisRun?.Running ?? new Mo2Control(mo2, setup.Profile, RunLog.Null).Running);
 		var control = new Mo2Control(mo2, setup.Profile, log) {
 			LowerPriority = Setup.Bool(setup.Root, "lowerPriority") == true,
 			CompanionOn = Setup.Bool(setup.Root, "keepMo2Open") == true && Mo2MenuEntry.Present(mo2),

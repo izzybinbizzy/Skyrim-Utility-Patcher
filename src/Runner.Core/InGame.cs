@@ -93,7 +93,13 @@ public static partial class InGame
 	[GeneratedRegex("""[rR]?(["'])([A-Za-z]:[\\/](?:(?!\1)[^\r\n]){1,400})\1""")]
 	private static partial Regex PathLiteral();
 
-	// the folders a Mod Organizer plugin that maps SKSE's log folder names as text in its file (read, never run)
+	// the plugin files as last read (their count, sizes and times), so a look that repeats every few seconds reads none again
+	static readonly Lock s_mappedGate = new();
+	static (string Dir, string Stamp, List<string> Folders)? s_mapped;
+
+	// The folders a Mod Organizer plugin that maps SKSE's log folder names as text in its file (read, never run). Only a folder
+	// that holds a log now counts, and never a drive's root: a plugin's file names other folders too, and every folder taken
+	// here is searched for crash logs.
 	public static List<string> MappedLogFolders(string a_pluginsDir)
 	{
 		var found = new List<string>();
@@ -101,22 +107,41 @@ public static partial class InGame
 			if (!Directory.Exists(a_pluginsDir)) {
 				return found;
 			}
-			var files = Directory.EnumerateFiles(a_pluginsDir, "*.py").Concat(Directory.EnumerateDirectories(a_pluginsDir).SelectMany(d => Directory.EnumerateFiles(d, "*.py")));
-			foreach (var f in files.Where(f => new FileInfo(f).Length < 512 * 1024).Take(400)) {
-				var text = Files.ReadSharedText(f);
+			var files = Directory.EnumerateFiles(a_pluginsDir, "*.py").Concat(Directory.EnumerateDirectories(a_pluginsDir).SelectMany(d => Directory.EnumerateFiles(d, "*.py")))
+				.Select(f => new FileInfo(f)).Where(f => f.Length < 512 * 1024).Take(400).ToList();
+			var stamp = string.Join("|", files.Select(f => $"{f.FullName}:{f.Length}:{f.LastWriteTimeUtc.Ticks}"));
+			lock (s_mappedGate) {
+				if (s_mapped is { } last && last.Dir == a_pluginsDir && last.Stamp == stamp) {
+					return last.Folders.Where(HoldsALog).ToList();
+				}
+			}
+			foreach (var f in files) {
+				var text = Files.ReadSharedText(f.FullName);
 				if (!text.Contains("IPluginFileMapper", StringComparison.Ordinal) || !text.Contains("SKSE", StringComparison.Ordinal)) {
 					continue;
 				}
 				foreach (Match m in PathLiteral().Matches(text)) {
 					var dir = m.Groups[2].Value.Replace(@"\\", @"\", StringComparison.Ordinal).Replace('/', '\\').TrimEnd('\\');
-					if (Directory.Exists(dir) && !found.Contains(dir, StringComparer.OrdinalIgnoreCase)) {
+					if (dir.Length > 3 && Directory.Exists(dir) && !found.Contains(dir, StringComparer.OrdinalIgnoreCase)) {
 						found.Add(dir);
 					}
 				}
 			}
+			lock (s_mappedGate) {
+				s_mapped = (a_pluginsDir, stamp, found);
+			}
 		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
 		}
-		return found;
+		return found.Where(HoldsALog).ToList();
+	}
+
+	static bool HoldsALog(string a_dir)
+	{
+		try {
+			return Directory.EnumerateFiles(a_dir, "*.log").Any();
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+			return false;
+		}
 	}
 
 	// his checklist 470: the game closed under a step - the crash report written since that start is named (Crash Logger writes
@@ -136,7 +161,7 @@ public static partial class InGame
 
 	// a crash logger's own report file, by its name (a dump or a helper's log beside it is not the report a player reads)
 	public static bool IsCrashReport(string a_fileName) =>
-		Regex.IsMatch(a_fileName, @"^(crash-.*\.log|Crash_.*\.txt|SkyrimDiag_Crash_.*_SkyrimDiagReport\.txt)$", RegexOptions.IgnoreCase);
+		Regex.IsMatch(a_fileName, @"^(crash.*\.log|Crash_.*\.txt|SkyrimDiag_Crash_.*_SkyrimDiagReport\.txt)$", RegexOptions.IgnoreCase);
 
 	// every crash report written since a_since, newest first - one per crash logger that wrote one
 	public static List<string> CrashReports(IReadOnlyList<string> a_logFolders, string a_overwrite, DateTime a_since)
@@ -195,7 +220,9 @@ public static partial class InGame
 		for (int i = tail.Length - 1; i >= 0; --i) {
 			var m = Remaining().Match(tail[i]);
 			if (m.Success) {
-				return int.Parse(m.Groups[1].Value, InvariantCulture) > 0;
+				// Bottled Shaders writes this line only for a SLOW shader, so its last count can stay above 0 for good: by the
+				// line's own date it counts 5 minutes, however many other lines the log gains after it
+				return int.Parse(m.Groups[1].Value, InvariantCulture) > 0 && !(LineTime(tail[i]) is { } at && DateTime.Now - at > TimeSpan.FromMinutes(5));
 			}
 			if (tail[i].Contains("Shader compilation completed", StringComparison.Ordinal)) {
 				return false;
@@ -207,17 +234,31 @@ public static partial class InGame
 		return false;
 	}
 
+	// when a log line was written, by its own stamp "[yyyy-MM-dd HH:mm:ss" (null: it carries no date)
+	static DateTime? LineTime(string a_line)
+	{
+		var line = a_line.TrimStart();
+		return line.Length >= 20 && DateTime.TryParseExact(line[1..20], "yyyy-MM-dd HH:mm:ss", InvariantCulture, System.Globalization.DateTimeStyles.None, out var at) ? at : null;
+	}
+
 	// the newest "remaining=N" a shader log holds (null: it has no ShaderTiming lines - Open Shaders, an older Community Shaders)
 	public static int? LastRemaining(string a_log)
 	{
-		string[] tail;
 		try {
-			tail = Files.ReadSharedText(a_log).Split('\n').TakeLast(300).ToArray();
+			return RemainingIn(Files.ReadSharedText(a_log));
 		} catch (IOException) {
 			return null;
 		}
-		for (int i = tail.Length - 1; i >= 0; --i) {
-			var m = Remaining().Match(tail[i]);
+	}
+
+	// the same, of a log's text - the whole of it, however many lines follow the count. Bottled Shaders writes the line only for
+	// a SLOW shader, so a last count above 0 says nothing about now; only 0 is a verdict (his run of 2026-11-10: its last line
+	// read remaining=549 five minutes before the compile's real end, and nothing after it said done)
+	public static int? RemainingIn(string a_logText)
+	{
+		var lines = a_logText.Split('\n');
+		for (int i = lines.Length - 1; i >= 0; --i) {
+			var m = Remaining().Match(lines[i]);
 			if (m.Success) {
 				return int.Parse(m.Groups[1].Value, InvariantCulture);
 			}
