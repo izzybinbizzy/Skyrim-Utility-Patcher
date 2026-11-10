@@ -90,7 +90,7 @@ public static class ToolProof
 						if (Uia.Boxes(pids()).FirstOrDefault() is { } box) {
 							return new Result(a_look.Step, false, $"{tool}: it stopped at a box before its options: {box.Text}");
 						}
-						Thread.Sleep(2000);
+						Waits.Pause(TimeSpan.FromSeconds(2), a_ct);
 					}
 				}
 				window = inner;

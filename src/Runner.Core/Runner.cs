@@ -148,6 +148,7 @@ public static class Runner
 			CompanionOn = Setup.Bool(setup.Root, "keepMo2Open") == true && Mo2MenuEntry.Present(mo2),
 		};
 		forThisRun = control;
+		control.StopAsked = cts.Token;
 		journal.Mo2KeptOpen = control.CompanionOn;
 		control.CompanionGaveUp = () => {
 			journal.Mo2KeptOpen = false;
@@ -538,6 +539,7 @@ public static class Runner
 		r.Activity = "starting";
 		a_ctx.Journal.Save();
 		var overwriteBefore = OverwriteFiles(a_ctx);
+		var stepBegan = DateTime.UtcNow;
 		List<string> learned = [];
 		var sw = Stopwatch.StartNew();
 		try {
@@ -578,7 +580,7 @@ public static class Runner
 			PutBackParked(a_ctx, a_s.Key);
 			StepKit.PutFilesBack(a_ctx);
 			a_ctx.QuietFiles.Clear();
-			MoveNewOverwrite(a_ctx, overwriteBefore);
+			MoveNewOverwrite(a_ctx, overwriteBefore, stepBegan);
 			return false;
 		}
 		foreach (var m in new[] { a_ctx.OutputUntouched ? null : new StepSettings(a_s.Settings).OutputMod }.OfType<string>().Concat(a_ctx.PendingEnable)) {
@@ -1026,19 +1028,55 @@ public static class Runner
 			.ToDictionary(f => f, File.GetLastWriteTimeUtc, StringComparer.OrdinalIgnoreCase) : new(StringComparer.OrdinalIgnoreCase);
 	}
 
+	// What a step made in overwrite: a file that was there and changed, or one that was not there and was written or created
+	// since the step began. A path new to overwrite that carries a date from before the step is NOT the step's (his run of
+	// 2026-11-10: a crash logger renamed its own older logs at each game start, and they were taken as the run's) - it stays.
+	public static (List<string> Made, List<string> Older) NewInOverwrite(IReadOnlyDictionary<string, DateTime> a_before, IReadOnlyDictionary<string, DateTime> a_now, DateTime a_beganUtc,
+		Func<string, DateTime>? a_created = null)
+	{
+		var made = new List<string>();
+		var older = new List<string>();
+		var since = a_beganUtc.AddSeconds(-2);
+		foreach (var (f, t) in a_now) {
+			if (a_before.TryGetValue(f, out var was)) {
+				if (was != t) {
+					made.Add(f);
+				}
+			} else if (t >= since || (a_created ?? File.GetCreationTimeUtc)(f) >= since) {
+				made.Add(f);
+			} else {
+				older.Add(f);
+			}
+		}
+		return (made, older);
+	}
+
 	// a failed step's new files in overwrite would win over the output put back: moved into the run's backup ("unfinished\overwrite")
-	static void MoveNewOverwrite(RunContext a_ctx, Dictionary<string, DateTime> a_before)
+	// - only what the step made, and a crash report among them is named with where it went
+	static void MoveNewOverwrite(RunContext a_ctx, Dictionary<string, DateTime> a_before, DateTime a_beganUtc)
 	{
 		try {
 			var ow = a_ctx.Mo2.OverwriteDir;
-			var fresh = OverwriteFiles(a_ctx).Where(f => !a_before.TryGetValue(f.Key, out var t) || t != f.Value).Select(f => f.Key).ToList();
+			var (fresh, older) = NewInOverwrite(a_before, OverwriteFiles(a_ctx), a_beganUtc);
+			var reports = new List<string>();
 			foreach (var f in fresh) {
 				var dst = Path.Combine(a_ctx.BackupFolder, "unfinished", "overwrite", Path.GetRelativePath(ow, f));
 				Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
 				File.Move(f, dst, true);
+				if (InGame.IsCrashReport(Path.GetFileName(f))) {
+					reports.Add(dst);
+				}
 			}
 			if (fresh.Count > 0) {
 				a_ctx.Log.Detail($"{fresh.Count} file(s) the step left in Mod Organizer's overwrite moved to the backup (unfinished\\overwrite)");
+			}
+			foreach (var r in reports) {
+				a_ctx.Log.Warn("the game's crash report went with them - it is now at " + r);
+				a_ctx.Log.Simple("Note: the game's crash report is in the run's backup: " + r);
+			}
+			if (older.Count > 0) {
+				a_ctx.Log.Detail($"{older.Count} file(s) new to overwrite carry a date from before the step and were left where they are (not this run's): " +
+					string.Join(", ", older.Take(4).Select(Path.GetFileName)) + (older.Count > 4 ? " ..." : ""));
 			}
 		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
 			a_ctx.Log.Warn("overwrite could not be cleared after the failed step: " + e.Message);

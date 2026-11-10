@@ -36,6 +36,21 @@ public sealed class RunContext
 
 	public void SetAfter(params string[] a_mods) => PendingEnable.AddRange(a_mods);
 
+	// one output of a step that makes several is complete: on record as built at once, so it stays - and is switched on at the
+	// put-back - even when a later part of the same step fails or is stopped (a step's failure used to lose its finished part)
+	public void Finished(string a_mod)
+	{
+		Steps.StepKit.MarkReplaced(this, a_mod);
+		if (!Journal.Built.Contains(a_mod, StringComparer.OrdinalIgnoreCase)) {
+			Journal.Built.Add(a_mod);
+		}
+		Journal.Save();
+		SetAfter(a_mod);
+	}
+
+	// a step's own wait (a tool settling, a pause between two tries): a Stop ends it at once - never Thread.Sleep in a step
+	public void Pause(TimeSpan a_for) => Waits.Pause(a_for, Cancel);
+
 	// what a step does now, for the window: saved at most once a second (a command-line tool prints thousands of lines); a
 	// "WAITING FOR YOU" text always at once. Only the run's own thread calls it.
 	public void Activity(string a_step, string a_text, double? a_progress = null)
@@ -123,6 +138,8 @@ public sealed class Toggle : IDisposable
 	{
 		_ctx = a_ctx;
 		_label = a_label;
+		// a Stop already asked for: nothing is switched and nothing started
+		a_ct.ThrowIfCancellationRequested();
 		var st = a_ctx.Profile.States();
 		var en = a_enable.Where(m => st.ContainsKey(m)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
 		var dis = a_disable.Where(m => st.ContainsKey(m) && !en.Contains(m, StringComparer.OrdinalIgnoreCase)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
@@ -161,7 +178,15 @@ public sealed class Toggle : IDisposable
 		// step), so the run's final put-back sees and keeps it too
 		var theirs = _ctx.Profile.ChangedByOthers();
 		var marks = theirs.Count > 0 ? _ctx.Profile.PluginMarks() : [];
-		_ctx.Profile.Restore(_snap);
+		try {
+			_ctx.Profile.Restore(_snap);
+		} catch (Mo2OpenException) {
+			// a Mod Organizer the step started a moment ago was not there for the close above and is there now (his run of
+			// 2026-11-10: a Stop seen right after the start left the step FAILED on "Mod Organizer is open"): closed, then once more
+			_ctx.Log.Detail("Mod Organizer came up while the mods were being put back - closing it, then putting them back");
+			_ctx.Control.Close();
+			_ctx.Profile.Restore(_snap);
+		}
 		_ctx.Profile.OursBack(_oursBefore);
 		if (theirs.Count > 0) {
 			var expected = _ctx.Profile.OursNow();
@@ -180,6 +205,17 @@ public static class Waits
 	{
 		Wait,
 		Done,
+	}
+
+	// the one wait of the engine's steps: it ends the moment a Stop is asked, and says so by throwing as every other look at Stop
+	// does (his finds of 2026-11-04, 11-06 and 11-10: "pressing stop now still doesn't stop it" - each time a wait that could
+	// not see it). The offline test NoStepWaitIsBlindToStop holds the steps to it.
+	public static void Pause(TimeSpan a_for, CancellationToken a_ct)
+	{
+		if (a_for > TimeSpan.Zero) {
+			a_ct.WaitHandle.WaitOne(a_for);
+		}
+		a_ct.ThrowIfCancellationRequested();
 	}
 
 	// the offline tests only: a short idle limit

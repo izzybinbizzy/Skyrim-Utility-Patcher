@@ -440,7 +440,7 @@ public sealed class SynthesisStep : IStep
 			if (sw.Elapsed > idle) {
 				throw new StepFailedException($"Synthesis showed no usable Run button within {idle.TotalMinutes:0} minutes. Its window shows: {Short(txt)}");
 			}
-			Thread.Sleep(2000);
+			a_ctx.Pause(TimeSpan.FromSeconds(2));
 			go = Buttons();
 		}
 		foreach (var b in go) {
@@ -553,7 +553,7 @@ public sealed class SynthesisStep : IStep
 				if (StillBlocked(ref blockedSince, blocked, DateTime.UtcNow) || (!preparing && Regex.IsMatch(txt, "failed", RegexOptions.IgnoreCase))) {
 					throw new StepFailedException("Synthesis could not build its patchers: " + (txt.Length > 300 ? txt[^300..] : txt));
 				}
-				Thread.Sleep(3000);
+				a_ctx.Pause(TimeSpan.FromSeconds(3));
 			}
 			throw new StepFailedException($"Synthesis did not finish building within {a_s.Int("build_min", 15)} minutes. Its window shows: {(last.Length > 300 ? last[^300..] : last)}");
 		} finally {

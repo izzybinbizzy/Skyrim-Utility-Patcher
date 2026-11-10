@@ -2,6 +2,9 @@ using System.Text;
 
 namespace ToolRunner;
 
+// an order file was about to be written while Mod Organizer is open (it would write its own lists over it when it closes)
+public sealed class Mo2OpenException(string a_message) : InvalidOperationException(a_message);
+
 // One MO2 profile's order files. modlist.txt: one mod per line, '+' ticked, '-' unticked, '*' MO2's own entries (DLC,
 // Creation Club) - the LAST line is the top of MO2's left pane. Every write: MO2 closed (MO2 rewrites the files from memory
 // when it exits), atomic, the file's own line ending kept, every line it does not change kept byte for byte.
@@ -24,9 +27,12 @@ public sealed class Profile(Mo2Instance a_mo2, string a_name, Func<bool> a_mo2Ru
 	void MustBeClosed(string a_what)
 	{
 		if (a_mo2Running()) {
-			throw new InvalidOperationException($"Mod Organizer is open - {a_what} can only change while it is closed");
+			throw new Mo2OpenException($"Mod Organizer is open - {a_what} can only change while it is closed");
 		}
 	}
+
+	// the mods in modlist.txt's own order: the FIRST is the lowest in Mod Organizer's left pane, the one whose files win
+	public List<string> ModOrder() => ReadLines(ModList).Lines.Where(l => l.Length > 1 && l[0] is '+' or '-' or '*').Select(l => l[1..]).ToList();
 
 	static (List<string> Lines, string Nl) ReadLines(string a_path)
 	{

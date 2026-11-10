@@ -265,12 +265,22 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 		}
 		if (!Running) {
 			WaitForLeftovers(a_ct);
+			// a Stop already asked for never starts Mod Organizer (it would only have to be closed again for the put-back)
+			a_ct.ThrowIfCancellationRequested();
 			_log.Detail($"starting Mod Organizer (profile {ProfileName})");
 			_mo2LaunchedAt = DateTime.UtcNow;
-			_ownMo2.Add(Launch($"{Quote(Mo2.Exe)}{Instance} -p {Quote(ProfileName)}", Path.GetDirectoryName(Mo2.Exe)!));
+			_lastStarted = Launch($"{Quote(Mo2.Exe)}{Instance} -p {Quote(ProfileName)}", Path.GetDirectoryName(Mo2.Exe)!);
+			_ownMo2.Add(_lastStarted.Value);
 		}
 		WaitReady(a_ct);
 	}
+
+	// the Mod Organizer this run started last: for its first seconds Windows may not list it by name yet, or not let its path be
+	// read - it still counts as running (a put-back that read "closed" in that moment wrote the order files under it)
+	int? _lastStarted;
+	public static TimeSpan StartingGrace { get; set; } = TimeSpan.FromSeconds(20);
+
+	bool OwnStarting() => _lastStarted is { } pid && _mo2LaunchedAt is { } at && DateTime.UtcNow - at < StartingGrace && Procs.Alive(pid);
 
 	// the Mod Organizer processes this run started itself - any other one is the player's (his 2026-11-06 find: "the tool keeps
 	// trying to fight you when you're doing something in mo2 even though it's running"). The player's is never closed mid-run:
@@ -450,7 +460,11 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 	public Func<bool>? RunningProbe { get; set; }
 
 	// a Mod Organizer whose path cannot be read counts as running (no profile file is written under it)
-	bool IsRunning() => RunningProbe?.Invoke() ?? (Pids().Count > 0 || Unreadable().Count > 0);
+	bool IsRunning() => RunningProbe?.Invoke() ?? (Pids().Count > 0 || Unreadable().Count > 0 || OwnStarting());
+
+	// the run was asked to stop (the run's own cancellation): a close made for the put-back waits for nothing it can do without -
+	// set by the run; none = never asked
+	public CancellationToken StopAsked { get; set; }
 
 	public Func<List<(int Pid, string Image)>>? ForeignProbe { get; set; }
 
@@ -460,8 +474,14 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 			HeldOpen = false;
 			return;
 		}
-		if (RunningProbe == null && Unreadable().Count > 0) {
-			throw new Mo2BusyException("a Mod Organizer runs that this program cannot read (started as administrator?) - close it yourself, then start again");
+		if (RunningProbe == null) {
+			// one this run started a moment ago becomes readable within seconds: only one that stays unreadable is somebody else's
+			for (var w = Stopwatch.StartNew(); OwnStarting() && Pids().Count == 0 && w.Elapsed < StartingGrace;) {
+				Thread.Sleep(250);
+			}
+			if (Unreadable().Count > 0) {
+				throw new Mo2BusyException("a Mod Organizer runs that this program cannot read (started as administrator?) - close it yourself, then start again");
+			}
 		}
 		// (a test that fakes MO2 with RunningProbe fakes the player's copy with TheirsProbe too, or it has none)
 		if (!AllowCloseTheirs && (RunningProbe == null || TheirsProbe != null)) {
@@ -490,8 +510,7 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 				_log.Warn($"{why} - waiting for it to end before closing Mod Organizer (up to {BusyWait.TotalMinutes:0} minutes)");
 				told = true;
 			}
-			a_ct.ThrowIfCancellationRequested();
-			Thread.Sleep(5000);
+			Waits.Pause(TimeSpan.FromSeconds(5), a_ct);
 		}
 		// the player may be working in the run's own Mod Organizer (one per instance - a second start lands in this one): while it
 		// is in front and touched in the last PlayerQuiet, the close waits for the player to stop (never shuts a window under them)
@@ -539,12 +558,18 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 	// his checklist 443: Mod Organizer closed before Root Builder's clear would leave its files in the game folder
 	void WaitForRootBuilder(CancellationToken a_ct)
 	{
-		if (RunningProbe == null && Mo2.RootBuilderBuilds && !_rootBuilderStuck && !WaitForClear(Mo2.RootBuilderDeployed, a_ct)) {
+		if ((RunningProbe == null || RootBuilderProbe != null) && (RootBuilderProbe != null || Mo2.RootBuilderBuilds) && !_rootBuilderStuck &&
+		    !WaitForClear(RootBuilderProbe ?? Mo2.RootBuilderDeployed, a_ct, StopAsked)) {
 			// once: left over from a build the player made, it would cost this wait at every close of the run
 			_rootBuilderStuck = true;
-			_log.Warn($"Root Builder may still have its files in the game folder after {RootBuilderWait.TotalMinutes:0} minutes - going on all the same; it takes them out at Mod Organizer's next start");
+			_log.Warn(StopAsked.IsCancellationRequested
+				? "Stop: not waiting for Root Builder to take its files out of the game folder - it takes them out at Mod Organizer's next start"
+				: $"Root Builder may still have its files in the game folder after {RootBuilderWait.TotalMinutes:0} minutes - going on all the same; it takes them out at Mod Organizer's next start");
 		}
 	}
+
+	// the offline tests only: Root Builder's files "still in the game folder"
+	public Func<bool>? RootBuilderProbe { get; set; }
 
 	public static TimeSpan RootBuilderWait { get; set; } = TimeSpan.FromMinutes(3);
 	public static TimeSpan RootBuilderLook { get; set; } = TimeSpan.FromSeconds(1);
@@ -553,15 +578,23 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 
 	TimeSpan StartLimit(TimeSpan a_normal) => Mo2.RootBuilderBuilds ? a_normal + RootBuilderBuildTime : a_normal;
 
-	// true = its files are out of the game folder; false = they still stood at the limit
-	public static bool WaitForClear(Func<bool> a_deployed, CancellationToken a_ct)
+	// true = its files are out of the game folder; false = they still stood at the limit - or a Stop was asked (a_hurry: the
+	// put-back's close has no cancellation of its own, and this wait once sat three minutes on a pressed Stop). a_ct: a Stop that
+	// ends the caller's own work throws, as everywhere
+	public static bool WaitForClear(Func<bool> a_deployed, CancellationToken a_ct, CancellationToken a_hurry = default)
 	{
 		var sw = Stopwatch.StartNew();
 		while (a_deployed()) {
-			if (sw.Elapsed > RootBuilderWait) {
+			a_ct.ThrowIfCancellationRequested();
+			if (sw.Elapsed > RootBuilderWait || a_hurry.IsCancellationRequested) {
 				return false;
 			}
-			a_ct.WaitHandle.WaitOne(RootBuilderLook);
+			// (one handle twice is refused by Windows: a forward close hands the run's own token as both)
+			if (a_hurry.CanBeCanceled && a_hurry != a_ct) {
+				WaitHandle.WaitAny([a_ct.WaitHandle, a_hurry.WaitHandle], RootBuilderLook);
+			} else {
+				a_ct.WaitHandle.WaitOne(RootBuilderLook);
+			}
 			a_ct.ThrowIfCancellationRequested();
 		}
 		return true;

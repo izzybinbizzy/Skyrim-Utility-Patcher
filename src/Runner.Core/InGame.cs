@@ -70,38 +70,104 @@ public static partial class InGame
 			Path.Combine(docs, "My Games", "Skyrim Special Edition", "SKSE");
 	}
 
-	// his checklist 470: the game closed under a step - the crash log a crash logger wrote since the run began is named (Crash Logger
-	// writes SKSE\crash-<time>.log, Trainwreck SKSE\Crashlogs\crash-<time>.log, .NET Script Framework NetScriptFramework\Crash\Crash_<time>.txt
-	// into Mod Organizer's overwrite), so the failure points at the cause instead of only saying the game went
+	// Where the SKSE plugins' logs really are. The game is told My Games\<game>\SKSE, but a Mod Organizer file-mapper plugin (an
+	// "SKSE log redirector") can show it another folder there: the files are then in that other folder and the one in Documents
+	// stays empty (his run of 2026-11-10: the shader log and the crash logs were never found). So, when the setup names no
+	// folder: the usual one, then every existing folder such a plugin names in its own file.
+	public static List<string> LogFolders(Setup a_setup, Mo2Instance a_mo2)
+	{
+		var first = SkseLogs(a_setup, a_mo2);
+		var folders = new List<string> { first };
+		if (!string.IsNullOrWhiteSpace(Setup.Str(a_setup.Root, "skseLogs"))) {
+			return folders;
+		}
+		foreach (var d in MappedLogFolders(Path.Combine(Path.GetDirectoryName(a_mo2.Exe) ?? "", "plugins"))) {
+			if (!folders.Any(f => Files.SamePath(f, d))) {
+				folders.Add(d);
+			}
+		}
+		return folders;
+	}
+
+	// a quoted absolute Windows path in a script (the quote it opened with closes it: a folder name may hold the other one)
+	[GeneratedRegex("""[rR]?(["'])([A-Za-z]:[\\/](?:(?!\1)[^\r\n]){1,400})\1""")]
+	private static partial Regex PathLiteral();
+
+	// the folders a Mod Organizer plugin that maps SKSE's log folder names as text in its file (read, never run)
+	public static List<string> MappedLogFolders(string a_pluginsDir)
+	{
+		var found = new List<string>();
+		try {
+			if (!Directory.Exists(a_pluginsDir)) {
+				return found;
+			}
+			var files = Directory.EnumerateFiles(a_pluginsDir, "*.py").Concat(Directory.EnumerateDirectories(a_pluginsDir).SelectMany(d => Directory.EnumerateFiles(d, "*.py")));
+			foreach (var f in files.Where(f => new FileInfo(f).Length < 512 * 1024).Take(400)) {
+				var text = Files.ReadSharedText(f);
+				if (!text.Contains("IPluginFileMapper", StringComparison.Ordinal) || !text.Contains("SKSE", StringComparison.Ordinal)) {
+					continue;
+				}
+				foreach (Match m in PathLiteral().Matches(text)) {
+					var dir = m.Groups[2].Value.Replace(@"\\", @"\", StringComparison.Ordinal).Replace('/', '\\').TrimEnd('\\');
+					if (Directory.Exists(dir) && !found.Contains(dir, StringComparer.OrdinalIgnoreCase)) {
+						found.Add(dir);
+					}
+				}
+			}
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+		}
+		return found;
+	}
+
+	// his checklist 470: the game closed under a step - the crash report written since that start is named (Crash Logger writes
+	// SKSE\crash-<time>.log, Trainwreck SKSE\Crashlogs\crash-<time>.log, .NET Script Framework NetScriptFramework\Crash\Crash_<time>.txt
+	// and Tullius CTD Logger SKSE\Plugins\...\SkyrimDiag_Crash_<time>_SkyrimDiagReport.txt, the last two in Mod Organizer's
+	// overwrite), so the failure points at the cause instead of only saying the game went
 	public static StepFailedException GameClosed(RunContext a_ctx, string a_while) =>
-		new($"the game closed {a_while}" + CrashNote(SkseLogs(a_ctx.Setup, a_ctx.Mo2), a_ctx.Mo2.OverwriteDir, a_ctx.GameLaunched ?? a_ctx.Journal.Started));
+		new($"the game closed {a_while}" + CrashNote(LogFolders(a_ctx.Setup, a_ctx.Mo2), a_ctx.Mo2.OverwriteDir, a_ctx.GameLaunched ?? a_ctx.Journal.Started));
 
-	public static string CrashNote(string a_skseLogs, string a_overwrite, DateTime a_since) =>
-		CrashLog(a_skseLogs, a_overwrite, a_since) is { } log ? $" - it crashed; its crash log: {log}" :
-			" - no crash log was written (a crash logger such as Crash Logger SSE names the cause of the next one)";
+	public static string CrashNote(string a_skseLogs, string a_overwrite, DateTime a_since) => CrashNote([a_skseLogs], a_overwrite, a_since);
 
-	public static string? CrashLog(string a_skseLogs, string a_overwrite, DateTime a_since)
+	public static string CrashNote(IReadOnlyList<string> a_logFolders, string a_overwrite, DateTime a_since) =>
+		CrashReports(a_logFolders, a_overwrite, a_since) is { Count: > 0 } logs ? $" - it crashed; its crash report: {string.Join(" and ", logs)}" :
+			" - no crash report was written (a crash logger such as Crash Logger SSE names the cause of the next one)";
+
+	public static string? CrashLog(string a_skseLogs, string a_overwrite, DateTime a_since) => CrashReports([a_skseLogs], a_overwrite, a_since).FirstOrDefault();
+
+	// a crash logger's own report file, by its name (a dump or a helper's log beside it is not the report a player reads)
+	public static bool IsCrashReport(string a_fileName) =>
+		Regex.IsMatch(a_fileName, @"^(crash-.*\.log|Crash_.*\.txt|SkyrimDiag_Crash_.*_SkyrimDiagReport\.txt)$", RegexOptions.IgnoreCase);
+
+	// every crash report written since a_since, newest first - one per crash logger that wrote one
+	public static List<string> CrashReports(IReadOnlyList<string> a_logFolders, string a_overwrite, DateTime a_since)
 	{
 		var found = new List<FileInfo>();
 		void Look(string a_dir, string a_pattern, SearchOption a_how)
 		{
 			try {
 				if (Directory.Exists(a_dir)) {
-					found.AddRange(new DirectoryInfo(a_dir).EnumerateFiles(a_pattern, a_how).Where(f => f.LastWriteTime >= a_since));
+					found.AddRange(new DirectoryInfo(a_dir).EnumerateFiles(a_pattern, a_how).Where(f => f.LastWriteTime >= a_since && IsCrashReport(f.Name)));
 				}
 			} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
 			}
 		}
-		Look(a_skseLogs, "crash*.log", SearchOption.AllDirectories);
+		foreach (var logs in a_logFolders) {
+			Look(logs, "crash*.log", SearchOption.AllDirectories);
+			Look(logs, "SkyrimDiag_Crash_*_SkyrimDiagReport.txt", SearchOption.AllDirectories);
+		}
 		Look(Path.Combine(a_overwrite, "NetScriptFramework", "Crash"), "Crash*.txt", SearchOption.TopDirectoryOnly);
-		return found.OrderByDescending(f => f.LastWriteTime).FirstOrDefault()?.FullName;
+		Look(Path.Combine(a_overwrite, "SKSE", "Plugins"), "SkyrimDiag_Crash_*_SkyrimDiagReport.txt", SearchOption.AllDirectories);
+		return found.OrderByDescending(f => f.LastWriteTime).Select(f => f.FullName).Distinct(StringComparer.OrdinalIgnoreCase)
+			.GroupBy(f => Path.GetFileName(f).StartsWith("SkyrimDiag", StringComparison.OrdinalIgnoreCase) ? "t" : Path.GetExtension(f).ToLowerInvariant()).Select(g => g.First()).ToList();
 	}
 
 	// the log a shader mod writes now: the newest of the known names (Bottled Shaders renamed its log 2026-10-26)
-	public static string? NewestShaderLog(string a_folder, string? a_preferred = null)
+	public static string? NewestShaderLog(string a_folder, string? a_preferred = null) => NewestShaderLog([a_folder], a_preferred);
+
+	public static string? NewestShaderLog(IReadOnlyList<string> a_folders, string? a_preferred = null)
 	{
 		var names = a_preferred == null ? ShaderLogNames : [a_preferred, .. ShaderLogNames.Where(n => !n.Equals(a_preferred, StringComparison.OrdinalIgnoreCase))];
-		return names.Select(n => Path.Combine(a_folder, n)).Where(File.Exists).OrderByDescending(File.GetLastWriteTimeUtc).FirstOrDefault();
+		return a_folders.SelectMany(d => names.Select(n => Path.Combine(d, n))).Where(File.Exists).OrderByDescending(File.GetLastWriteTimeUtc).FirstOrDefault();
 	}
 
 	[GeneratedRegex(@"\[(?:\d{4}-\d\d-\d\d[ T])?\d\d:\d\d:\d\d(?:\.\d+)?\].*\[ShaderTiming\].*\bremaining=(\d+)")]
@@ -109,12 +175,14 @@ public static partial class InGame
 
 	// a compile runs: a "remaining=N" line (N > 0) in the last 5 minutes, or Open Shaders' "started" with no "completed" after it,
 	// or a shader landed in overwrite\ShaderCache in the last 2 minutes (the signal that survives a log's rename or re-stamp)
-	public static bool Compiling(string a_logFolder, string a_overwrite, DateTime a_since)
+	public static bool Compiling(string a_logFolder, string a_overwrite, DateTime a_since) => Compiling([a_logFolder], a_overwrite, a_since);
+
+	public static bool Compiling(IReadOnlyList<string> a_logFolders, string a_overwrite, DateTime a_since)
 	{
 		if (CacheBusy(a_overwrite)) {
 			return true;
 		}
-		var log = NewestShaderLog(a_logFolder);
+		var log = NewestShaderLog(a_logFolders);
 		if (log == null || File.GetLastWriteTimeUtc(log) < a_since.ToUniversalTime() || DateTime.UtcNow - File.GetLastWriteTimeUtc(log) > TimeSpan.FromMinutes(5)) {
 			return false;
 		}
@@ -176,9 +244,9 @@ public static partial class InGame
 		return false;
 	}
 
-	static bool BootPassOver(string a_logFolder, DateTime a_since)
+	static bool BootPassOver(IReadOnlyList<string> a_logFolders, DateTime a_since)
 	{
-		var log = NewestShaderLog(a_logFolder);
+		var log = NewestShaderLog(a_logFolders);
 		if (log == null || File.GetLastWriteTimeUtc(log) < a_since.ToUniversalTime()) {
 			return false;
 		}
@@ -521,7 +589,7 @@ public static partial class InGame
 	static void WaitPlace(RunContext a_ctx)
 	{
 		var sw = Stopwatch.StartNew();
-		Thread.Sleep(3000);
+		a_ctx.Pause(TimeSpan.FromSeconds(3));
 		while (sw.Elapsed < TimeSpan.FromMinutes(5)) {
 			a_ctx.Cancel.ThrowIfCancellationRequested();
 			if (!GameUp(a_ctx)) {
@@ -534,7 +602,7 @@ public static partial class InGame
 				}
 			} catch (Exception e) when (e is HttpRequestException or TaskCanceledException or InvalidOperationException or System.Text.Json.JsonException or FormatException) {
 			}
-			Thread.Sleep(3000);
+			a_ctx.Pause(TimeSpan.FromSeconds(3));
 		}
 		throw new StepFailedException("the new place did not finish loading within 5 minutes");
 	}
@@ -735,7 +803,7 @@ public static partial class InGame
 				throw GameClosed(a_ctx, "while it was starting");
 			}
 			AnswerNativeBoxes(RunBoxes(a_ctx, launched), a_ctx.Log);
-			Thread.Sleep(2000);
+			a_ctx.Pause(TimeSpan.FromSeconds(2));
 		}
 		a_ctx.Log.Detail($"the game is up after {sw.Elapsed.TotalSeconds:0} s");
 		var compiled = WaitCompile(a_ctx, a_step, a_s, started);
@@ -750,7 +818,7 @@ public static partial class InGame
 				if (t.Elapsed > TimeSpan.FromMinutes(3)) {
 					throw new StepFailedException($"the game never accepted the load of \"{a_save}\": {e.Message}");
 				}
-				Thread.Sleep(3000);
+				a_ctx.Pause(TimeSpan.FromSeconds(3));
 			}
 		}
 		t.Restart();
@@ -761,12 +829,12 @@ public static partial class InGame
 			}
 			try {
 				if (AnswerGameBox(a_ctx) != null) {
-					Thread.Sleep(3000);
+					a_ctx.Pause(TimeSpan.FromSeconds(3));
 					continue;
 				}
 				if (a_ctx.DevBench.Call("inspect", new { kind = "state" }, 10)["playerLoaded"]?.GetValue<bool>() == true) {
 					var f1 = a_ctx.DevBench.Frame();
-					Thread.Sleep(2000);
+					a_ctx.Pause(TimeSpan.FromSeconds(2));
 					var f2 = a_ctx.DevBench.Frame();
 					if (f1 != null && f2 > f1) {
 						a_ctx.Log.Detail($"\"{a_save}\" loaded after {t.Elapsed.TotalSeconds:0} s");
@@ -776,9 +844,9 @@ public static partial class InGame
 				}
 			} catch (Exception e) when (e is HttpRequestException or TaskCanceledException or InvalidOperationException or FormatException or System.Text.Json.JsonException) {
 			}
-			Thread.Sleep(3000);
+			a_ctx.Pause(TimeSpan.FromSeconds(3));
 			// a compile that started under the load is never cut off - the load clock waits while one runs
-			if (t.Elapsed > limit - TimeSpan.FromMinutes(1) && Compiling(SkseLogs(a_ctx.Setup, a_ctx.Mo2), a_ctx.Mo2.OverwriteDir, started)) {
+			if (t.Elapsed > limit - TimeSpan.FromMinutes(1) && Compiling(LogFolders(a_ctx.Setup, a_ctx.Mo2), a_ctx.Mo2.OverwriteDir, started)) {
 				a_ctx.Log.Detail("shaders still compiling under the load - waiting for them");
 				// counted as a compile at this start too (the save to play reports a stale cache - the fourth review, L3)
 				compiled = true;
@@ -792,7 +860,7 @@ public static partial class InGame
 	// write its first line only when a shader finishes, so it is watched for `compile_watch_s` (300) before a load is sent.
 	public static bool WaitCompile(RunContext a_ctx, string a_step, StepSettings a_s, DateTime a_since)
 	{
-		var logs = SkseLogs(a_ctx.Setup, a_ctx.Mo2);
+		var logs = LogFolders(a_ctx.Setup, a_ctx.Mo2);
 		var watch = TimeSpan.FromSeconds(a_s.Int("compile_watch_s", 300));
 		var max = TimeSpan.FromMinutes(a_s.Int("compile_max_min", 90));
 		var sw = Stopwatch.StartNew();
@@ -826,7 +894,7 @@ public static partial class InGame
 				}
 				return seen;
 			}
-			Thread.Sleep(5000);
+			a_ctx.Pause(TimeSpan.FromSeconds(5));
 		}
 		throw new StepFailedException($"the shaders were still compiling after {max.TotalMinutes:0} minutes");
 	}
@@ -850,7 +918,7 @@ public static partial class InGame
 			var there = File.Exists(a_path) && File.GetLastWriteTimeUtc(a_path) >= a_since;
 			if (there) {
 				var s1 = new FileInfo(a_path).Length;
-				Thread.Sleep(4000);
+				a_ctx.Pause(TimeSpan.FromSeconds(4));
 				if (s1 > 0 && new FileInfo(a_path).Length == s1) {
 					return true;
 				}
@@ -885,7 +953,7 @@ public static partial class InGame
 		while (cw.Elapsed < TimeSpan.FromSeconds(20)) {
 			if (File.Exists(cosave) && File.GetLastWriteTimeUtc(cosave) >= t0) {
 				var c1 = new FileInfo(cosave).Length;
-				Thread.Sleep(2000);
+				a_ctx.Pause(TimeSpan.FromSeconds(2));
 				if (new FileInfo(cosave).Length == c1) {
 					break;
 				}
@@ -985,7 +1053,7 @@ public static partial class InGame
 				a_ctx.Log.Warn("your place could not be recorded - the save to play will leave you in " + cell);
 			}
 			MoveWithFollowers(a_ctx, () => a_ctx.DevBench.Console("coc " + cell), () => WaitPlace(a_ctx));
-			Thread.Sleep(TimeSpan.FromSeconds(a_s.Int("settle_s", 10)));
+			a_ctx.Pause(TimeSpan.FromSeconds(a_s.Int("settle_s", 10)));
 			if (dyn && a_ctx.DevBench.Papyrus(cls, "GetMyActive")?.GetValue<bool>() == true) {
 				throw new StepFailedException($"DynDOLOD switched itself back on in {cell}");
 			}

@@ -1939,7 +1939,7 @@ public static class Program
 	}
 
 	// a step run on its own, as a run would (its record, log, backup folder and MO2 control)
-	static RunContext StepContext(FakeMo2 a_f, string a_step, DevBench? a_devBench = null, CancellationToken a_cancel = default)
+	static RunContext StepContext(FakeMo2 a_f, string a_step, DevBench? a_devBench = null, CancellationToken a_cancel = default, IGuide? a_guide = null)
 	{
 		var s = Setup.Load(a_f.SetupFile);
 		var mo2 = Mo2Instance.Load(s.Mo2Exe, s.Mo2Instance);
@@ -1951,7 +1951,7 @@ public static class Program
 		j.Save();
 		var log = new RunLog(j.Folder);
 		return new RunContext { Setup = s, Mo2 = mo2, Profile = new Profile(mo2, "Test", () => false), Control = new Mo2Control(mo2, "Test", log), Log = log,
-			Journal = j, Cancel = a_cancel, BackupFolder = j.BackupDir, DevBench = a_devBench ?? new() };
+			Journal = j, Cancel = a_cancel, BackupFolder = j.BackupDir, DevBench = a_devBench ?? new(), Guide = a_guide ?? new NoGuide() };
 	}
 
 	// the stand-in for ACMOS Road Generator: every terrain texture of -l: painted into -o:, and the log ACMOS writes beside itself
@@ -5018,7 +5018,7 @@ public static class Program
 		File.WriteAllText(old, "old");
 		File.SetLastWriteTime(old, since.AddHours(-1));
 		Equal<string?>(null, InGame.CrashLog(skse, f.Overwrite, since), "a crash log from before the run is not this run's");
-		Check(InGame.CrashNote(skse, f.Overwrite, since).Contains("no crash log", StringComparison.Ordinal), "said when there is none");
+		Check(InGame.CrashNote(skse, f.Overwrite, since).Contains("no crash report", StringComparison.Ordinal), "said when there is none");
 		var tw = Path.Combine(trainwreck, "crash-2026-11-07-21-00-00.log");
 		File.WriteAllText(tw, "x");
 		File.SetLastWriteTime(tw, since.AddMinutes(2));
@@ -5027,7 +5027,382 @@ public static class Program
 		File.WriteAllText(net, "x");
 		File.SetLastWriteTime(net, since.AddMinutes(5));
 		Equal<string?>(net, InGame.CrashLog(skse, f.Overwrite, since), "the newest wins (.NET Script Framework's, in overwrite)");
-		Check(InGame.CrashNote(skse, f.Overwrite, since).EndsWith(net, StringComparison.Ordinal), "the note names it");
+		Check(InGame.CrashNote(skse, f.Overwrite, since).Contains(net, StringComparison.Ordinal), "the note names it");
+		Check(InGame.CrashNote(skse, f.Overwrite, since).Contains(tw, StringComparison.Ordinal), "and the other crash logger's beside it");
+	}
+
+	// ---- his run of 2026-11-10 on Lumina (the shader step's seven faults) ----
+
+	// The cache the profile runs comes first, built with every ticked shader mod on; one that is switched off only when the
+	// setup asks. His setup: Bottled Shaders off, a test layer and Open Shaders both ticked (the layer lower in the pane).
+	static void T_TheProfilesOwnShaderCacheComesFirst()
+	{
+		var bottled = new ShaderStep.Cache("Bottled Shaders", "Cache - Bottled", null);
+		var layer = new ShaderStep.Cache("TEST layer", "Cache", null);
+		var open = new ShaderStep.Cache("Open Shaders", "Cache - Open", "Open Settings");
+		var gone = new ShaderStep.Cache("Not Installed", "Cache - Gone", null);
+		List<ShaderStep.Cache> all = [bottled, layer, open, gone];
+		var states = new Dictionary<string, char>(StringComparer.OrdinalIgnoreCase) {
+			["Bottled Shaders"] = '-', ["TEST layer"] = '+', ["Open Shaders"] = '+', ["Open Settings"] = '+', ["Cache - Bottled"] = '+',
+		};
+		List<string> order = ["Bottled Shaders", "TEST layer", "Open Shaders", "Open Settings"];
+		var (builds, notes) = ShaderStep.Plan(all, states, order, false, ["Extra On"], ["Extra Off"]);
+		Equal(1, builds.Count, "one cache: the profile's own");
+		var b = builds[0];
+		Equal("TEST layer", b.Cache.ShaderMod, "into the cache of the ticked shader mod that wins (the first in modlist.txt)");
+		Check(b.Runs, "it is the one the profile runs");
+		Check(b.On.Contains("TEST layer") && b.On.Contains("Open Shaders") && b.On.Contains("Open Settings") && b.On.Contains("Extra On"), "every ticked shader mod stays on for it: " + string.Join(", ", b.On));
+		Check(b.Off.Contains("Bottled Shaders") && b.Off.Contains("Extra Off") && new[] { "Cache - Bottled", "Cache", "Cache - Open" }.All(b.Off.Contains), "the one that is off, and every cache mod, off for it");
+		Check(!b.Off.Contains("Open Shaders") && !b.Off.Contains("TEST layer"), "a ticked shader mod is never switched off under another");
+		Check(b.Layers.Contains("Open Shaders") && b.Layers.Contains("Open Settings") && !b.Layers.Contains("TEST layer"), "the other ticked ones are its layers");
+		Check(notes.Any(n => n.Contains("Bottled Shaders is switched off", StringComparison.Ordinal)), "the one left out is said: " + string.Join(" | ", notes));
+		Check(notes.Any(n => n.Contains("Not Installed is not in this profile", StringComparison.Ordinal)), "and the one that is not installed");
+
+		var (asked, _) = ShaderStep.Plan(all, states, order, true, [], []);
+		Equal(2, asked.Count, "the setup asks for the switched-off one too");
+		Check(asked[0].Runs && !asked[1].Runs && asked[1].Cache == bottled, "after the profile's own, never before it");
+		Check(asked[1].On.SequenceEqual(["Bottled Shaders"]) && asked[1].Off.Contains("TEST layer") && asked[1].Off.Contains("Open Shaders"), "alone, the ticked ones off for it");
+
+		states["TEST layer"] = '-';
+		var (single, _) = ShaderStep.Plan(all, states, order, false, [], []);
+		Check(single.Count == 1 && single[0].Cache == open && single[0].Layers.Count == 0 && single[0].Off.Contains("TEST layer"), "one ticked shader mod: its own cache, no layers");
+		states["Open Shaders"] = '-';
+		var (none, why) = ShaderStep.Plan(all, states, order, false, [], []);
+		Check(none.Count == 0 && why.Any(n => n.Contains("no shader mod is ticked", StringComparison.Ordinal)), "nothing ticked: nothing built, and said");
+	}
+
+	// The end of a compile. His run: the shader log was never found and, found, its last line read "remaining=549" five minutes
+	// before the real end (Bottled Shaders writes that line only for a slow shader) - so the game itself is read.
+	static void T_ACompileEndsWhenTheGameGoesQuiet()
+	{
+		var (min, quiet, idle) = (50, TimeSpan.FromMinutes(5), TimeSpan.FromSeconds(45));
+		var slow = "[2026-11-10 12:07:56.657] [info] [46528] [ShaderCache.cpp:3537] [ShaderTiming] Very slow 12370ms | queue_wait=183805ms | remaining=549 | defines=1\n";
+		var bottled = "[2026-11-10 12:04:00.425] [info] Loaded CommunityShaders 1-9-0-0\n" + slow + string.Concat(Enumerable.Repeat("[2026-11-10 12:13:38.804] [info] [ReverseZ.cpp:683] ReverseZ: camera\n", 400));
+		Equal<int?>(549, ShaderStep.Remaining(bottled), "its last count is read however many lines follow it");
+		Equal<int?>(null, ShaderStep.Remaining("Open Shaders 2.20.0\n"), "a log without such lines");
+		ShaderStep.Look At(string a_log, int a_files, double a_sinceFile, double? a_cores, double a_peak, double a_low, bool a_sane = true, double a_sinceLog = 400, int? a_new = null) =>
+			new(a_log, a_files, a_new ?? a_files, TimeSpan.FromSeconds(a_sinceFile), TimeSpan.FromSeconds(a_sinceLog), a_cores, a_peak, TimeSpan.FromSeconds(a_low), a_sane);
+
+		var done = ShaderStep.Done(At(bottled, 3305, 50, 0.6, 13.2, 50), min, quiet, idle);
+		Check(done is { Verified: true } && done.Value.Result.Contains("processor use fell from 13.2 to 0.6", StringComparison.Ordinal), "50 s after the last shader, not five minutes: " + done?.Result);
+		Equal(null, ShaderStep.Done(At(bottled, 3305, 176, 12.0, 13.2, 0), min, quiet, idle), "a long gap with the processor busy is a slow shader, never the end");
+		Equal(null, ShaderStep.Done(At(bottled, 3305, 50, 0.6, 13.2, 20), min, quiet, idle), "low for less than the idle time: not yet");
+		Equal(null, ShaderStep.Done(At(bottled, 3305, 20, 0.6, 13.2, 50), min, quiet, idle), "a shader landed 20 s ago: not yet");
+		Equal(null, ShaderStep.Done(At(bottled, 3305, 400, 0.6, 0.9, 400, a_sinceLog: 100), min, quiet, idle), "never seen compiling and the log still moving: no verdict from the processor");
+		Equal(null, ShaderStep.Done(At(bottled, 30, 50, 0.6, 13.2, 50), min, quiet, idle), "too few shaders for a cache");
+		Equal(null, ShaderStep.Done(At(bottled, 1700, 50, 0.6, 5.0, 50, a_new: 0), min, quiet, idle), "a restart that has only loaded so far (no shader of its own yet) is not a finished compile");
+		Check(ShaderStep.Done(At(bottled, 3305, 400, 3.0, 13.2, 0), min, quiet, idle) is { Verified: false }, "a main menu that keeps the processor busy: the quiet fallback still ends it");
+		Equal(null, ShaderStep.Done(At(bottled, 3305, 50, 0.6, 13.2, 50, a_sane: false), min, quiet, idle), "the shader mod never showed it runs");
+
+		var zero = ShaderStep.Done(At(slow.Replace("remaining=549", "remaining=0", StringComparison.Ordinal), 3305, 31, 9.0, 13.2, 0), min, quiet, idle);
+		Check(zero is { Verified: true } && zero.Value.Result.Contains("remaining=0", StringComparison.Ordinal), "the log's own remaining=0 comes first");
+		var open = "[info] Shader compilation started (3169 tasks queued)\n";
+		Equal(null, ShaderStep.Done(At(open, 3000, 60, 0.5, 14.0, 60), min, quiet, idle), "Open Shaders has an open compile: only its own line ends it");
+		var said = ShaderStep.Done(At(open + "[info] Shader compilation completed: 3169/3169 tasks (0 failed) in 29m\n", 3169, 0, 14.0, 14.0, 0), min, quiet, idle);
+		Check(said is { Verified: true } && said.Value.Result.StartsWith("[info] Shader compilation completed", StringComparison.Ordinal), "and that line ends it at once");
+
+		Equal(null, ShaderStep.Done(At("", 3305, 200, null, 0, 0, a_sinceLog: 1e6), min, quiet, idle), "the processor cannot be read: the old quiet rule, not before its minutes");
+		var byQuiet = ShaderStep.Done(At("", 3305, 301, null, 0, 0, a_sinceLog: 301), min, quiet, idle);
+		Check(byQuiet is { Verified: false } && byQuiet.Value.Result.Contains("by quiet", StringComparison.Ordinal), "after them it ends unverified (built again next time)");
+		Check(ShaderStep.IdleLine(13.2) == 2.0 && Math.Abs(ShaderStep.IdleLine(4.0) - 1.4) < 1e-9 && ShaderStep.IdleLine(1.0) == 0.75, "low = a third of the game's own peak, never above two cores");
+	}
+
+	// SKSE's log folder shown elsewhere by a Mod Organizer file-mapper plugin (his: a path with an apostrophe in a Python raw
+	// string): the shader log and the crash logs are read where they really are
+	static void T_LogsMappedElsewhereAreFound()
+	{
+		using var f = new FakeMo2();
+		var setup = f.WriteSetup(("shaders", new JsonObject()));
+		var mo2 = Mo2Instance.Load(f.Exe, f.Instance);
+		var usual = InGame.SkseLogs(setup, mo2);
+		Check(InGame.LogFolders(setup, mo2).SequenceEqual([usual]), "no mapper: the usual folder alone");
+		var real = Path.Combine(f.Root, "Real Logs");
+		Directory.CreateDirectory(real);
+		var plugins = Path.Combine(f.Instance, "plugins");
+		Directory.CreateDirectory(plugins);
+		File.WriteAllText(Path.Combine(plugins, "Other.py"), $"TARGET = r\"{real}\"\nclass X: pass  # SKSE\n");
+		Check(InGame.LogFolders(setup, mo2).Count == 1, "a plugin that maps nothing is not read as one");
+		File.WriteAllText(Path.Combine(plugins, "SKSELogRedirector.py"),
+			$"import mobase\nTARGET = r\"{real}\"\nMISSING = 'C:\\\\no\\\\such folder'\nclass R(mobase.IPluginFileMapper):\n    def mappings(self):\n        return [\"SKSE\", \"Logs\"]\n");
+		var folders = InGame.LogFolders(setup, mo2);
+		Check(folders.Count == 2 && folders[0] == usual && Files.SamePath(folders[1], real), "the folder the mapper names, after the usual one: " + string.Join(" | ", folders));
+		File.WriteAllText(Path.Combine(real, "BottledShaders.log"), "x");
+		Equal<string?>(Path.Combine(real, "BottledShaders.log"), InGame.NewestShaderLog(folders), "the shader log is found there");
+		var since = DateTime.Now.AddMinutes(-1);
+		var crash = Path.Combine(real, "crash-2026-11-10-12-03-27.log");
+		File.WriteAllText(crash, "x");
+		Check(InGame.CrashNote(folders, f.Overwrite, since).Contains(crash, StringComparison.Ordinal), "and a crash log written there is named");
+		setup.Root["skseLogs"] = Path.Combine(f.Root, "Named");
+		Check(InGame.LogFolders(setup, mo2).SequenceEqual([Path.Combine(f.Root, "Named")]), "a folder the setup names is the only one read");
+	}
+
+	sealed class FakeGuide(Action<string, CancellationToken> a_ask) : IGuide
+	{
+		public void Ask(string a_step, string a_text, CancellationToken a_ct) => a_ask(a_text, a_ct);
+	}
+
+	// A crash while compiling is named as a crash with its report (his: Tullius CTD Logger's, in overwrite), and the game is
+	// never started again silently: asked (the default), restarted or stopped as the setup says
+	static void T_ACrashWhileCompilingIsNamedNeverRestartedSilently()
+	{
+		using var f = new FakeMo2();
+		f.WriteSetup(("shaders", new JsonObject()));
+		var cache = new ShaderStep.Cache("Shader Mod", "Cache Mod", null);
+		var asked = new List<string>();
+		var ctx = StepContext(f, "shaders", a_guide: new FakeGuide((t, _) => asked.Add(t)));
+		ctx.GameLaunched = DateTime.Now.AddMinutes(-5);
+		var dir = Path.Combine(f.Overwrite, "SKSE", "Plugins", "Tullius Ctd Logs");
+		Directory.CreateDirectory(dir);
+		var old = Path.Combine(dir, "SkyrimDiag_Crash_20261109_010101_001_SkyrimDiagReport.txt");
+		File.WriteAllText(old, "an earlier crash");
+		File.SetLastWriteTime(old, DateTime.Now.AddHours(-9));
+		StepSettings S(string a_how, double a_wait = 30) => new(new JsonObject { ["on_crash"] = a_how, ["crash_wait_min"] = a_wait });
+
+		ShaderStep.GameEnded(ctx, S("restart"), cache, 1, 800);
+		Check(ctx.Journal.Notes.Any(n => n.Contains("the game closed while it compiled", StringComparison.Ordinal) && n.Contains("no crash report", StringComparison.Ordinal)), "no report since this start: said as a close, an older report is not this one's");
+		var report = Path.Combine(dir, "SkyrimDiag_Crash_20261110_120327_711_SkyrimDiagReport.txt");
+		File.WriteAllText(report, "the report");
+		File.WriteAllText(Path.Combine(dir, "SkyrimDiag_Crash_20261110_120327_711.dmp"), "dump");
+		ShaderStep.GameEnded(ctx, S("restart"), cache, 1, 800);
+		Check(ctx.Journal.Notes.Any(n => n.Contains("CRASHED", StringComparison.Ordinal) && n.Contains(report, StringComparison.Ordinal)), "a crash is called a crash, with its report");
+		Check(Files.ReadSharedText(ctx.Log.TextPath!).Contains(report, StringComparison.Ordinal), "in the run's log too");
+		Equal(0, asked.Count, "\"restart\": carried on without asking");
+
+		ShaderStep.GameEnded(ctx, S("ask"), cache, 2, 900);
+		Check(asked.Count == 1 && asked[0].Contains("CRASHED", StringComparison.Ordinal) && asked[0].Contains("Press Done", StringComparison.Ordinal), "the default asks, and Done carries on");
+		try {
+			ShaderStep.GameEnded(ctx, S("stop"), cache, 1, 800);
+			Check(false, "\"stop\" went on");
+		} catch (StepFailedException e) {
+			Check(e.Message.Contains(report, StringComparison.Ordinal), "\"stop\" ends the step naming the report");
+		}
+		var nobody = StepContext(f, "shaders", a_guide: new FakeGuide((_, ct) => {
+			ct.WaitHandle.WaitOne(TimeSpan.FromSeconds(20));
+			ct.ThrowIfCancellationRequested();
+		}));
+		nobody.GameLaunched = ctx.GameLaunched;
+		var sw = Stopwatch.StartNew();
+		try {
+			ShaderStep.GameEnded(nobody, S("ask", 0.005), cache, 1, 800);
+			Check(false, "nobody answered and it went on");
+		} catch (StepFailedException e) {
+			Check(e.Message.Contains("nobody answered", StringComparison.Ordinal) && sw.Elapsed < TimeSpan.FromSeconds(10), "nobody there: the step stops, it never starts the game by itself");
+		}
+		using var stop = new CancellationTokenSource();
+		var stopped = StepContext(f, "shaders", a_guide: new FakeGuide((_, ct) => { stop.Cancel(); ct.ThrowIfCancellationRequested(); }), a_cancel: stop.Token);
+		Throws<OperationCanceledException>(() => ShaderStep.GameEnded(stopped, S("ask"), cache, 1, 800), "a Stop while it asks is a Stop");
+		try {
+			ShaderStep.GameEnded(ctx, new StepSettings(new JsonObject { ["on_crash"] = "restart", ["max_restarts"] = 3 }), cache, 4, 900);
+			Check(false, "a fourth crash went on");
+		} catch (StepFailedException e) {
+			Check(e.Message.Contains("4 times", StringComparison.Ordinal), "more crashes than the step allows end it");
+		}
+		ctx.Log.Dispose();
+		nobody.Log.Dispose();
+		stopped.Log.Dispose();
+	}
+
+	// A failed step takes out of overwrite only what it made. A path new to overwrite with a date from before the step (his: a
+	// crash logger renaming its own older logs) stays, and a crash report that goes to the backup is named with its new place.
+	static void T_AFailedStepTakesOnlyItsOwnFilesOutOfOverwrite()
+	{
+		var began = new DateTime(2026, 11, 10, 16, 42, 0, DateTimeKind.Utc);
+		var before = new Dictionary<string, DateTime> { ["a.ini"] = began.AddHours(-3), ["b.ini"] = began.AddHours(-3) };
+		var now = new Dictionary<string, DateTime> {
+			["a.ini"] = began.AddHours(-3), ["b.ini"] = began.AddMinutes(5), ["new.dds"] = began.AddMinutes(9), ["previous.2.log"] = began.AddHours(-6), ["copied.nif"] = began.AddDays(-30),
+		};
+		var (made, older) = Runner.NewInOverwrite(before, now, began, p => p == "copied.nif" ? began.AddMinutes(3) : began.AddDays(-40));
+		Check(made.Order().SequenceEqual(["b.ini", "copied.nif", "new.dds"]), "changed, written or created since the step began: " + string.Join(", ", made));
+		Check(older.SequenceEqual(["previous.2.log"]), "an older file under a new name is not the step's");
+
+		using var f = new FakeMo2();
+		var logs = Path.Combine(f.Overwrite, "SKSE", "Plugins", "Tullius Ctd Logs");
+		Directory.CreateDirectory(logs);
+		var oldLog = Path.Combine(logs, "Helper.previous.1.log");
+		File.WriteAllText(oldLog, "from this morning");
+		File.SetCreationTime(oldLog, DateTime.Now.AddHours(-7));
+		File.SetLastWriteTime(oldLog, DateTime.Now.AddHours(-7));
+		var report = "SkyrimDiag_Crash_20261110_120327_711_SkyrimDiagReport.txt";
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => {
+			File.Move(oldLog, Path.Combine(logs, "Helper.previous.2.log"));
+			File.WriteAllText(Path.Combine(logs, report), "the crash");
+			File.WriteAllText(Path.Combine(f.Overwrite, "half.nif"), "half");
+			throw new StepFailedException("the game crashed");
+		}));
+		f.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A" }));
+		Runner.Run(new RunRequest(f.SetupFile, f.Data));
+		Check(File.Exists(Path.Combine(logs, "Helper.previous.2.log")), "the older log the step only renamed stays in overwrite");
+		Check(!File.Exists(Path.Combine(f.Overwrite, "half.nif")) && !File.Exists(Path.Combine(logs, report)), "what the step made left it");
+		var moved = Directory.EnumerateFiles(f.Backups, report, SearchOption.AllDirectories).FirstOrDefault();
+		Check(moved != null, "the crash report is in the run's backup");
+		var j = Journal.All(Runner.RunsDir(f.Data)).First();
+		var log = File.ReadAllText(Path.Combine(j.Folder, "log.txt"));
+		Check(log.Contains("crash report went with them - it is now at " + moved, StringComparison.Ordinal), "and the log says where it went");
+		Check(log.Contains("left where they are (not this run's): Helper.previous.2.log", StringComparison.Ordinal), "and names what it left");
+	}
+
+	// A step that makes several outputs keeps the finished one on when a later part fails (his: the first cache's fate hung on
+	// the second's)
+	static void T_AFinishedPartStaysOnWhenTheStepFailsLater()
+	{
+		using var f = new FakeMo2();
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => {
+			StepKit.EnsureOutput(ctx, "Part One");
+			File.WriteAllText(Path.Combine(f.Mods, "Part One", "made.txt"), "whole");
+			ctx.Finished("Part One");
+			StepKit.EnsureOutput(ctx, "Part Two");
+			throw new StepFailedException("the second part failed");
+		}));
+		f.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A" }));
+		var r = Runner.Run(new RunRequest(f.SetupFile, f.Data));
+		Equal(RunState.Failed, r.State, "the run failed at that step");
+		var list = f.Text("modlist.txt");
+		Check(list.Contains("+Part One", StringComparison.Ordinal), "the finished part is in the list and ON");
+		Check(!list.Contains("Part Two", StringComparison.Ordinal), "the part nothing was built into is taken out");
+		var j = Journal.All(Runner.RunsDir(f.Data)).First();
+		Check(j.Built.Contains("Part One"), "on record as built (a put-back after a crash keeps it too)");
+		Check(File.Exists(Path.Combine(f.Mods, "Part One", "made.txt")), "its files stay");
+	}
+
+	// Stop is seen by every wait of a put-back. His run: pressed during Root Builder's three-minute wait (a close with no
+	// cancellation of its own), seen only after Mod Organizer had been started again - and then the put-back met that fresh
+	// Mod Organizer and the step read FAILED "Mod Organizer is open".
+	static void T_StopIsSeenByAPutBacksWaits()
+	{
+		using var f = new FakeMo2();
+		f.WriteSetup(("landscapefixer", new JsonObject()));
+		var keep = (Mo2Control.RootBuilderWait, Mo2Control.RootBuilderLook, Mo2Control.StartingGrace, Mo2Control.ReadyQuiet);
+		try {
+			Mo2Control.RootBuilderWait = TimeSpan.FromSeconds(30);
+			Mo2Control.RootBuilderLook = TimeSpan.FromMilliseconds(20);
+			using var stop = new CancellationTokenSource();
+			var t = Stopwatch.StartNew();
+			var waiter = Task.Run(() => Mo2Control.WaitForClear(() => true, CancellationToken.None, stop.Token));
+			Thread.Sleep(150);
+			Check(!waiter.IsCompleted, "it waits while nobody asked to stop");
+			stop.Cancel();
+			Check(waiter.Wait(TimeSpan.FromSeconds(5)) && !waiter.Result && t.Elapsed < TimeSpan.FromSeconds(10), "a Stop ends it at once, without a throw (the put-back goes on)");
+			Throws<OperationCanceledException>(() => Mo2Control.WaitForClear(() => true, stop.Token, stop.Token), "the caller's own token still throws");
+
+			// a put-back's close (no token of its own) under a pressed Stop: Root Builder is not waited for
+			var ctx = StepContext(f, "landscapefixer");
+			var looks = 0;
+			var control = new Mo2Control(ctx.Mo2, "Test", ctx.Log) { RunningProbe = () => ++looks < 2, ForeignProbe = () => [], RootBuilderProbe = () => true, StopAsked = stop.Token };
+			t.Restart();
+			control.Close();
+			Check(t.Elapsed < TimeSpan.FromSeconds(10), $"closed in {t.Elapsed.TotalSeconds:0.0} s, not after Root Builder's wait");
+			Check(Files.ReadSharedText(ctx.Log.TextPath!).Contains("Stop: not waiting for Root Builder", StringComparison.Ordinal), "and it says so");
+
+			// a Stop already asked for: no switch is written and nothing starts
+			var before = f.Text("modlist.txt");
+			var cancelled = StepContext(f, "landscapefixer", a_cancel: stop.Token);
+			Throws<OperationCanceledException>(() => new Toggle(cancelled, [], ["Base Mod"], "a test", stop.Token).Dispose(), "a switch under a pressed Stop");
+			Equal(before, f.Text("modlist.txt"), "the mod list was not touched");
+			var started = 0;
+			var never = new Mo2Control(ctx.Mo2, "Test", RunLog.Null) { RunningProbe = () => false, Launch = (_, _) => ++started };
+			Throws<OperationCanceledException>(() => never.Start(stop.Token), "Mod Organizer asked to start under a pressed Stop");
+			Equal(0, started, "it was not started");
+
+			// a Mod Organizer the run started a moment ago counts as running before Windows lists it by name
+			Mo2Control.StartingGrace = TimeSpan.FromSeconds(2);
+			Mo2Control.ReadyQuiet = TimeSpan.Zero;
+			var fresh = new Mo2Control(ctx.Mo2, "Test", RunLog.Null) { Launch = (_, _) => Environment.ProcessId, ReadyProbe = () => new(true, true, TimeSpan.Zero, null) };
+			fresh.Start(CancellationToken.None);
+			Check(fresh.Running, "running, though no ModOrganizer.exe of this instance is listed yet");
+			Thread.Sleep(2200);
+			Check(!fresh.Running, "only for its first seconds");
+
+			// the put-back meets a Mod Organizer that came up after its close: it closes it and puts the mods back, no failure
+			var open = 0;
+			var mo2 = ctx.Mo2;
+			var late = new RunContext { Setup = ctx.Setup, Mo2 = mo2, Profile = new Profile(mo2, "Test", () => open-- > 0), Control = new Mo2Control(mo2, "Test", RunLog.Null) { RunningProbe = () => false },
+				Log = ctx.Log, Journal = ctx.Journal, Cancel = CancellationToken.None, BackupFolder = ctx.BackupFolder };
+			var toggle = new Toggle(late, [], ["Base Mod"], "a test");
+			Check(f.Text("modlist.txt").Contains("-Base Mod", StringComparison.Ordinal), "switched off for the step");
+			open = 1;
+			toggle.Dispose();
+			Equal(before, f.Text("modlist.txt"), "put back all the same");
+			ctx.Log.Dispose();
+			cancelled.Log.Dispose();
+		} finally {
+			(Mo2Control.RootBuilderWait, Mo2Control.RootBuilderLook, Mo2Control.StartingGrace, Mo2Control.ReadyQuiet) = keep;
+		}
+	}
+
+	// The guard for "pressing stop now still doesn't stop it" (his finds of 2026-11-04, 11-06 and 11-10): no wait of the engine
+	// longer than a moment may be a plain sleep - a step waits with RunContext.Pause / Waits.Pause, which a Stop ends at once.
+	static void T_NoStepWaitIsBlindToStop() => NoBlindSleeps(SourceDir());
+
+	static string SourceDir([System.Runtime.CompilerServices.CallerFilePath] string a_here = "") => Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(a_here)!)!, "Runner.Core");
+
+	static void NoBlindSleeps(string a_core)
+	{
+		if (!Directory.Exists(a_core)) {
+			Console.WriteLine($"  (skipped: the source is not at {a_core})");
+			return;
+		}
+		var allowed = new HashSet<string> { "Poll", "every", "i == 0 ? 0 : 200" };
+		var found = new List<string>();
+		foreach (var file in Directory.EnumerateFiles(a_core, "*.cs", SearchOption.AllDirectories).Where(p => !p.Contains(@"\obj\", StringComparison.Ordinal) && !p.Contains(@"\bin\", StringComparison.Ordinal))) {
+			var lines = File.ReadAllLines(file);
+			for (var i = 0; i < lines.Length; ++i) {
+				var m = System.Text.RegularExpressions.Regex.Match(lines[i], @"Thread\.Sleep\(([^;]*)\);");
+				if (!m.Success) {
+					continue;
+				}
+				var arg = m.Groups[1].Value.Trim();
+				if (!allowed.Contains(arg) && !(int.TryParse(arg, out var ms) && ms <= 1500)) {
+					found.Add($"{Path.GetFileName(file)}:{i + 1} Thread.Sleep({arg})");
+				}
+			}
+		}
+		Check(found.Count == 0, "a wait a Stop cannot end - use a_ctx.Pause(...) or Waits.Pause(..., a_ct): " + string.Join("; ", found));
+	}
+
+	// ... and the guard is a real one: a planted long sleep is caught, a pause and a short poll are not
+	static void T_ABlindSleepIsCaught()
+	{
+		var dir = Path.Combine(Path.GetTempPath(), "mo2 tool runner tests", "sleeps " + Guid.NewGuid().ToString("N")[..8]);
+		Directory.CreateDirectory(dir);
+		try {
+			File.WriteAllText(Path.Combine(dir, "Good.cs"), "a_ctx.Pause(TimeSpan.FromSeconds(30));\nThread.Sleep(500);\nThread.Sleep(Poll);\n");
+			NoBlindSleeps(dir);
+			File.WriteAllText(Path.Combine(dir, "Bad.cs"), "Thread.Sleep(TimeSpan.FromSeconds(a_s.Int(\"settle_s\", 30)));\n");
+			string? caught = null;
+			try {
+				NoBlindSleeps(dir);
+			} catch (InvalidOperationException e) {
+				caught = e.Message;
+			}
+			Check(caught != null && caught.Contains("Bad.cs:1", StringComparison.Ordinal), "the planted sleep is caught and named: " + caught);
+		} finally {
+			Directory.Delete(dir, true);
+		}
+	}
+
+	// A cache built for two ticked shader mods together is stale when either changes; a cache with no layers reads as before
+	static void T_ShaderLayersArePartOfTheirCache()
+	{
+		using var f = new FakeMo2();
+		var mo2 = Mo2Instance.Load(f.Exe, f.Instance);
+		foreach (var m in new[] { "Layer", "Under" }) {
+			Directory.CreateDirectory(Path.Combine(f.Mods, m, "SKSE", "Plugins"));
+			File.WriteAllText(Path.Combine(f.Mods, m, "SKSE", "Plugins", "CommunityShaders.dll"), m + " 1");
+			Directory.CreateDirectory(Path.Combine(f.Mods, m, "Shaders"));
+			File.WriteAllText(Path.Combine(f.Mods, m, "Shaders", "Utility.hlsl"), m);
+		}
+		File.WriteAllText(Path.Combine(f.ProfileDir, "modlist.txt"), "+Layer\r\n+Under\r\n" + f.Text("modlist.txt"));
+		var p = ProfileOf(f);
+		var c = new ShaderStep.Cache("Layer", "Cache", null);
+		var under = new ShaderStep.Cache("Under", "Cache - Under", null);
+		var alone = ShaderStep.Fingerprint(mo2, c, p, ShaderStep.OtherCacheMods([c, under], c));
+		Equal(alone, ShaderStep.Fingerprint(mo2, c, p, ShaderStep.OtherCacheMods([c, under], c), []), "no layers: the fingerprint an older stamp holds");
+		List<string> none = ["Cache - Under"];
+		var both = ShaderStep.Fingerprint(mo2, c, p, none, ["Under"]);
+		Check(both != alone, "built together with the shader mod under it: another cache");
+		File.WriteAllText(Path.Combine(f.Mods, "Under", "SKSE", "Plugins", "CommunityShaders.dll"), "Under 2");
+		Check(both != ShaderStep.Fingerprint(mo2, c, p, none, ["Under"]), "the layer under it updated: the cache is stale");
+		Equal(alone, ShaderStep.Fingerprint(mo2, c, p, ShaderStep.OtherCacheMods([c, under], c)), "while a cache that does not include it is untouched");
 	}
 
 	// his checklist 455: an older output of the same tool still ticked would win over the fresh one (a new output sits at the bottom

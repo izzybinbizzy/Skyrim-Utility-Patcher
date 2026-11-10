@@ -44,7 +44,11 @@ public static class SettingsPanel
 		["min_files"] = "Fewest files that counts as a result",
 		["caches"] = "Shader caches (each: its shader mod, its cache mod)",
 		["settle_s"] = "Wait before closing (seconds)",
-		["quiet_min"] = "Done when quiet for (minutes)",
+		["quiet_min"] = "Done when quiet for (minutes), when the game's processor use cannot be read",
+		["idle_s"] = "Done when the game has gone quiet for (seconds)",
+		["build_for_off"] = "Also build the cache of a shader mod that is switched off",
+		["on_crash"] = "When the game crashes while compiling: ask, restart or stop",
+		["crash_wait_min"] = "Wait for your answer after a crash (minutes)",
 		["max_restarts"] = "Restarts allowed",
 		["build_min"] = "Patcher build limit (minutes)",
 		["extra_args"] = "Extra arguments (one per line)",
@@ -57,7 +61,8 @@ public static class SettingsPanel
 
 	// settings a step reads that its file may not list yet (shown empty, with the default the step uses)
 	static readonly Dictionary<string, (string Key, JsonValueKind Kind, string Default)[]> Known = new(StringComparer.Ordinal) {
-		["shaders"] = [("quiet_min", JsonValueKind.Number, "5"), ("min_files", JsonValueKind.Number, "50"), ("max_restarts", JsonValueKind.Number, "3")],
+		["shaders"] = [("build_for_off", JsonValueKind.False, "off"), ("on_crash", JsonValueKind.String, "ask"), ("crash_wait_min", JsonValueKind.Number, "30"),
+			("idle_s", JsonValueKind.Number, "45"), ("quiet_min", JsonValueKind.Number, "5"), ("min_files", JsonValueKind.Number, "50"), ("max_restarts", JsonValueKind.Number, "3")],
 		["grass"] = [("stall_min", JsonValueKind.Number, "10"), ("min_files", JsonValueKind.Number, "100")],
 		["pgpatcher"] = [("pglite_check", JsonValueKind.False, "off")],
 		["dyndolod"] = [("no_terrain_underside", JsonValueKind.False, "off"), ("preset", JsonValueKind.String, "none")],

@@ -298,6 +298,19 @@ public static class Procs
 		return TimeSpan.Zero;
 	}
 
+	// the same, with "not readable" told apart from "none used" (null: the process is gone or may not be read)
+	public static TimeSpan? CpuOrNull(int a_pid)
+	{
+		try {
+			using var p = Process.GetProcessById(a_pid);
+			return p.TotalProcessorTime;
+		} catch (ArgumentException) {
+		} catch (InvalidOperationException) {
+		} catch (Win32Exception) {
+		}
+		return null;
+	}
+
 	public static TimeSpan TreeCpu(int a_root)
 	{
 		var total = TimeSpan.Zero;

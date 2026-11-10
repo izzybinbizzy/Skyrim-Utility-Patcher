@@ -470,7 +470,7 @@ public abstract class DynDolodFamily : IStep
 						var opts = Uia.Children(main).FirstOrDefault(c => Uia.Type(c) == ControlType.Window &&
 							(Regex.IsMatch(Uia.Name(c), "Options|Expert") || Uia.ClassName(c) is "TfrmTexGen" or "TfrmDynDOLODAdvanced" or "TfrmDynDOLOD"));
 						if (opts != null) {
-							Thread.Sleep(3000);
+							a_ctx.Pause(TimeSpan.FromSeconds(3));
 							DriveOptions(a_ctx, opts, a_s);
 							startedRun = true;
 							a_ctx.Activity(Key, Tool + " is generating");
@@ -525,12 +525,12 @@ public abstract class DynDolodFamily : IStep
 					a_ctx.Log.Detail($"pressed {Uia.Name(hit)}");
 					Uia.Press(hit);
 					if (Tool == "DynDOLOD") {
-						Thread.Sleep(20000);           // it writes DynDOLOD.esm / .esp and Occlusion.esp before closing
+						a_ctx.Pause(TimeSpan.FromSeconds(20));           // it writes DynDOLOD.esm / .esp and Occlusion.esp before closing
 						return;
 					}
 					// a press can land while the box is still busy (TexGen opens its summary page then): the same question still up 10 s
 					// later is answered again
-					Thread.Sleep(10000);
+					a_ctx.Pause(TimeSpan.FromSeconds(10));
 					if (Uia.Boxes(StepKit.PidsOf(a_image)()).Any(b => b.Text == box.Text)) {
 						a_ctx.Log.Detail($"{Tool}'s last question is still up - pressing again");
 						break;
@@ -541,7 +541,7 @@ public abstract class DynDolodFamily : IStep
 					a_ctx.Log.Detail($"{Tool}'s last question offers: {string.Join(", ", names)}");
 				}
 			}
-			Thread.Sleep(2000);
+			a_ctx.Pause(TimeSpan.FromSeconds(2));
 		}
 		throw new StepFailedException($"{Tool} finished but its last question has no {(Tool == "DynDOLOD" ? "save" : "Exit")} button");
 	}

@@ -29,7 +29,7 @@ Shader caches, DynDOLOD's clean save, Wrye Bash (guided), Synthesis, SnowFixer, 
 
 | key | step | what it does |
 |---|---|---|
-| `shaders` | Shader caches | The game builds each shader mod's cache at its main menu (Community Shaders, Open Shaders, Bottled Shaders), only when that shader mod, its settings or the game changed. |
+| `shaders` | Shader caches | The game builds the cache of the shader mod your profile runs at its main menu (Community Shaders, Open Shaders, Bottled Shaders), only when that shader mod, its settings or the game changed. A shader mod that is switched off gets a cache only when the setup asks for it. A crash while compiling is named with its crash report and asked about, never restarted silently. |
 | `cleansave` | Clean save | DynDOLOD's clean save, done in game. Off in a new setup. |
 | `wryebash` | Wrye Bash | The Bashed Patch, guided (Wrye Bash has no unattended mode). Off in a new setup. |
 | `synthesis` | Synthesis | Your saved Synthesis pipeline. |
