@@ -44,7 +44,7 @@ public static class Mo2MenuEntry
 // while it is open and read back in by the plugin above before each tool. A file for each question and each answer, in the plugin's own data folder.
 public static class Companion
 {
-	static string Folder(Mo2Instance a_mo2) => Path.Combine(Path.GetDirectoryName(a_mo2.Exe)!, "plugins", "data", "OutputManager");
+	static string Folder(Mo2Instance a_mo2) => Path.Combine(Path.GetDirectoryName(a_mo2.Exe)!, "plugins", "data", "ToolRunner");
 
 	// true = answered; false = no answer within a_wait, and nothing is left behind. The question names the instance and profile: with several Mod Organizers
 	// open only the run's own may answer, or its lists would be read back into the wrong one

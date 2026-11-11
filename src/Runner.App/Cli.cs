@@ -1,21 +1,21 @@
 namespace ToolRunner.App;
 
 // The command line (for players who script, and for agents under watch.py):
-//   "Output Manager.exe" run --setup <file> [--only <step> | --from <step> | --until <step>]   a run, no window
-//   "Output Manager.exe" retry --setup <file>                                                  its last run again, from the step that did not finish
-//   "Output Manager.exe" queue --setup <file> --setup <file> ... [--keep-going]               several setups, one after another
-//   "Output Manager.exe" check --setup <file>                                                  the pre-check, printed
-//   "Output Manager.exe" preview --setup <file> [--only | --from | --until <step>]              what a run would do (nothing changed)
-//   "Output Manager.exe" lod --setup <file> --step <step>                                      the mods a LOD step builds from, with their pages
-//   "Output Manager.exe" restore [--setup <file>]                                              put back an interrupted run
-//   "Output Manager.exe" stop | stop-after                                                     ask the running run to stop
-//   "Output Manager.exe" updates --setup <file>                                                its tools' newest versions (asks their pages)
-//   "Output Manager.exe" changes --setup <file> [--look]                                       what Mod Organizer changed, newest first
-//   "Output Manager.exe" tools --mo2 <ModOrganizer.exe> [--instance <folder>] [--add]          which tools it finds, where to get the rest; --add puts the found ones in Mod Organizer's list
-//   "Output Manager.exe" test-tools --setup <file>                                             each tool opened to the window a run presses; nothing pressed
-//   "Output Manager.exe" addon-check <file>                                                    what is wrong with an add-on file, in plain words
-//   "Output Manager.exe" bugreport [--setup <file>]                                            one zip for a bug report (the setup's last run), names masked
-//   "Output Manager.exe" share --setup <file> [--out <folder>]                                 a copy of the setup to share: its paths and commands taken out
+//   "Tool Runner.exe" run --setup <file> [--only <step> | --from <step> | --until <step>]   a run, no window
+//   "Tool Runner.exe" retry --setup <file>                                                  its last run again, from the step that did not finish
+//   "Tool Runner.exe" queue --setup <file> --setup <file> ... [--keep-going]               several setups, one after another
+//   "Tool Runner.exe" check --setup <file>                                                  the pre-check, printed
+//   "Tool Runner.exe" preview --setup <file> [--only | --from | --until <step>]              what a run would do (nothing changed)
+//   "Tool Runner.exe" lod --setup <file> --step <step>                                      the mods a LOD step builds from, with their pages
+//   "Tool Runner.exe" restore [--setup <file>]                                              put back an interrupted run
+//   "Tool Runner.exe" stop | stop-after                                                     ask the running run to stop
+//   "Tool Runner.exe" updates --setup <file>                                                its tools' newest versions (asks their pages)
+//   "Tool Runner.exe" changes --setup <file> [--look]                                       what Mod Organizer changed, newest first
+//   "Tool Runner.exe" tools --mo2 <ModOrganizer.exe> [--instance <folder>] [--add]          which tools it finds, where to get the rest; --add puts the found ones in Mod Organizer's list
+//   "Tool Runner.exe" test-tools --setup <file>                                             each tool opened to the window a run presses; nothing pressed
+//   "Tool Runner.exe" addon-check <file>                                                    what is wrong with an add-on file, in plain words
+//   "Tool Runner.exe" bugreport [--setup <file>]                                            one zip for a bug report (the setup's last run), names masked
+//   "Tool Runner.exe" share --setup <file> [--out <folder>]                                 a copy of the setup to share: its paths and commands taken out
 // exit 0 = finished / clean, 1 = failed / refused, 2 = stopped, 3 = bad arguments, 4 = (updates) a tool has a newer version
 public static class Cli
 {
@@ -63,11 +63,11 @@ public static class Cli
 				_ => Help(),
 			};
 		} catch (Exception e) when (e is ArgumentException or IOException or InvalidDataException) {
-			Console.WriteLine("Output Manager: " + e.Message);
+			Console.WriteLine("Tool Runner: " + e.Message);
 			return 3;
 		} catch (Exception e) {
 			// never Windows' crash box (a window on the player's screen): said, logged, exit 1
-			Console.WriteLine("Output Manager: something went wrong - " + e.GetType().Name + ": " + e.Message);
+			Console.WriteLine("Tool Runner: something went wrong - " + e.GetType().Name + ": " + e.Message);
 			App.LogCrash(e);
 			return 1;
 		}
@@ -75,7 +75,7 @@ public static class Cli
 
 	static int Help()
 	{
-		Console.WriteLine("Output Manager - run | retry | queue | check | preview | lod | restore | undo | stop | stop-after | updates | changes | import | bugreport | share | tools | test-tools | addon-check   (see the readme)");
+		Console.WriteLine("Tool Runner - run | retry | queue | check | preview | lod | restore | undo | stop | stop-after | updates | changes | import | bugreport | share | tools | test-tools | addon-check   (see the readme)");
 		return 0;
 	}
 

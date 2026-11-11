@@ -1,6 +1,6 @@
 {
   "_read_me": [
-    "Output Manager - THEME TEMPLATE. Every value below is the current default theme (Daylight: white and blue).",
+    "Tool Runner - THEME TEMPLATE. Every value below is the current default theme (Daylight: white and blue).",
     "A theme is one copy of this file with new values: keep every key, change only the \"value\" fields (and the numbers / glyphs).",
     "Put the theme file (and its icon, if it has one) in the \"Themes\" folder inside the program's data folder; the Themes page (Ctrl+T) shows it as a card - press Look again there, then click it. \"New theme from the one in use\" there makes this file for you.",
     "A key left out keeps the default; a value that does not read is named in Settings and the default kept.",

@@ -5,18 +5,19 @@ namespace ToolRunner;
 // OldCompact), and the window project's AssemblyName (a test holds the two equal).
 public static class Brand
 {
-	public const string Name = "Output Manager";
+	public const string Name = "Tool Runner";
 
-	// newest first
-	public static readonly string[] OldNames = ["Skyrim Utility Patcher", "Patcher Unification Project", "MO2 Tool Runner"];
+	// newest first. The name now is the tail of the oldest one ("MO2 Tool Runner"): every match below is on a whole name or a whole
+	// start, never a part, so a thing made under that old name is taken as its old self
+	public static readonly string[] OldNames = ["Output Manager", "Skyrim Utility Patcher", "Patcher Unification Project", "MO2 Tool Runner"];
 
 	public static IEnumerable<string> AllNames => OldNames.Prepend(Name);
 
 	// the name with no space in it, for a folder or a file whose name must have none (ProgramData, Mod Organizer's plugins folder)
-	public const string Compact = "OutputManager";
+	public const string Compact = "ToolRunner";
 
 	// the compact names it used before; "PatcherUnificationProject" never named a folder
-	public static readonly string[] OldCompact = ["SkyrimUtilityPatcher", "MO2ToolRunner"];
+	public static readonly string[] OldCompact = ["OutputManager", "SkyrimUtilityPatcher", "MO2ToolRunner"];
 
 	// its folder in ProgramData, for the one tool route that needs a path with no space in it (FasterNGIO's wrapper); a folder under an
 	// old name is still its own (the clean removal takes them all)

@@ -8,7 +8,7 @@
     <ResourceDictionary>
       <!-- the Fluent brushes that take Windows' accent, taking ours instead; Theme.SetMode swaps in the dark set -->
       <ResourceDictionary.MergedDictionaries>
-        <ResourceDictionary Source="pack://application:,,,/Output Manager;component/AccentLight.xaml"/>
+        <ResourceDictionary Source="pack://application:,,,/Tool Runner;component/AccentLight.xaml"/>
       </ResourceDictionary.MergedDictionaries>
       <!-- the default look, Daylight (white and blue - his pick); every color is a token a theme may change. These values are
            Themes\Daylight.json's: a test holds the two equal -->
@@ -83,7 +83,7 @@
       <CornerRadius x:Key="ButtonCorner">12</CornerRadius>
       <CornerRadius x:Key="CheckBoxCorner">5</CornerRadius>
       <CornerRadius x:Key="GuidedBoxCorner">12</CornerRadius>
-      <BitmapImage x:Key="Logo" UriSource="pack://application:,,,/Output Manager;component/Logo.png"/>
+      <BitmapImage x:Key="Logo" UriSource="pack://application:,,,/Tool Runner;component/Logo.png"/>
 
       <Style x:Key="H1" TargetType="TextBlock">
         <Setter Property="FontFamily" Value="{DynamicResource HeadFont}"/>

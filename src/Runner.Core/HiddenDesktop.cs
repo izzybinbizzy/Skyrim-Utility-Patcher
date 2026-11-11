@@ -43,7 +43,7 @@ public sealed partial class HiddenDesktop : IDisposable
 	readonly nint _desk;
 	public string Name { get; }
 
-	public HiddenDesktop(string a_name = "Output Manager")
+	public HiddenDesktop(string a_name = "Tool Runner")
 	{
 		Name = a_name.Replace(' ', '-');
 		_desk = CreateDesktop(Name, 0, 0, 0, GENERIC_ALL, 0);

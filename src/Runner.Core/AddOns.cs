@@ -6,7 +6,7 @@ using ToolRunner.Steps;
 
 namespace ToolRunner;
 
-// His checklist 433-435: a modder adds their patcher with one file in their own mod, <mod>\Output Manager\<anything>.json, saying what it is, how to
+// His checklist 433-435: a modder adds their patcher with one file in their own mod, <mod>\Tool Runner\<anything>.json, saying what it is, how to
 // start it, what it makes and where it goes in the order. No code of theirs is loaded into this program. The player sees exactly what it will start
 // and says yes once; a file that changes later is asked about again (a setting turns the question off). What the tool writes lands in overwrite, and goes
 // into the add-on's own output mod, never another mod.

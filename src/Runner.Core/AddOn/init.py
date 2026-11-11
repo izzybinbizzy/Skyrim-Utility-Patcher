@@ -304,7 +304,7 @@ class RootBuilderProfiles(mobase.IPluginTool):
             state.pop("declined copies", None)
             self._core.save_state(state)
             if self._core.busy_reason():
-                QMessageBox.information(None, TITLE, self.tr("Root Builder has files in the game folder right now (or the game or a Output Manager run is going) - let it end first."))
+                QMessageBox.information(None, TITLE, self.tr("Root Builder has files in the game folder right now (or the game or a Tool Runner run is going) - let it end first."))
                 return
             ticked = self._ticked_mods()
             if ticked is None:

@@ -189,7 +189,7 @@ public sealed class Journal
 		}
 	}
 
-	// the program under its name or any it had ("Output Manager", "MO2 Tool Runner", ...), its project names when built
+	// the program under its name or any it had ("Tool Runner", "MO2 Tool Runner", ...), its project names when built
 	// without one, and the offline tests' own process. The rename of 2026-11-03 had left this on the old names only: every real
 	// run then read as dead to the window - Stop now sent nothing, closing the window neither asked nor stopped the run, and a
 	// running run showed as interrupted (his finds of 2026-11-04); the tests did not see it, their own process name matched

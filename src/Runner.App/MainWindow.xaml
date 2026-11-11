@@ -40,8 +40,8 @@
           <ColumnDefinition Width="Auto"/>
         </Grid.ColumnDefinitions>
         <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
-          <Image Source="{DynamicResource Logo}" Width="30" Height="30" Margin="0,0,12,0" RenderOptions.BitmapScalingMode="HighQuality" AutomationProperties.Name="Output Manager"/>
-          <TextBlock Text="OUTPUT MANAGER" Style="{StaticResource H1}" VerticalAlignment="Center"/>
+          <Image Source="{DynamicResource Logo}" Width="30" Height="30" Margin="0,0,12,0" RenderOptions.BitmapScalingMode="HighQuality" AutomationProperties.Name="Tool Runner"/>
+          <TextBlock Text="TOOL RUNNER" Style="{StaticResource H1}" VerticalAlignment="Center"/>
         </StackPanel>
         <DockPanel Grid.Column="1" VerticalAlignment="Center" Margin="28,0,16,0">
           <TextBlock DockPanel.Dock="Left" Text="Setup" Foreground="{DynamicResource Muted}" VerticalAlignment="Center" Margin="0,0,8,0"/>

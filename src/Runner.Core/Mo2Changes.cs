@@ -450,7 +450,7 @@ public static class Mo2Changes
 		public static Gate Take(string a_dir)
 		{
 			var key = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Path.GetFullPath(a_dir).ToUpperInvariant())))[..16];
-			var m = new Mutex(false, "Output Manager changes " + key);
+			var m = new Mutex(false, "Tool Runner changes " + key);
 			try {
 				if (!m.WaitOne(TimeSpan.FromSeconds(30))) {
 					m.Dispose();

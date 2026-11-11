@@ -1,6 +1,6 @@
 <p align="center"><img src="docs/icon.png" width="128" alt="The program's icon: a Dwemer gear assembly"></p>
 
-# Output Manager
+# Tool Runner
 
 Runs the generators of a Mod Organizer 2 setup for Skyrim Special Edition / Anniversary Edition in the right order, unattended, and puts your profile back exactly as it was.
 
@@ -61,7 +61,7 @@ Shader caches, DynDOLOD's clean save, Wrye Bash (guided), Synthesis, SnowFixer, 
 ## Quick start
 
 1. Unpack the zip anywhere outside the game folder and outside Mod Organizer.
-2. Start `Output Manager.exe` on its own, not from Mod Organizer. It closes and starts Mod Organizer itself.
+2. Start `Tool Runner.exe` on its own, not from Mod Organizer. It closes and starts Mod Organizer itself.
 3. **New setup** (Ctrl+N): pick `ModOrganizer.exe`, its instance and a profile. The steps are found from your Executables list.
 4. **Settings** (Ctrl+,): for each step, **Learn its settings (opens its own window)**.
 5. **Check** (F5), then **Start** (Ctrl+Enter).
@@ -69,15 +69,15 @@ Shader caches, DynDOLOD's clean save, Wrye Bash (guided), Synthesis, SnowFixer, 
 ## Command line
 
 ```
-"Output Manager.exe" run --setup <file> [--only <step> | --from <step> | --until <step>]
-"Output Manager.exe" check --setup <file>
-"Output Manager.exe" preview --setup <file>
-"Output Manager.exe" lod --setup <file> --step <step>
-"Output Manager.exe" updates --setup <file>
-"Output Manager.exe" restore [--setup <file>]
-"Output Manager.exe" stop | stop-after
-"Output Manager.exe" changes --setup <file> [--look]
-"Output Manager.exe" import --file <setup file> [--name <name>]
+"Tool Runner.exe" run --setup <file> [--only <step> | --from <step> | --until <step>]
+"Tool Runner.exe" check --setup <file>
+"Tool Runner.exe" preview --setup <file>
+"Tool Runner.exe" lod --setup <file> --step <step>
+"Tool Runner.exe" updates --setup <file>
+"Tool Runner.exe" restore [--setup <file>]
+"Tool Runner.exe" stop | stop-after
+"Tool Runner.exe" changes --setup <file> [--look]
+"Tool Runner.exe" import --file <setup file> [--name <name>]
 ```
 
 | exit code | meaning |
@@ -93,19 +93,19 @@ Shader caches, DynDOLOD's clean save, Wrye Bash (guided), Synthesis, SnowFixer, 
 Windows, .NET 10 SDK.
 
 ```
-dotnet build "src/Output Manager.slnx" -c Release
+dotnet build "src/Tool Runner.slnx" -c Release
 dotnet run --project src/Runner.Tests -c Release
 ```
 
 - `src/Runner.Core` - the engine: setups, the run and its record, the steps, Mod Organizer and the game (no window).
-- `src/Runner.App` - the window and the command line (`Output Manager.exe`).
+- `src/Runner.App` - the window and the command line (`Tool Runner.exe`).
 - `src/Runner.Tests` - the offline tests, against a fake Mod Organizer folder in a scratch directory. They need no MO2 and no game.
 
 The release is one framework-dependent, single-file exe: `dotnet publish src/Runner.App -c Release`.
 
 ## Credits
 
-The tools it runs belong to their authors. Output Manager only starts the copy the player downloaded and presses its buttons; none of their files are in this repository or the download.
+The tools it runs belong to their authors. Tool Runner only starts the copy the player downloaded and presses its buttons; none of their files are in this repository or the download.
 
 - DynDOLOD, TexGen and xLODGen - sheson
 - PGPatcher - hakasapl and its contributors

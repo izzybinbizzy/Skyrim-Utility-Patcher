@@ -655,10 +655,10 @@ public static class Program
 	{
 		var mon = new DateTime(2026, 10, 26, 3, 0, 0, DateTimeKind.Utc);
 		var thu = mon.AddDays(3);
-		Equal("Output Manager - clean save", InGame.PlaySaveFrom("Output Manager - clean save", null, mon, "Save9", thu).Save, "this run's clean save first");
+		Equal("Tool Runner - clean save", InGame.PlaySaveFrom("Tool Runner - clean save", null, mon, "Save9", thu).Save, "this run's clean save first");
 		Equal("Named", InGame.PlaySaveFrom(null, "Named", mon, "Save9", thu).Save, "then the one the setup names");
 		Equal("Save9", InGame.PlaySaveFrom(null, null, mon, "Save9", thu).Save, "an old clean save loses to newer progress of the player's");
-		Equal("Output Manager - clean save", InGame.PlaySaveFrom(null, null, thu, "Save9", mon).Save, "a clean save newer than every save of theirs is used");
+		Equal("Tool Runner - clean save", InGame.PlaySaveFrom(null, null, thu, "Save9", mon).Save, "a clean save newer than every save of theirs is used");
 		Equal("Save9", InGame.PlaySaveFrom(null, null, null, "Save9", mon).Save, "no clean save: the player's newest");
 		Equal<string?>(null, InGame.PlaySaveFrom(null, null, null, null, null).Save, "nothing at all: no save");
 		// only the runner's GAME steps count as its own time - a save the player made while a tool step ran is theirs
@@ -2578,13 +2578,13 @@ public static class Program
 	// runs at a set time are gone (his checklist answer 451): only a task an older version made is recognised, and removed
 	static void T_OldTimedRunsAreClearedAway()
 	{
-		Check(Schedule.IsOurs("Output Manager - Bottled Shaders 1A2B3C"), "a task of ours");
+		Check(Schedule.IsOurs("Tool Runner - Bottled Shaders 1A2B3C"), "a task of ours");
 		Check(Schedule.IsOurs("\\MO2 Tool Runner - Bottled Shaders 1A2B3C"), "one made under the old name");
 		Check(!Schedule.IsOurs("MicrosoftEdgeUpdateTaskMachineCore"), "anyone else's task");
 		Check(!Schedule.IsOurs("MO2 Tool Runner"), "only the name followed by \" - \"");
 		Check(Schedule.IsOurs("mo2 tool runner - Bottled 1A2B3C"), "any case");
 		Check(Schedule.StartsOurs("<Exec><Command>\"C:\\Some Folder\\MO2 Tool Runner.exe\"</Command></Exec>"), "a task starting the old program");
-		Check(Schedule.StartsOurs("<Exec><Command>C:\\x\\Output Manager.exe</Command></Exec>"), "or the new one");
+		Check(Schedule.StartsOurs("<Exec><Command>C:\\x\\Tool Runner.exe</Command></Exec>"), "or the new one");
 		Check(!Schedule.StartsOurs("<Exec><Command>cmd.exe</Command></Exec>"), "a task of the player's own that only shares the name");
 		// Windows itself, only where asked (harmless tasks a year ahead, removed at once)
 		if (Environment.GetEnvironmentVariable("SUP_SCHEDULE_PROBE") != "1") {
@@ -3919,7 +3919,7 @@ public static class Program
 		Check(Files.SamePath(setupsDir, Path.Combine(f.Data, "Setups")), "the fake setup lives in the data folder's Setups");
 		// its ProgramData work folder (FasterNGIO's wrapper) - a stand-in, the real one is never touched by a test
 		var keepRoots = DataRemoval.WorkRoots;
-		var work = Path.Combine(f.Root, "ProgramData OutputManager");
+		var work = Path.Combine(f.Root, "ProgramData ToolRunner");
 		Directory.CreateDirectory(work);
 		DataRemoval.WorkRoots = [work, Path.Combine(f.Root, "not there")];
 		try {
@@ -4236,7 +4236,7 @@ public static class Program
 		var t0 = DateTime.UtcNow.AddDays(-2);
 		Save("Save2_Bjorn", "Björn", t0.AddHours(1));
 		Save("Save3_Lydia", "Lydia", t0.AddHours(2));
-		Save("Output Manager - clean save", "Lydia", t0.AddHours(3));
+		Save("Tool Runner - clean save", "Lydia", t0.AddHours(3));
 		Equal("Save3_Lydia", InGame.NewestPlayerSave(p), "no character picked: anyone's newest (never one the runner made)");
 		Equal("Save2_Bjorn", InGame.NewestPlayerSave(p, null, "björn"), "the picked character's newest, though another played since");
 		Equal("Lydia", InGame.OtherCharacter(p, "Save3_Lydia", "Björn"), "a save of another character is told apart");
@@ -4646,7 +4646,7 @@ public static class Program
 	// is in-game, on the full run's list)
 	static void T_ASaveThatDidNotHappenIsSaid()
 	{
-		var first = InGame.SaveNotMade("Output Manager - clean save", false);
+		var first = InGame.SaveNotMade("Tool Runner - clean save", false);
 		Check(first.Contains("clean save", StringComparison.Ordinal) && first.Contains("may be blocking saves", StringComparison.Ordinal) && first.Contains("Force the save", StringComparison.Ordinal),
 			"names the save, the likely cause and the setting: " + first);
 		var forced = InGame.SaveNotMade("x", true);
@@ -4868,15 +4868,15 @@ public static class Program
 	{
 		using var f = new FakeMo2();
 		var mo2 = Mo2Instance.Load(f.Exe, f.Instance);
-		const string Program = @"D:\Tools\Output Manager.exe";
+		const string Program = @"D:\Tools\Tool Runner.exe";
 		Check(!Mo2MenuEntry.IsCurrent(mo2, Program), "not there yet");
 		Mo2MenuEntry.Add(mo2, Program);
 		Check(Mo2MenuEntry.IsCurrent(mo2, Program), "added");
-		var file = Path.Combine(Path.GetDirectoryName(f.Exe)!, "plugins", "outputmanager.py");
+		var file = Path.Combine(Path.GetDirectoryName(f.Exe)!, "plugins", "toolrunner.py");
 		var text = File.ReadAllText(file);
 		Check(text.Contains("PROGRAM = r\"" + Program + "\"", StringComparison.Ordinal) && !text.Contains("@PROGRAM@", StringComparison.Ordinal), "it points at the program");
 		Check(text.Contains("\"--for-profile\"", StringComparison.Ordinal) && text.Contains("\"--mo2\"", StringComparison.Ordinal) && text.Contains("\"--base\"", StringComparison.Ordinal), "and asks for what the window takes");
-		Check(!Mo2MenuEntry.IsCurrent(mo2, @"E:\Moved\Output Manager.exe"), "a program moved since is offered it again");
+		Check(!Mo2MenuEntry.IsCurrent(mo2, @"E:\Moved\Tool Runner.exe"), "a program moved since is offered it again");
 		Check(Mo2Control.IsThisProgram(Brand.Name + ".exe"), "this program under Mod Organizer is not one a run waits for");
 		Check(!Mo2Control.IsThisProgram("SSEEdit.exe"), "another program is");
 	}
@@ -5124,7 +5124,7 @@ public static class Program
 	{
 		using var f = new FakeMo2();
 		var mo2 = Mo2Instance.Load(f.Exe, f.Instance);
-		var folder = Path.Combine(Path.GetDirectoryName(f.Exe)!, "plugins", "data", "OutputManager");
+		var folder = Path.Combine(Path.GetDirectoryName(f.Exe)!, "plugins", "data", "ToolRunner");
 		Check(!Companion.Ask(mo2, "Test", "ping", TimeSpan.FromMilliseconds(150), CancellationToken.None), "nobody there: no answer");
 		Equal(0, Directory.GetFiles(folder).Length, "and nothing left behind");
 		using var stop = new CancellationTokenSource();
@@ -5145,11 +5145,11 @@ public static class Program
 		answering.Wait();
 		Equal($"refresh\n{mo2.BaseDir}\nTest", heard.Single(), "what was asked, and of which Mod Organizer");
 		Equal(0, Directory.GetFiles(folder).Length, "and nothing left behind");
-		var entry = Mo2MenuEntry.Text(@"D:\Tools\Output Manager.exe");
+		var entry = Mo2MenuEntry.Text(@"D:\Tools\Tool Runner.exe");
 		Check(entry.Contains("self._mine(base, profile)", StringComparison.Ordinal), "the plugin answers only for its own instance and profile");
 		Check(entry.Contains("onNextRefresh", StringComparison.Ordinal) && entry.Contains("refresh(False)", StringComparison.Ordinal), "the plugin reads the lists back in, without saving its own over them");
 		Check(!Mo2MenuEntry.Present(mo2), "no entry yet");
-		Mo2MenuEntry.Add(mo2, @"D:\Tools\Output Manager.exe");
+		Mo2MenuEntry.Add(mo2, @"D:\Tools\Tool Runner.exe");
 		Check(Mo2MenuEntry.Present(mo2), "the entry is there");
 		var control = new Mo2Control(mo2, "Test", RunLog.Null);
 		Check(!control.HeldOpen, "Mod Organizer is not held open unless asked");
@@ -5604,10 +5604,10 @@ public static class Program
 	// to its exe's name so a future rename cannot split them again
 	static void T_TheEngineIsKnownByItsRealName()
 	{
-		foreach (var n in new[] { "Output Manager", "skyrim utility patcher", "MO2 Tool Runner", "Patcher Unification Project", "Runner.Tests" }) {
+		foreach (var n in new[] { "Tool Runner", "output manager", "skyrim utility patcher", "MO2 Tool Runner", "Patcher Unification Project", "Runner.Tests" }) {
 			Check(Journal.IsRunnerName(n), $"\"{n}\" is the program");
 		}
-		foreach (var n in new[] { "ModOrganizer", "Output Manager Helper", "SkyrimSE", "" }) {
+		foreach (var n in new[] { "ModOrganizer", "Tool Runner Helper", "Another Tool Runner", "Runner", "SkyrimSE", "" }) {
 			Check(!Journal.IsRunnerName(n), $"\"{n}\" is not the program");
 		}
 		Equal(Brand.Name, typeof(ToolRunner.App.App).Assembly.GetName().Name, "the program's name is its exe's name");
@@ -5678,17 +5678,24 @@ public static class Program
 		}
 	}
 
-	// the rename to Output Manager (his pick 2026-11-10): what a player or a modder made under the name before it is still the program's own -
-	// an output mod's mark, an add-on's folder, the ProgramData folders, and the Tools menu entry, which never shows twice
+	// a rename: what a player or a modder made under a name the program had before is still the program's own - an output mod's mark, an
+	// add-on's folder, the ProgramData folders, and the Tools menu entry, which never shows twice. The name now is the tail of the oldest
+	// one, so each kind is also asked with that old name and with a near miss
 	static void T_WhatAnOlderNameMadeIsStillItsOwn()
 	{
-		Equal("Skyrim Utility Patcher", Brand.OldNames[0], "the name it had last is the first old one");
-		Check(Brand.Is("skyrim utility patcher") && Brand.Is("Output Manager") && Brand.Is("MO2 Tool Runner") && !Brand.Is("Output Manager 2") && !Brand.Is(null), "a name of its own, whole, any case");
-		Check(Brand.Made("Skyrim Utility Patcher - ready to play") && Brand.Made("Output Manager - clean save"), "saves under either name are its own");
-		Check(Profile.MadeByUs("[General]\r\ncomments=made by Skyrim Utility Patcher\r\n") && Profile.MadeByUs("comments=made by Output Manager") &&
-		      !Profile.MadeByUs("comments=made by DynDOLOD"), "an output mod made under the old name is known as its own");
-		Check(!Brand.Compact.Contains(' ', StringComparison.Ordinal) && Brand.OldCompact.Contains("SkyrimUtilityPatcher") && Brand.OldWorkRoots.Any(r => r.EndsWith("SkyrimUtilityPatcher", StringComparison.Ordinal)) &&
-		      Brand.WorkRoot.EndsWith("OutputManager", StringComparison.Ordinal), "its ProgramData folder, and the old ones the clean removal still takes");
+		Equal("Output Manager", Brand.OldNames[0], "the name it had last is the first old one");
+		Check(Brand.Is("skyrim utility patcher") && Brand.Is("Tool Runner") && Brand.Is("output manager") && Brand.Is("MO2 Tool Runner") && !Brand.Is("Tool Runner 2") &&
+		      !Brand.Is("Runner") && !Brand.Is("My Tool Runner") && !Brand.Is(null), "a name of its own, whole, any case");
+		Check(Brand.Made("Skyrim Utility Patcher - ready to play") && Brand.Made("Output Manager - DynDOLOD off") && Brand.Made("Tool Runner - clean save") &&
+		      Brand.Made("MO2 Tool Runner - clean save") && !Brand.Made("Another Tool Runner - clean save") && !Brand.Made("Tool Runners - clean save"), "saves under any of its names are its own, a near miss is not");
+		Check(Profile.MadeByUs("[General]\r\ncomments=made by Skyrim Utility Patcher\r\n") && Profile.MadeByUs("comments=made by Tool Runner") &&
+		      Profile.MadeByUs("comments=made by Output Manager") && Profile.MadeByUs("comments=made by MO2 Tool Runner") &&
+		      !Profile.MadeByUs("comments=made by DynDOLOD"), "an output mod made under an old name is known as its own");
+		Check(Schedule.IsOurs("MO2 Tool Runner - Bottled Shaders 1A2B3C") && Schedule.IsOurs("\\Output Manager - Bottled Shaders 1A2B3C") && !Schedule.IsOurs("Some Tool Runner - x"),
+			"a task an old name left is still its own to clear away");
+		Check(!Brand.Compact.Contains(' ', StringComparison.Ordinal) && Brand.OldCompact.Contains("SkyrimUtilityPatcher") && Brand.OldCompact.Contains("OutputManager") &&
+		      Brand.OldWorkRoots.Any(r => r.EndsWith("\\SkyrimUtilityPatcher", StringComparison.Ordinal)) && Brand.OldWorkRoots.Any(r => r.EndsWith("\\MO2ToolRunner", StringComparison.Ordinal)) &&
+		      Brand.WorkRoot.EndsWith("\\ToolRunner", StringComparison.Ordinal) && !Brand.OldWorkRoots.Contains(Brand.WorkRoot), "its ProgramData folder, and the old ones the clean removal still takes");
 		Check(DataRemoval.WorkRoots.Count() == 1 + Brand.OldCompact.Length, "the clean removal looks in every one of them");
 
 		using var f = new FakeMo2();
@@ -5705,14 +5712,18 @@ public static class Program
 		Check(AddOns.IsFolderInMod("Skyrim Utility Patcher") && AddOns.IsFolderInMod(AddOns.FolderInMod) && !AddOns.IsFolderInMod("tools"), "and its folder is known by either name");
 
 		// the Tools menu entry: the old-named file leaves when the new one is added; another author's file of that name stays
-		const string Program = @"D:\Tools\Output Manager.exe";
+		const string Program = @"D:\Tools\Tool Runner.exe";
 		var plugins = Path.Combine(Path.GetDirectoryName(f.Exe)!, "plugins");
 		Directory.CreateDirectory(plugins);
 		var old = Path.Combine(plugins, "skyrimutilitypatcher.py");
+		var older = Path.Combine(plugins, "mo2toolrunner.py");
+		var last = Path.Combine(plugins, "outputmanager.py");
 		File.WriteAllText(old, Mo2MenuEntry.Text(@"D:\Tools\Skyrim Utility Patcher.exe"));
-		Check(!Mo2MenuEntry.Present(mo2) && Mo2MenuEntry.OldOnes(mo2).Single() == old, "only the old name's entry is there: it is not this version's");
+		File.WriteAllText(older, Mo2MenuEntry.Text(@"D:\Tools\MO2 Tool Runner.exe"));
+		File.WriteAllText(last, Mo2MenuEntry.Text(@"D:\Tools\Output Manager.exe"));
+		Check(!Mo2MenuEntry.Present(mo2) && Mo2MenuEntry.OldOnes(mo2).Order().SequenceEqual(new[] { old, older, last }.Order()), "only the old names' entries are there: none is this version's");
 		Mo2MenuEntry.Add(mo2, Program);
-		Check(Mo2MenuEntry.IsCurrent(mo2, Program) && !File.Exists(old), "the new entry is in and the old one gone - the program is in the menu once");
+		Check(Mo2MenuEntry.IsCurrent(mo2, Program) && !File.Exists(old) && !File.Exists(older) && !File.Exists(last), "the new entry is in and the old ones gone - the program is in the menu once");
 		File.WriteAllText(old, "# someone else's plugin that happens to have this name\n");
 		Check(!Mo2MenuEntry.OldOnes(mo2).Any() && Mo2MenuEntry.IsCurrent(mo2, Program), "a file of that name that is not the entry is not touched");
 		Mo2MenuEntry.Add(mo2, Program);

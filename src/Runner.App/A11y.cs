@@ -27,7 +27,7 @@ public static class A11y
 			var peer = UIElementAutomationPeer.FromElement(a_anchor) ?? UIElementAutomationPeer.CreatePeerForElement(a_anchor);
 			peer?.RaiseNotificationEvent(AutomationNotificationKind.Other,
 				a_important ? AutomationNotificationProcessing.ImportantMostRecent : AutomationNotificationProcessing.MostRecent,
-				text, a_important ? "Output Manager alert" : "Output Manager status");
+				text, a_important ? "Tool Runner alert" : "Tool Runner status");
 		} catch (Exception e) when (e is InvalidOperationException or ElementNotAvailableException or ArgumentException) {
 			// nothing listens, or the element went away: nothing to say it to
 		}

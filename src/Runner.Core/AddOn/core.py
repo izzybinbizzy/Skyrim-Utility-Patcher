@@ -62,8 +62,8 @@ def path_safe(text):
     return text
 
 
-# A run of Output Manager holds this lock: it may go on with nobody at the PC, and a question here would stop it.
-SUP_RUN_LOCK = "Local\\Output Manager run"
+# A run of Tool Runner holds this lock: it may go on with nobody at the PC, and a question here would stop it.
+SUP_RUN_LOCK = "Local\\Tool Runner run"
 
 
 def sup_running():
@@ -265,7 +265,7 @@ class Core:
         if self.running():
             return "the game is running"
         if sup_running():
-            return "a Output Manager run is going"
+            return "a Tool Runner run is going"
         return None
 
     def root_sources(self, ticked_mods):
