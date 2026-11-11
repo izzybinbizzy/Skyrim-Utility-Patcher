@@ -297,7 +297,8 @@ public static class Waits
 					}
 				}
 			}
-			Thread.Sleep(every);
+			// a Stop ends this wait too; the look at the top of the loop then throws
+			a_ctx.Cancel.WaitHandle.WaitOne(every);
 		}
 	}
 

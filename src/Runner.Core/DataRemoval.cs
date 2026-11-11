@@ -14,7 +14,7 @@ public static class DataRemoval
 	static string? Busy(string a_dataDir)
 	{
 		var all = Journal.All(Runner.RunsDir(a_dataDir)).ToList();
-		return all.Any(j => (j.Unfinished || j.InGameAfter) && j.OwnerAlive) || QueueRun.Read(a_dataDir) != null ? "a run is going - wait for it to end" :
+		return all.Any(j => j.Live && j.OwnerAlive) || QueueRun.Read(a_dataDir) != null ? "a run is going - wait for it to end" :
 			all.Any(j => j.Unfinished) ? "a run did not finish - put your profile back first, or its switched-off outputs stay off" : null;
 	}
 

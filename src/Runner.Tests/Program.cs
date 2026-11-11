@@ -2430,9 +2430,12 @@ public static class Program
 	{
 		using var f = new FakeMo2();
 		var plugins = Path.Combine(f.ProfileDir, "plugins.txt");
+		// held open by another program for the whole put-back (it may be read, not replaced); a read-only mark alone no longer
+		// blocks a write - the file is written and stays read-only
+		FileStream? held = null;
 		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => {
 			File.AppendAllText(plugins, "Stray.esp\r\n");
-			File.SetAttributes(plugins, FileAttributes.ReadOnly);
+			held = new FileStream(plugins, FileMode.Open, FileAccess.Read, FileShare.Read);
 		}));
 		f.WriteSetup(("landscapefixer", []));
 		try {
@@ -2440,12 +2443,13 @@ public static class Program
 			Check(r.Verdict.Contains("could NOT be put back", StringComparison.Ordinal), "the failed put-back is said: " + r.Verdict);
 			var j = Journal.Interrupted(Runner.RunsDir(f.Data));
 			Check(j is { NeedsRestore: true }, "the run is offered for Restore");
-			File.SetAttributes(plugins, FileAttributes.Normal);
+			held!.Dispose();
+			held = null;
 			Equal(RunState.Restored, Runner.Restore(j!).State, "Restore works once the file is free");
 			Check(!f.Text("plugins.txt").Contains("Stray.esp", StringComparison.Ordinal), "plugins.txt as before");
 			Check(Journal.Interrupted(Runner.RunsDir(f.Data)) == null, "nothing left to restore");
 		} finally {
-			File.SetAttributes(plugins, FileAttributes.Normal);
+			held?.Dispose();
 		}
 	}
 
@@ -5496,6 +5500,428 @@ public static class Program
 		}
 	}
 
+	// ------------------------------------------------------------------ the engine audit of 2026-11-10
+	// A file another program holds for a moment (an antivirus, the indexer) is tried again, a write over a read-only file keeps
+	// it read-only, a write that fails leaves no temp file, and text that is not UTF-8 is read in the PC's own code page
+	static void T_AFileHeldForAMomentIsTriedAgain()
+	{
+		var dir = Path.Combine(Path.GetTempPath(), "mo2 tool runner tests", "held " + Guid.NewGuid().ToString("N")[..8]);
+		Directory.CreateDirectory(dir);
+		try {
+			var path = Path.Combine(dir, "record.json");
+			File.WriteAllText(path, "old");
+			using (var held = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None)) {
+				var letGo = Task.Run(() => {
+					Thread.Sleep(300);
+					held.Dispose();
+				});
+				Files.WriteAtomic(path, "new");
+				letGo.Wait();
+			}
+			Equal("new", File.ReadAllText(path), "written once the other program let go");
+			var moved = Path.Combine(dir, "moved.json");
+			using (var held = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None)) {
+				var letGo = Task.Run(() => {
+					Thread.Sleep(300);
+					held.Dispose();
+				});
+				Files.Move(path, moved);
+				letGo.Wait();
+			}
+			Check(File.Exists(moved) && !File.Exists(path), "moved once it was free");
+			using (new FileStream(moved, FileMode.Open, FileAccess.Read, FileShare.None)) {
+				// Windows refuses a file held open as a sharing violation or as "access denied", by how it is asked
+				var refused = false;
+				try {
+					Files.WriteAtomic(moved, "never");
+				} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+					refused = true;
+				}
+				Check(refused, "a file that stays held fails in the end");
+			}
+			Equal("new", File.ReadAllText(moved), "and is as it was");
+			Check(Directory.GetFiles(dir).Length == 1, "no temp file is left beside it: " + string.Join(", ", Directory.GetFiles(dir).Select(Path.GetFileName)));
+			File.SetAttributes(moved, FileAttributes.ReadOnly);
+			Files.WriteAtomic(moved, "again");
+			Check(File.ReadAllText(moved) == "again" && File.GetAttributes(moved).HasFlag(FileAttributes.ReadOnly), "a read-only file is written and stays read-only");
+			File.SetAttributes(moved, FileAttributes.Normal);
+			// "caf" and an e with an accent as a western PC writes it: not UTF-8
+			byte[] ansi = [0x63, 0x61, 0x66, 0xE9];
+			var text = Files.DecodeText(ansi, out var how);
+			Check(text.Length == 4 && !text.Contains('�', StringComparison.Ordinal), "read in the PC's own code page, no letter lost: " + text);
+			Check(Files.EncodeText(text, how).SequenceEqual(ansi), "and written back as the same bytes");
+		} finally {
+			Directory.Delete(dir, true);
+		}
+	}
+
+	// a log line the disk will not take never throws (lines stand in front of the work on every put-back path) and is owed
+	static void T_ALogLineTheDiskRefusesIsOwedNeverThrown()
+	{
+		var dir = Path.Combine(Path.GetTempPath(), "mo2 tool runner tests", "log " + Guid.NewGuid().ToString("N")[..8]);
+		try {
+			var log = new RunLog(dir);
+			log.Say("written");
+			log.Dispose();
+			log.Say("after the file was let go");
+			log.Simple("and a simple one");
+			Equal(2, log.Owed, "both lines are owed, neither threw");
+			Check(File.ReadAllText(Path.Combine(dir, "log.txt")).Contains("written", StringComparison.Ordinal), "what was written before stays");
+		} finally {
+			Directory.Delete(dir, true);
+		}
+	}
+
+	// the newest run's record must read before "no run was interrupted" is believed; a check that cannot look refuses in words
+	static void T_ARunIsRefusedInWordsWhenItCannotBeSureOrCannotLook()
+	{
+		using var f = new FakeMo2();
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => throw new InvalidOperationException("must not run")));
+		f.WriteSetup(("landscapefixer", []));
+		var before = f.Text("modlist.txt");
+		Preflight.GameCheck = () => throw new IOException("the drive is not ready");
+		try {
+			var blind = Runner.Run(new RunRequest(f.SetupFile, f.Data));
+			Check(blind.State == RunState.Failed && blind.Verdict.Contains("could not finish", StringComparison.Ordinal) && blind.Verdict.Contains("the drive is not ready", StringComparison.Ordinal),
+				"a check that cannot look refuses the run in words: " + blind.Verdict);
+		} finally {
+			Preflight.GameCheck = () => [];
+		}
+		var bad = Path.Combine(Runner.RunsDir(f.Data), "9999-12-31 damaged");
+		Directory.CreateDirectory(bad);
+		File.WriteAllText(Path.Combine(bad, "journal.json"), "{ \"Id\": ");
+		var r = Runner.Run(new RunRequest(f.SetupFile, f.Data));
+		Check(r.State == RunState.Failed && r.Verdict.Contains("is damaged", StringComparison.Ordinal), "refused over a newest record that does not read: " + r.Verdict);
+		Equal(before, f.Text("modlist.txt"), "nothing changed");
+	}
+
+	// "stop after this step" pressed during the last tool holds before the save to play too (it once started the game all the same)
+	static void T_StopAfterHoldsBeforeTheSaveToPlay()
+	{
+		using var f = new FakeMo2();
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => {
+			Commands.Send(ctx.Journal.Folder, "stop after");
+			Thread.Sleep(1200);
+			WriteOutput(ctx, "landscapefixer", "Output A", "OutA.esp");
+		}));
+		var played = false;
+		StepRegistry.Replace(new FakeStep("playsave", (ctx, s) => played = true));
+		f.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A" }), ("playsave", []));
+		var r = Runner.Run(new RunRequest(f.SetupFile, f.Data));
+		Equal(RunState.Stopped, r.State, "stopped: " + r.Verdict);
+		Check(!played, "the game was not started for the save to play");
+		Check(r.Verdict.Contains("carry on from Save to play", StringComparison.Ordinal), "and it says where to carry on: " + r.Verdict);
+		Check(ProfileOf(f).IsOn("Output A"), "the finished output on");
+	}
+
+	// the setup's after-run commands run once whatever the run did: after one that failed, and after one that finished
+	static void T_AfterRunCommandsRunOnceWhateverHappens()
+	{
+		using var f = new FakeMo2();
+		var marker = Path.Combine(f.Root, "after ran.txt");
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => throw new StepFailedException("the tool crashed")));
+		var s = f.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A" }));
+		s.Root["afterRun"] = new JsonArray($"echo ran>>\"{marker}\"");
+		s.Save();
+		Equal(RunState.Failed, Runner.Run(new RunRequest(f.SetupFile, f.Data)).State, "the run that failed");
+		Equal(1, File.ReadAllLines(marker).Length, "after a failed run: once");
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => WriteOutput(ctx, "landscapefixer", "Output A", "OutA.esp")));
+		Thread.Sleep(1100);
+		var r = Runner.Run(new RunRequest(f.SetupFile, f.Data));
+		Equal(RunState.Finished, r.State, "the run that finished: " + r.Verdict);
+		Equal(2, File.ReadAllLines(marker).Length, "after a finished run: once more, not twice");
+		var j = Journal.Load(r.Folder!);
+		Check(!j.FinishingUp && j.Doing == "" && j.Pid == 0, "and the record is let go: no chore, no owner");
+	}
+
+	// A Stop pressed while a finished run is at its after-run commands never skips one (they give back what the before-run
+	// commands took): the one running is waited for a short while more and then ended, the next one still runs, the run stays
+	// finished
+	static void T_AStopNeverSkipsAnAfterRunCommand()
+	{
+		using var f = new FakeMo2();
+		var ping = Path.Combine(Environment.SystemDirectory, "ping.exe");
+		var marker = Path.Combine(f.Root, "after ran.txt");
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => WriteOutput(ctx, "landscapefixer", "Output A", "OutA.esp")));
+		var s = f.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A" }));
+		s.Root["afterRun"] = new JsonArray($"\"{ping}\" -n 40 127.0.0.1", $"echo second>>\"{marker}\"");
+		s.Root["zipBackups"] = false;
+		s.Save();
+		var keep = Runner.HookHurry;
+		Runner.HookHurry = TimeSpan.FromSeconds(2);
+		try {
+			var runs = Runner.RunsDir(f.Data);
+			var stopper = Task.Run(() => {
+				for (var i = 0; i < 600; ++i) {
+					var d = Directory.Exists(runs) ? Directory.GetDirectories(runs).FirstOrDefault() : null;
+					try {
+						if (d != null && File.Exists(Path.Combine(d, "journal.json")) && Journal.Load(d) is { FinishingUp: true, Doing: "the setup's command after the run" }) {
+							Thread.Sleep(500);
+							Commands.Send(d, "stop");
+							return true;
+						}
+					} catch (Exception e) when (e is IOException or System.Text.Json.JsonException) {
+					}
+					Thread.Sleep(50);
+				}
+				return false;
+			});
+			var sw = Stopwatch.StartNew();
+			var r = Runner.Run(new RunRequest(f.SetupFile, f.Data));
+			Check(stopper.Result, "(the Stop was sent while the first command ran)");
+			Equal(RunState.Finished, r.State, "the run stays finished: " + r.Verdict);
+			Check(sw.Elapsed < TimeSpan.FromSeconds(25), $"the command was not waited for to its own end (39 s): {sw.Elapsed.TotalSeconds:0.0} s");
+			Check(File.Exists(marker) && File.ReadAllLines(marker).Length == 1, "the command after it still ran, once");
+			var j = Journal.Load(r.Folder!);
+			Check(j.Notes.Any(n => n.Contains("of Stop", StringComparison.Ordinal)), "the one that was ended is in the run's notes: " + string.Join("; ", j.Notes));
+		} finally {
+			Runner.HookHurry = keep;
+		}
+	}
+
+	// A setup's own command is ended by Stop at once and by its limit, and one that leaves a program running behind it (which
+	// holds the command's output open) never keeps the run waiting for that program
+	static void T_ACommandIsEndedByStopAndByItsLimit()
+	{
+		var ping = Path.Combine(Environment.SystemDirectory, "ping.exe");
+		using (var f = new FakeMo2()) {
+			StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => throw new InvalidOperationException("must not run")));
+			var s = f.WriteSetup(("landscapefixer", []));
+			s.Root["beforeRun"] = new JsonArray($"\"{ping}\" -n 40 127.0.0.1");
+			s.Save();
+			var before = f.Text("modlist.txt");
+			var runs = Runner.RunsDir(f.Data);
+			var stopper = Task.Run(() => {
+				for (var i = 0; i < 400; ++i) {
+					var d = Directory.Exists(runs) ? Directory.GetDirectories(runs).FirstOrDefault() : null;
+					if (d != null && File.Exists(Path.Combine(d, "log.txt"))) {
+						Thread.Sleep(800);
+						Commands.Send(d, "stop");
+						return;
+					}
+					Thread.Sleep(50);
+				}
+			});
+			var sw = Stopwatch.StartNew();
+			var r = Runner.Run(new RunRequest(f.SetupFile, f.Data));
+			stopper.Wait();
+			Check(sw.Elapsed < TimeSpan.FromSeconds(20), $"Stop ended the command after {sw.Elapsed.TotalSeconds:0.0} s, not after its 40");
+			Check(r.State == RunState.Stopped && r.Verdict.Contains("Stop was pressed", StringComparison.Ordinal), "the run reads as stopped: " + r.Verdict);
+			Equal(before, f.Text("modlist.txt"), "nothing changed");
+		}
+		using (var f = new FakeMo2()) {
+			StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => throw new InvalidOperationException("must not run")));
+			var s = f.WriteSetup(("landscapefixer", []));
+			s.Root["beforeRun"] = new JsonArray($"\"{ping}\" -n 40 127.0.0.1");
+			s.Save();
+			var keep = Runner.HookLimit;
+			Runner.HookLimit = TimeSpan.FromSeconds(2);
+			try {
+				var sw = Stopwatch.StartNew();
+				var r = Runner.Run(new RunRequest(f.SetupFile, f.Data));
+				Check(r.State == RunState.Failed && r.Verdict.Contains("did not end within 2 seconds", StringComparison.Ordinal), "the limit ends it, named: " + r.Verdict);
+				Check(sw.Elapsed < TimeSpan.FromSeconds(20), $"after {sw.Elapsed.TotalSeconds:0.0} s");
+			} finally {
+				Runner.HookLimit = keep;
+			}
+		}
+		using (var f = new FakeMo2()) {
+			var sw = Stopwatch.StartNew();
+			var stepAt = TimeSpan.Zero;
+			StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => stepAt = sw.Elapsed));
+			var s = f.WriteSetup(("landscapefixer", []));
+			s.Root["beforeRun"] = new JsonArray($"start \"\" /b \"{ping}\" -n 30 127.0.0.1");
+			s.Save();
+			var r = Runner.Run(new RunRequest(f.SetupFile, f.Data));
+			Equal(RunState.Finished, r.State, r.Verdict);
+			Check(stepAt > TimeSpan.Zero && stepAt < TimeSpan.FromSeconds(15), $"the first step began after {stepAt.TotalSeconds:0.0} s, not once the program left behind had ended (29 s)");
+		}
+	}
+
+	// Packing the old outputs can be stopped (the folder whole, no half-made zip), is not begun without the room for it, says
+	// what it is doing, and keeps empty folders and the files' times
+	static void T_PackingCanBeStoppedAndSaysWhatItDoes()
+	{
+		using var f = new FakeMo2();
+		var dir = Path.Combine(f.Root, "pack stop");
+		var mod = Path.Combine(dir, RunUndo.OutputsFolder, "Mod");
+		Directory.CreateDirectory(Path.Combine(mod, "Empty"));
+		var file = Path.Combine(mod, "a.txt");
+		File.WriteAllText(file, "a");
+		var written = new DateTime(2020, 5, 5, 10, 20, 30, DateTimeKind.Local);
+		File.SetLastWriteTime(file, written);
+		var zip = Path.Combine(dir, RunUndo.OutputsZip);
+		using (var stop = new CancellationTokenSource()) {
+			stop.Cancel();
+			Throws<OperationCanceledException>(() => RunUndo.Pack(dir, RunLog.Null, null, stop.Token), "a Stop ends the packing");
+		}
+		Check(!File.Exists(zip) && !File.Exists(zip + ".part") && File.ReadAllText(file) == "a", "stopped: the folder whole, no zip and no half-made one");
+		var room = InGame.FreeBytes;
+		InGame.FreeBytes = _ => 0;
+		try {
+			RunUndo.Pack(dir, RunLog.Null);
+			Check(!File.Exists(zip) && File.Exists(file), "no room for the zip beside the folder: not begun");
+		} finally {
+			InGame.FreeBytes = room;
+		}
+		var said = new List<string>();
+		RunUndo.Pack(dir, RunLog.Null, said.Add);
+		Check(said.Count > 0 && said[0].Contains("packing the old outputs", StringComparison.Ordinal), "it says what it is doing: " + string.Join(" | ", said));
+		Check(File.Exists(zip) && !Directory.Exists(Path.Combine(dir, RunUndo.OutputsFolder)), "packed, the folder gone");
+		RunUndo.Unpack(dir);
+		Check(Directory.Exists(Path.Combine(mod, "Empty")), "an empty folder comes back");
+		Equal(written, File.GetLastWriteTime(file), "a file comes back with its time");
+	}
+
+	// A Stop in the seconds a step has just ended (Mod Organizer is being closed to tick its output): the step is on record as
+	// done - never left "running" for good - the next step never starts, and the put-back ticks what was built
+	static void T_AStopAsAStepEndsLeavesNoStepRunning()
+	{
+		using var f = new FakeMo2();
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => {
+			WriteOutput(ctx, "landscapefixer", "Output A", "OutA.esp");
+			Commands.Send(ctx.Journal.Folder, "stop");
+			for (var i = 0; i < 200 && !ctx.Cancel.IsCancellationRequested; ++i) {
+				Thread.Sleep(50);
+			}
+			// a Mod Organizer is up at the moment the step ends (the player opened one): gone again at the next look
+			var looks = 0;
+			ctx.Control.RunningProbe = () => looks++ < 1;
+		}));
+		StepRegistry.Replace(new FakeStep("synthesis", (ctx, s) => throw new InvalidOperationException("must not run")));
+		f.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A" }), ("synthesis", []));
+		var r = Runner.Run(new RunRequest(f.SetupFile, f.Data));
+		Equal(RunState.Stopped, r.State, "stopped: " + r.Verdict);
+		var j = Journal.Load(r.Folder!);
+		Equal(StepState.Done, j.Step("landscapefixer")!.State, "the step that finished is on record as done");
+		Equal(StepState.Skipped, j.Step("synthesis")!.State, "the Stop was met while its output was being ticked: the next step never began");
+		Check(j.Steps.All(s => s.State != StepState.Running), "no step is left running");
+		Check(ProfileOf(f).IsOn("Output A") && File.Exists(Path.Combine(f.Mods, "Output A", "new.txt")), "the put-back ticked what it built");
+	}
+
+	// the put-back after a Stop still ticks what was built when a Mod Organizer came up in between (its close there is never
+	// ended by the Stop that asked for the put-back)
+	static void T_ThePutBackTicksWhatWasBuiltUnderAStop()
+	{
+		using var f = new FakeMo2();
+		f.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A" }));
+		using var stop = new CancellationTokenSource();
+		stop.Cancel();
+		var ctx = StepContext(f, "landscapefixer", a_cancel: stop.Token);
+		try {
+			ctx.Profile.SetMods([], ["Needs B", "Output B", "Output A"]);
+			var snap = ctx.Profile.Snapshot();
+			ctx.Journal.Built.Add("Output A");
+			// closed at the put-back's first look, up when the built output is to be ticked, closed once asked to
+			var looks = 0;
+			ctx.Control.RunningProbe = () => ++looks == 2;
+			Runner.PutBack(ctx, snap);
+			Check(ProfileOf(f).IsOn("Output A"), "the built output is on");
+			Check(looks >= 2, "(a Mod Organizer was met on the way)");
+		} finally {
+			ctx.Log.Dispose();
+		}
+	}
+
+	// An old output that is no longer in the run's backup when its step fails (the backup cleared by hand): said, the mod kept
+	// off and never ticked holding nothing, and the run is not held up for a put-back that can never happen
+	static void T_AnOldOutputGoneFromTheBackupIsSaidAndKeptOff()
+	{
+		using var f = new FakeMo2();
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => {
+			StepKit.ParkMod(ctx, "landscapefixer", "Output A");
+			Directory.Delete(ctx.Journal.Parked.Last(p => p.Mod == "Output A").To, true);
+			throw new StepFailedException("the tool crashed");
+		}));
+		f.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A" }));
+		var r = Runner.Run(new RunRequest(f.SetupFile, f.Data));
+		Equal(RunState.Failed, r.State, "failed");
+		Check(r.Verdict.Contains("except Output A", StringComparison.Ordinal) && r.Verdict.Contains("no longer in the backup", StringComparison.Ordinal), "the verdict names it: " + r.Verdict);
+		Check(!ProfileOf(f).IsOn("Output A"), "the mod is off, never on holding nothing");
+		var j = Journal.Load(r.Folder!);
+		Check(j.Parked.Single().Lost && !j.Parked.Single().PutBack, "on record as lost, not as put back");
+		Check(j.Notes.Any(n => n.Contains("could not be put back", StringComparison.Ordinal)), "and in the run's notes");
+		Check(Journal.Interrupted(Runner.RunsDir(f.Data)) == null, "nothing waits for a put-back that cannot happen");
+	}
+
+	// Restore ends a cut-off step when its run died - the record's last write before the put-back - not when Restore was pressed;
+	// a Mod Organizer that is gone is said in words by Restore and by Undo, never thrown
+	static void T_RestoreKnowsWhenTheRunDiedAndSaysWhatIsMissing()
+	{
+		using var f = new FakeMo2();
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => {
+			StepKit.ParkMod(ctx, "landscapefixer", "Output A");
+			ctx.Journal.Pid = 999999;
+			ctx.Journal.Save();
+			throw new CrashForTest();
+		}));
+		f.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A" }));
+		try {
+			RunUntilCrash(f);
+		} catch (CrashForTest) {
+		}
+		var j = Journal.Interrupted(Runner.RunsDir(f.Data))!;
+		var died = DateTime.Now.AddHours(-3);
+		File.SetLastWriteTime(j.File, died);
+		File.Move(f.Exe, f.Exe + ".gone");
+		var missing = Runner.Restore(Journal.Load(j.Folder));
+		Check(missing.State == RunState.Failed && missing.Verdict.Contains("was not found", StringComparison.Ordinal), "a Mod Organizer that is gone is said: " + missing.Verdict);
+		File.Move(f.Exe + ".gone", f.Exe);
+		File.SetLastWriteTime(j.File, died);
+		Equal(RunState.Restored, Runner.Restore(Journal.Load(j.Folder)).State, "restored once it is back");
+		var ended = Journal.Load(j.Folder).Steps.Single().Ended!.Value;
+		Check(Math.Abs((ended - died).TotalMinutes) < 1, $"the cut-off step ended when the run died ({died:HH:mm}), not when Restore was pressed: {ended:HH:mm}");
+
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => WriteOutput(ctx, "landscapefixer", "Output A", "OutA.esp")));
+		Thread.Sleep(1100);
+		var done = Runner.Run(new RunRequest(f.SetupFile, f.Data));
+		Equal(RunState.Finished, done.State, done.Verdict);
+		File.Move(f.Exe, f.Exe + ".gone");
+		try {
+			var undo = Runner.Undo(Journal.Load(done.Folder!));
+			Check(undo.Verdict.Contains("nothing was undone", StringComparison.Ordinal) && undo.Verdict.Contains("was not found", StringComparison.Ordinal), "Undo says it too: " + undo.Verdict);
+		} finally {
+			File.Move(f.Exe + ".gone", f.Exe);
+		}
+	}
+
+	// one file of a failed step that will not move out of overwrite (still held by its tool) never keeps the others there
+	static void T_OneHeldFileNeverKeepsTheRestInOverwrite()
+	{
+		using var f = new FakeMo2();
+		FileStream? held = null;
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => {
+			File.WriteAllText(Path.Combine(f.Overwrite, "a held.log"), "the tool's log");
+			File.WriteAllText(Path.Combine(f.Overwrite, "half.nif"), "half");
+			held = new FileStream(Path.Combine(f.Overwrite, "a held.log"), FileMode.Open, FileAccess.Read, FileShare.None);
+			throw new StepFailedException("the tool crashed");
+		}));
+		f.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A" }));
+		try {
+			var r = Runner.Run(new RunRequest(f.SetupFile, f.Data));
+			Check(!File.Exists(Path.Combine(f.Overwrite, "half.nif")), "the file that could move left overwrite");
+			Check(File.Exists(Path.Combine(f.Overwrite, "a held.log")), "(the held one is still there)");
+			var j = Journal.Load(r.Folder!);
+			Check(j.Notes.Any(n => n.Contains("could not be moved out", StringComparison.Ordinal) && n.Contains("a held.log", StringComparison.Ordinal)), "and the run's notes name it: " + string.Join("; ", j.Notes));
+		} finally {
+			held?.Dispose();
+		}
+	}
+
+	// a run that has finished and is at its last chores (the setup's commands, packing the old outputs) is still the run going
+	// to the window while its engine lives - Stop and the close guard reach it - and nothing to put back
+	static void T_ARunAtItsLastChoresIsStillTheRunGoing()
+	{
+		var j = new Journal { State = RunState.Finished, FinishingUp = true, Pid = Environment.ProcessId, PidStarted = Process.GetCurrentProcess().StartTime.ToUniversalTime() };
+		Check(j.Live && !j.Unfinished, "live, and nothing to put back");
+		Check(ToolRunner.App.Engine.Active([j]) == j, "the window follows it as the run going");
+		j.FinishingUp = false;
+		Check(ToolRunner.App.Engine.Active([j]) == null, "not once its chores are done");
+		j.FinishingUp = true;
+		j.Pid = 999999;
+		Check(ToolRunner.App.Engine.Active([j]) == null && ToolRunner.App.Engine.Interrupted([j]) == null, "an engine that died at its chores left a finished run: neither going nor to put back");
+	}
+
 	// The guard for "pressing stop now still doesn't stop it" (his finds of 2026-11-04, 11-06 and 11-10): no wait of the engine
 	// longer than a moment may be a plain sleep - a step waits with RunContext.Pause / Waits.Pause, which a Stop ends at once.
 	static void T_NoStepWaitIsBlindToStop() => NoBlindSleeps(SourceDir());
@@ -5508,7 +5934,8 @@ public static class Program
 			Console.WriteLine($"  (skipped: the source is not at {a_core})");
 			return;
 		}
-		var allowed = new HashSet<string> { "Poll", "every", "i == 0 ? 0 : 200" };
+		// "Again[i]": the file layer's own tries when another program holds a file for a moment (about two seconds in all)
+		var allowed = new HashSet<string> { "Poll", "i == 0 ? 0 : 200", "Again[i]" };
 		var found = new List<string>();
 		foreach (var file in Directory.EnumerateFiles(a_core, "*.cs", SearchOption.AllDirectories).Where(p => !p.Contains(@"\obj\", StringComparison.Ordinal) && !p.Contains(@"\bin\", StringComparison.Ordinal))) {
 			var lines = File.ReadAllLines(file);

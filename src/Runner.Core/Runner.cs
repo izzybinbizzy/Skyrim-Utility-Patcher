@@ -92,6 +92,18 @@ public static class Runner
 
 	static RunOutcome Refuse(string a_why) => new(RunState.Failed, "not started: " + a_why, null);
 
+	// a run folder's log opened; null with why (a_why) when the folder cannot be written - said in words by the caller, never a crash
+	static RunLog? OpenLog(string a_folder, out string a_why)
+	{
+		a_why = "";
+		try {
+			return new RunLog(a_folder);
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+			a_why = e.Message;
+			return null;
+		}
+	}
+
 	static RunOutcome RunLocked(RunRequest a_req, Func<Journal, IGuide>? a_guide)
 	{
 		Setup setup;
@@ -150,20 +162,18 @@ public static class Runner
 		};
 		Directory.CreateDirectory(journal.Folder);
 		journal.Save();
-		RunLog opened;
-		try {
-			opened = new RunLog(journal.Folder);
-		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+		using var opened = OpenLog(journal.Folder, out var noLog);
+		if (opened == null) {
 			// the record says "running" already: closed again, or once this program has ended the window would offer to put back
 			// a run that never touched the profile
 			journal.State = RunState.Failed;
-			journal.Verdict = "stopped before anything was changed: the run's log could not be opened (" + e.Message + ")";
+			journal.Verdict = "stopped before anything was changed: the run's log could not be opened (" + noLog + ")";
 			journal.Ended = DateTime.Now;
 			journal.Pid = 0;
 			journal.TrySave();
 			return new RunOutcome(RunState.Failed, journal.Verdict, journal.Folder);
 		}
-		using var log = opened;
+		RunLog log = opened;
 		log.Mirror(Path.Combine(runs, "current log.txt"));
 		using var cts = new CancellationTokenSource();
 		var commands = new Commands(journal, cts.Cancel);
@@ -326,10 +336,12 @@ public static class Runner
 			}
 			Chore("clearing the scratch folder", () => RecycleScratch(ctx, todo));
 			afterRan = true;
+			// each one runs, whatever the one before it did and whether or not Stop is pressed: they give back what the before-run
+			// commands took. A Stop only shortens how long each is waited for
 			foreach (var cmd in setup.AfterRun) {
 				journal.Doing = "the setup's command after the run";
 				journal.TrySave();
-				Chore("the command after the run", () => Hook(ctx, cmd, "after the run", cts.Token));
+				Chore("the command after the run", () => Hook(ctx, cmd, "after the run", CancellationToken.None, cts.Token));
 			}
 			Chore("the look at Mod Organizer's overwrite", () => ReportOverwrite(ctx));
 			Chore("tidying old backups", () => PruneBackups(ctx));
@@ -349,10 +361,10 @@ public static class Runner
 			// his checklist 454: the old outputs packed into one zip, as the very last thing and only after a run that finished -
 			// it can take minutes, the window says so, and Stop ends it at once (the run stays finished)
 			if (Setup.Bool(setup.Root, "zipBackups") != false && !journal.Parked.Any(p => !p.Replaced && !p.PutBack)) {
-				Chore("packing the old outputs", () => RunUndo.Pack(ctx.BackupFolder, log, cts.Token, a_doing => {
+				Chore("packing the old outputs", () => RunUndo.Pack(ctx.BackupFolder, log, a_doing => {
 					journal.Doing = a_doing;
 					journal.TrySave();
-				}));
+				}, cts.Token));
 			}
 			return new RunOutcome(RunState.Finished, journal.Verdict, journal.Folder);
 		} catch (Exception e) when (snap0 == null) {
@@ -681,7 +693,10 @@ public static class Runner
 			PutBackParked(a_ctx, a_s.Key);
 			StepKit.PutFilesBack(a_ctx);
 			a_ctx.QuietFiles.Clear();
-			MoveNewOverwrite(a_ctx, overwriteBefore, stepBegan);
+			// overwrite could not even be listed before the step: nothing in it can be told as the step's, so nothing is moved
+			if (overwriteBefore != null) {
+				MoveNewOverwrite(a_ctx, overwriteBefore, stepBegan);
+			}
 			return false;
 		}
 		foreach (var m in new[] { a_ctx.OutputUntouched ? null : new StepSettings(a_s.Settings).OutputMod }.OfType<string>().Concat(a_ctx.PendingEnable)) {
@@ -693,7 +708,9 @@ public static class Runner
 		foreach (var p in a_ctx.Journal.Parked.Where(p => p.Step == a_s.Key && !p.PutBack)) {
 			p.Replaced = true;
 		}
-		ApplyAfter(a_ctx);
+		// The step is done from here, and on record as done BEFORE Mod Organizer is closed to tick its output: a Stop (or a
+		// Mod Organizer that is busy) in those seconds ends the run with a step that finished - never one left "running" for
+		// good - and the put-back ticks what it built
 		r.State = StepState.Done;
 		r.Ended = DateTime.Now;
 		r.Activity = "";
@@ -701,16 +718,19 @@ public static class Runner
 		a_ctx.Journal.Save();
 		a_ctx.Log.Say($"=== {StepCatalog.Name(a_s.Key)} done in {sw.Elapsed.TotalMinutes:0.0} min ===");
 		a_ctx.Log.Simple($"{StepCatalog.Name(a_s.Key)} finished in {sw.Elapsed.TotalMinutes:0.0} min");
+		ApplyAfter(a_ctx, a_ctx.Cancel);
 		return true;
 	}
 
-	static void ApplyAfter(RunContext a_ctx)
+	// a_ct: what may end the wait for Mod Organizer to close - a step's Stop; nothing at the put-back, which a Stop has often
+	// just asked for and must still tick what was built
+	static void ApplyAfter(RunContext a_ctx, CancellationToken a_ct)
 	{
 		var st = a_ctx.Profile.States();
 		var en = a_ctx.PendingEnable.Distinct().Where(m => st.TryGetValue(m, out var f) && f != '+').ToList();
 		a_ctx.PendingEnable.Clear();
 		if (en.Count > 0 || a_ctx.Setup.Placement.Count > 0) {
-			a_ctx.Control.Close(null, a_ctx.Cancel);
+			a_ctx.Control.Close(null, a_ct);
 		}
 		if (en.Count > 0) {
 			a_ctx.Log.Detail("new outputs switched on:");
@@ -727,8 +747,14 @@ public static class Runner
 	public static List<string> PutBackParked(RunContext a_ctx, string? a_step)
 	{
 		var failed = new List<string>();
-		foreach (var p in a_ctx.Journal.Parked.Where(p => (a_step == null || p.Step == a_step) && !p.Replaced && !p.PutBack).Reverse()) {
+		foreach (var p in a_ctx.Journal.Parked.Where(p => (a_step == null || p.Step == a_step) && !p.Replaced && !p.PutBack && !p.Lost).Reverse()) {
 			try {
+				// Its copy in the backup is not there. On a drive that is gone it may come back with the drive: not put back, and
+				// asked again. In a backup that is there it was cleared away: nothing can bring it back
+				var gone = !Directory.Exists(p.To);
+				if (gone && Path.GetPathRoot(Path.GetFullPath(p.To)) is { Length: > 0 } drive && !Directory.Exists(drive)) {
+					throw new IOException($"the backup's drive {drive} is not there");
+				}
 				if (Directory.Exists(p.From)) {
 					var half = Path.Combine(a_ctx.BackupFolder, "unfinished", p.Mod);
 					var moved = Directory.EnumerateFileSystemEntries(p.From).Any(e => !Path.GetFileName(e).Equals("meta.ini", StringComparison.OrdinalIgnoreCase));
@@ -741,11 +767,21 @@ public static class Runner
 						}
 					}
 				}
-				if (Directory.Exists(p.To)) {
-					Files.MoveContents(p.To, p.From);
+				if (gone) {
+					// never said as "put back", never ticked holding nothing (PutBack keeps it off), and never counted as still
+					// out either - that would keep every later put-back from ending
+					p.Lost = true;
+					var lost = $"{p.Mod}: its old output is no longer in this run's backup ({p.To}), so it could not be put back - the mod is left switched off";
+					a_ctx.Journal.Notes.Add(lost);
+					a_ctx.Journal.TrySave();
+					a_ctx.Log.Error(lost);
+					a_ctx.Log.Simple("Note: " + lost);
+					continue;
 				}
+				Files.MoveContents(p.To, p.From);
 				p.PutBack = true;
-				a_ctx.Journal.Save();
+				// the move is made: a record the disk refuses right now is not a put-back that failed
+				a_ctx.Journal.TrySave();
 				a_ctx.Log.Detail($"{p.Mod}: its old output put back");
 			} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
 				failed.Add(p.Mod);
@@ -755,19 +791,44 @@ public static class Runner
 		return failed;
 	}
 
+	// an old output that was no longer in the backup is not "back as it was": named in the verdict ("" when there is none)
+	static string LostNote(Journal a_j)
+	{
+		var lost = a_j.Parked.Where(p => p.Lost).Select(p => p.Mod).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+		return lost.Count == 0 ? "" : $" - except {string.Join(", ", lost)}: the old output was no longer in the backup, so {(lost.Count == 1 ? "it is" : "they are")} switched off";
+	}
+
 	// the order files back as they were before the run, then this run's outputs on, the replaced mods off, the plugins placed
 	static RunOutcome Finish(RunContext a_ctx, Dictionary<string, byte[]>? a_snap, RunState a_state, string? a_why = null)
 	{
 		var j = a_ctx.Journal;
+		// the put-back comes first: a record the disk will not take right now is said, and never what leaves a profile half switched
+		void Keep()
+		{
+			if (!j.TrySave()) {
+				a_ctx.Log.Warn("the run's record could not be written just now (is the disk full?) - the put-back goes on");
+			}
+		}
 		foreach (var r in j.Steps.Where(r => r.State == StepState.Pending)) {
 			r.State = StepState.Skipped;
+		}
+		// a step still on record as running was cut off between its own beginning and its own ending (the run stopped while Mod
+		// Organizer closed around it): closed here, never left "running" in the history for good
+		foreach (var r in j.Steps.Where(r => r.State == StepState.Running)) {
+			r.State = a_ctx.Cancel.IsCancellationRequested ? StepState.Stopped : StepState.Failed;
+			r.Ended ??= DateTime.Now;
+			r.Activity = "";
+			r.Progress = null;
+			if (r.Note == "") {
+				r.Note = a_why ?? "";
+			}
 		}
 		var notBack = PutBackParked(a_ctx, null);
 		var filesNotBack = StepKit.PutFilesBack(a_ctx);
 		if (notBack.Count > 0 || filesNotBack.Count > 0) {
 			// a mod whose old output could not come back is kept OFF (never ticked half empty, PutBack) and Restore stays on offer
 			j.NeedsRestore = true;
-			j.Save();
+			Keep();
 		}
 		try {
 			PutBack(a_ctx, a_snap);
@@ -775,7 +836,7 @@ public static class Runner
 			j.State = RunState.Failed;
 			j.NeedsRestore = true;
 			j.Verdict = $"the profile could NOT be put back ({Plain(e)}) - press \"Put my profile back\" once Mod Organizer can close";
-			j.Save();
+			Keep();
 			a_ctx.Log.Error(j.Verdict);
 			a_ctx.Log.Simple("Stopped: " + j.Verdict);
 			return new RunOutcome(j.State, j.Verdict, j.Folder);
@@ -786,17 +847,20 @@ public static class Runner
 			j.Ended = DateTime.Now;
 			j.Verdict = "the profile is back except " + string.Join(", ", notBack.Concat(filesNotBack.Select(Path.GetFileName)).OfType<string>()) +
 				" (kept off / in the backup) - press \"Put my profile back\" once the files are free";
-			j.Save();
+			Keep();
 			a_ctx.Log.Error(j.Verdict);
 			a_ctx.Log.Simple("Stopped: " + j.Verdict);
 			return new RunOutcome(j.State, j.Verdict, j.Folder);
 		}
 		var failed = j.Steps.FirstOrDefault(r => r.State is StepState.Failed or StepState.Stopped);
+		// stopped between two steps: said as after the last one that finished, never "at the start" of a run that built things
+		var where = failed != null ? "at " + failed.Name : j.Steps.LastOrDefault(r => r.State == StepState.Done) is { } last ? "after " + last.Name : "at the start";
+		var except = LostNote(j);
 		j.State = a_state == RunState.Finished ? RunState.Running : a_state;
 		j.Verdict = a_state switch {
 			RunState.Finished => "",
-			RunState.Stopped => a_why ?? $"stopped at {failed?.Name} - the profile is back as it was, with this run's finished outputs on; carry on from {failed?.Name}",
-			_ => $"stopped at {failed?.Name ?? "the start"}: {failed?.Note ?? a_why} - the profile is back as it was, with this run's finished outputs on",
+			RunState.Stopped => a_why != null ? a_why + except : $"stopped {where} - the profile is back as it was, with this run's finished outputs on{except}; carry on from {failed?.Name}",
+			_ => $"stopped {where}: {failed?.Note ?? a_why} - the profile is back as it was, with this run's finished outputs on{except}",
 		};
 		if (a_state != RunState.Finished) {
 			SaySaves(a_ctx);
@@ -805,12 +869,12 @@ public static class Runner
 			a_ctx.Log.Simple((a_state == RunState.Stopped ? "Stopped: " : "Failed: ") + j.Verdict);
 			// a failed or stopped run's backups are pruned too (they piled up until the next finished run - the fourth review, L7);
 			// a folder an unfinished run still names is never touched
-			j.Save();
+			Keep();
 			PruneBackups(a_ctx);
 		} else {
 			j.State = RunState.Finished;
 		}
-		j.Save();
+		Keep();
 		return new RunOutcome(j.State, j.Verdict, j.Folder);
 	}
 
@@ -872,18 +936,26 @@ public static class Runner
 				a_ctx.Log.Warn($"{a}: is empty but could not be taken out ({e.Message})");
 			}
 		}
-		a_ctx.Journal.Save();
+		// the order files are back: a record the disk refuses right now must not be what stops the outputs being ticked
+		if (!a_ctx.Journal.TrySave()) {
+			a_ctx.Log.Warn("the run's record could not be written just now (is the disk full?) - the put-back goes on");
+		}
 		var st = a_ctx.Profile.States();
-		// replaced by this run for good, or its old output still in the backup (off only while it is out)
+		// replaced by this run for good, or its old output not back in it: still in the backup (off only while it is out), or
+		// lost from it (a mod never goes on holding nothing)
 		var retire = a_ctx.Journal.Retire.Concat(a_ctx.Journal.Parked.Where(p => !p.Replaced && !p.PutBack).Select(p => p.Mod))
 			.Distinct(StringComparer.OrdinalIgnoreCase).Where(st.ContainsKey).ToList();
 		if (retire.Count > 0) {
-			a_ctx.Log.Detail("kept off (replaced by this run, or its old output still in the backup): " + string.Join(", ", retire));
+			a_ctx.Log.Detail("kept off (replaced by this run, or its old output not back in it): " + string.Join(", ", retire));
 			a_ctx.Profile.SetMods([], retire, a_ctx.Log);
 			a_ctx.Profile.DeactivatePlugins(retire);
 		}
-		a_ctx.PendingEnable.AddRange(a_ctx.Journal.Built.Where(m => st.ContainsKey(m)));
-		ApplyAfter(a_ctx);
+		// a mod whose old output is not back in it is not switched on again a line later because an earlier step of this run had
+		// built it once
+		var stillOut = a_ctx.Journal.Parked.Where(p => !p.Replaced && !p.PutBack).Select(p => p.Mod).ToHashSet(StringComparer.OrdinalIgnoreCase);
+		a_ctx.PendingEnable.AddRange(a_ctx.Journal.Built.Where(m => st.ContainsKey(m) && !stillOut.Contains(m)));
+		// a Stop is often why this put-back runs: it never ends the wait for Mod Organizer here
+		ApplyAfter(a_ctx, CancellationToken.None);
 	}
 
 	// an interrupted run (a crash, Stop now, a power cut): every unfinished output back, the profile as before + the finished
@@ -904,14 +976,26 @@ public static class Runner
 
 	static RunOutcome RestoreLocked(Journal a_j)
 	{
+		// when the cut-off run last wrote its record, read before this put-back writes it again: the time that run died
+		var lastWritten = File.GetLastWriteTime(a_j.File);
 		Setup setup;
 		try {
 			setup = Setup.Load(a_j.SetupFile);
 		} catch (Exception e) when (e is IOException or System.Text.Json.JsonException or InvalidDataException) {
 			return new RunOutcome(RunState.Failed, "the setup does not read: " + e.Message, a_j.Folder);
 		}
-		var mo2 = Mo2Instance.Load(setup.Mo2Exe, setup.Mo2Instance);
-		using var log = new RunLog(a_j.Folder);
+		// a Mod Organizer that moved, a run folder that cannot be written: said in words, never a crash of the command line
+		Mo2Instance mo2;
+		try {
+			mo2 = Mo2Instance.Load(setup.Mo2Exe, setup.Mo2Instance);
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+			return new RunOutcome(RunState.Failed, "could not put the profile back: " + e.Message, a_j.Folder);
+		}
+		using var opened = OpenLog(a_j.Folder, out var noLog);
+		if (opened == null) {
+			return new RunOutcome(RunState.Failed, "could not put the profile back: the run's log could not be opened (" + noLog + ")", a_j.Folder);
+		}
+		RunLog log = opened;
 		// the player pressed Restore: the Mod Organizer the cut-off run left open (or their own) is closed, as Start closes it
 		var control = new Mo2Control(mo2, a_j.Profile, log) { AllowCloseTheirs = true };
 		var ctx = new RunContext {
@@ -955,8 +1039,9 @@ public static class Runner
 			return new RunOutcome(RunState.Failed, a_j.Verdict, a_j.Folder);
 		}
 		// a step the crash cut off ends when its run record was last written - never left open (an open game step would read as
-		// the runner's game running "until now" and hide every save the player made since - the fifth review, N1)
-		var died = a_j.Ended ?? File.GetLastWriteTime(a_j.File);
+		// the runner's game running "until now" and hide every save the player made since - the fifth review, N1). The time was
+		// read at the top: by now this put-back has written the record itself
+		var died = a_j.Ended ?? lastWritten;
 		foreach (var r in a_j.Steps.Where(r => r.State is StepState.Running or StepState.Pending)) {
 			if (r.State == StepState.Running) {
 				r.Ended ??= died;
@@ -966,7 +1051,7 @@ public static class Runner
 		a_j.State = RunState.Restored;
 		a_j.NeedsRestore = false;
 		a_j.Ended ??= DateTime.Now;
-		a_j.Verdict = "put back after an interrupted run - the profile is as it was, with the outputs that finished on";
+		a_j.Verdict = "put back after an interrupted run - the profile is as it was, with the outputs that finished on" + LostNote(a_j);
 		a_j.Save();
 		log.Say(a_j.Verdict);
 		return new RunOutcome(RunState.Restored, a_j.Verdict, a_j.Folder);
@@ -991,8 +1076,17 @@ public static class Runner
 		} catch (Exception e) when (e is IOException or System.Text.Json.JsonException or InvalidDataException) {
 			return new RunOutcome(a_j.State, "the setup does not read: " + e.Message, a_j.Folder);
 		}
-		var mo2 = Mo2Instance.Load(setup.Mo2Exe, setup.Mo2Instance);
-		using var log = new RunLog(a_j.Folder);
+		Mo2Instance mo2;
+		try {
+			mo2 = Mo2Instance.Load(setup.Mo2Exe, setup.Mo2Instance);
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+			return new RunOutcome(a_j.State, "nothing was undone: " + e.Message, a_j.Folder);
+		}
+		using var opened = OpenLog(a_j.Folder, out var noLog);
+		if (opened == null) {
+			return new RunOutcome(a_j.State, "nothing was undone: the run's log could not be opened (" + noLog + ")", a_j.Folder);
+		}
+		RunLog log = opened;
 		var control = new Mo2Control(mo2, a_j.Profile, log) { AllowCloseTheirs = true };
 		var ctx = new RunContext {
 			Setup = setup, Mo2 = mo2, Profile = new Profile(mo2, a_j.Profile, () => control.Running) { OursFile = Path.Combine(a_j.Folder, Profile.WatchFileName) }, Control = control, Log = log,
@@ -1156,31 +1250,50 @@ public static class Runner
 	// - only what the step made, and a crash report among them is named with where it went
 	static void MoveNewOverwrite(RunContext a_ctx, Dictionary<string, DateTime> a_before, DateTime a_beganUtc)
 	{
+		var ow = a_ctx.Mo2.OverwriteDir;
+		List<string> fresh, older;
 		try {
-			var ow = a_ctx.Mo2.OverwriteDir;
-			var (fresh, older) = NewInOverwrite(a_before, OverwriteFiles(a_ctx), a_beganUtc);
-			var reports = new List<string>();
-			foreach (var f in fresh) {
+			(fresh, older) = NewInOverwrite(a_before, OverwriteFiles(a_ctx), a_beganUtc);
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+			a_ctx.Log.Warn("overwrite could not be looked at after the failed step: " + e.Message);
+			return;
+		}
+		var reports = new List<string>();
+		var stayed = new List<string>();
+		var why = "";
+		// each file on its own: one a program still holds (a log the tool is letting go of) never keeps the others in overwrite,
+		// where they would win over the output just put back
+		foreach (var f in fresh) {
+			try {
 				var dst = Path.Combine(a_ctx.BackupFolder, "unfinished", "overwrite", Path.GetRelativePath(ow, f));
 				Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
 				Files.Move(f, dst, true);
 				if (InGame.IsCrashReport(Path.GetFileName(f))) {
 					reports.Add(dst);
 				}
+			} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+				stayed.Add(Path.GetRelativePath(ow, f));
+				why = why == "" ? e.Message : why;
 			}
-			if (fresh.Count > 0) {
-				a_ctx.Log.Detail($"{fresh.Count} file(s) the step left in Mod Organizer's overwrite moved to the backup (unfinished\\overwrite)");
-			}
-			foreach (var r in reports) {
-				a_ctx.Log.Warn("the game's crash report went with them - it is now at " + r);
-				a_ctx.Log.Simple("Note: the game's crash report is in the run's backup: " + r);
-			}
-			if (older.Count > 0) {
-				a_ctx.Log.Detail($"{older.Count} file(s) new to overwrite carry a date from before the step and were left where they are (not this run's): " +
-					string.Join(", ", older.Take(4).Select(Path.GetFileName)) + (older.Count > 4 ? " ..." : ""));
-			}
-		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
-			a_ctx.Log.Warn("overwrite could not be cleared after the failed step: " + e.Message);
+		}
+		if (fresh.Count > stayed.Count) {
+			a_ctx.Log.Detail($"{fresh.Count - stayed.Count} file(s) the step left in Mod Organizer's overwrite moved to the backup (unfinished\\overwrite)");
+		}
+		foreach (var r in reports) {
+			a_ctx.Log.Warn("the game's crash report went with them - it is now at " + r);
+			a_ctx.Log.Simple("Note: the game's crash report is in the run's backup: " + r);
+		}
+		if (stayed.Count > 0) {
+			var text = $"{stayed.Count} file(s) the failed step left in Mod Organizer's overwrite could not be moved out ({why}) - they are still there and win over the output that was put back: " +
+				string.Join(", ", stayed.Take(6)) + (stayed.Count > 6 ? " ..." : "");
+			a_ctx.Log.Warn(text);
+			a_ctx.Log.Simple("Note: " + text);
+			a_ctx.Journal.Notes.Add(text);
+			a_ctx.Journal.TrySave();
+		}
+		if (older.Count > 0) {
+			a_ctx.Log.Detail($"{older.Count} file(s) new to overwrite carry a date from before the step and were left where they are (not this run's): " +
+				string.Join(", ", older.Take(4).Select(Path.GetFileName)) + (older.Count > 4 ? " ..." : ""));
 		}
 	}
 
@@ -1193,23 +1306,73 @@ public static class Runner
 		}
 	}
 
-	// a setup's own command before / after a run (his: the shared game claim); it must end with exit code 0
-	static void Hook(RunLog a_log, string a_command, string a_when)
+	// how long a setup's own command may take, and how long once a Stop only hurries it (the offline tests shorten both)
+	public static TimeSpan HookLimit { get; set; } = TimeSpan.FromMinutes(10);
+	public static TimeSpan HookHurry { get; set; } = TimeSpan.FromSeconds(15);
+
+	static string Said(TimeSpan a_t) => a_t.TotalMinutes >= 1 ? a_t.TotalMinutes.ToString("0.#", InvariantCulture) + " minutes" : a_t.TotalSeconds.ToString("0", InvariantCulture) + " seconds";
+
+	// A setup's own command before / after a run (his: the shared game claim); it must end with exit code 0, within its limit
+	// (then its whole tree is ended). What it printed is read as it comes and never waited for: a program the command left
+	// running keeps the command's output open for as long as it lives.
+	// a_ct: a Stop that ends the command at once - a before-run command, where nothing is changed yet.
+	// a_hurry: a Stop that only shortens its limit - an after-run command gives back what the before-run commands took, so a
+	// Stop never skips it and never cuts it off at once; it is just not waited for long
+	static void Hook(RunContext a_ctx, string a_command, string a_when, CancellationToken a_ct, CancellationToken a_hurry = default)
 	{
-		a_log.Detail($"{a_when}: {a_command}");
+		a_ct.ThrowIfCancellationRequested();
+		a_ctx.Log.Detail($"{a_when}: {a_command}");
 		// cmd reads its own quoting, not Windows' argument escaping: /s /c "<the command as written>" (its quotes kept as they are)
 		var psi = new ProcessStartInfo("cmd.exe", "/d /s /c \"" + a_command + "\"") {
 			UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true,
 		};
 		using var p = Process.Start(psi) ?? throw new StepFailedException("could not start: " + a_command);
-		var o = p.StandardOutput.ReadToEndAsync();
-		var e = p.StandardError.ReadToEndAsync();
-		if (!p.WaitForExit(TimeSpan.FromMinutes(10))) {
-			Procs.KillTree(p.Id);
-			throw new StepFailedException($"the {a_when} command did not end within 10 minutes: {a_command}");
+		// one a Stop ends at once is one of the run's own processes: Stop's sweep ends it too
+		if (a_ct.CanBeCanceled) {
+			a_ctx.Control.Started.Add(p.Id);
 		}
-		foreach (var ln in (o.Result + e.Result).Trim().Split('\n').Where(l => l.Trim() != "").TakeLast(5)) {
-			a_log.Detail("| " + ln.TrimEnd());
+		var said = new List<string>();
+		var readers = new[] { p.StandardOutput, p.StandardError }.Select(r => Task.Run(async () => {
+			try {
+				while (await r.ReadLineAsync(CancellationToken.None).ConfigureAwait(false) is { } ln) {
+					lock (said) {
+						said.Add(ln);
+						if (said.Count > 40) {
+							said.RemoveAt(0);
+						}
+					}
+				}
+			} catch (Exception e) when (e is IOException or ObjectDisposedException or InvalidOperationException) {
+				// the pipe closed under the read (the process object let go): what was read stays
+			}
+		})).ToArray();
+		using (var limit = CancellationTokenSource.CreateLinkedTokenSource(a_ct)) {
+			limit.CancelAfter(HookLimit);
+			var hurried = false;
+			// let go before the limit itself: a Stop that comes later finds nothing of this wait
+			using (a_hurry.Register(() => {
+				hurried = true;
+				limit.CancelAfter(HookHurry);
+			})) {
+				try {
+					p.WaitForExitAsync(limit.Token).GetAwaiter().GetResult();
+				} catch (OperationCanceledException) {
+					Procs.KillTree(p.Id);
+					a_ct.ThrowIfCancellationRequested();
+					throw new StepFailedException(hurried ? $"the {a_when} command did not end within {Said(HookHurry)} of Stop and was ended: {a_command}"
+						: $"the {a_when} command did not end within {Said(HookLimit)}: {a_command}");
+				}
+			}
+		}
+		// ended by Stop's own sweep a moment before this wait saw the Stop: stopped, not "exit code -1"
+		a_ct.ThrowIfCancellationRequested();
+		Task.WaitAll(readers, TimeSpan.FromSeconds(2));
+		string[] last;
+		lock (said) {
+			last = said.Where(l => l.Trim() != "").TakeLast(5).ToArray();
+		}
+		foreach (var ln in last) {
+			a_ctx.Log.Detail("| " + ln.TrimEnd());
 		}
 		if (p.ExitCode != 0) {
 			throw new StepFailedException($"the {a_when} command ended with exit code {p.ExitCode}: {a_command}");

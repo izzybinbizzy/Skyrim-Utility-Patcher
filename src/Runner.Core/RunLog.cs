@@ -126,13 +126,19 @@ public sealed class RunLog : IDisposable
 
 	public void Dispose()
 	{
+		// each writer on its own: a last flush the disk refuses for one never leaves the others open
 		lock (_gate) {
-			foreach (var w in new[] { _text, _simple, _mirror }) {
-				try {
-					w?.Dispose();
-				} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
-					// a last flush the disk refused: nothing more to do with it
-				}
+			try {
+				_text?.Dispose();
+			} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+			}
+			try {
+				_simple?.Dispose();
+			} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+			}
+			try {
+				_mirror?.Dispose();
+			} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
 			}
 		}
 	}

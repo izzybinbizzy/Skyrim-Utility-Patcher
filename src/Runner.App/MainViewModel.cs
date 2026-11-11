@@ -471,18 +471,19 @@ public sealed partial class MainViewModel : Observable
 			ShowReady();
 			return;
 		}
-		IsRunning = (_run.Unfinished || _run.InGameAfter) && _run.OwnerAlive;
+		IsRunning = _run.Live && _run.OwnerAlive;
 		RetryFrom = !IsRunning && queue == null && SelectedSetup != null && string.Equals(_run.SetupFile, SelectedSetup.File, StringComparison.OrdinalIgnoreCase) &&
 		            Retry.FromStep(_run) is { } from ? from : "";
 		StopAfterAsked = _run.StopAfterStep;
 		var cur = _run.Steps.FirstOrDefault(s => s.State == StepState.Running);
-		NowTitle = IsRunning ? (cur?.Name ?? "Getting ready") : _run.State switch {
+		NowTitle = IsRunning ? (cur?.Name ?? (_run.FinishingUp ? "Finishing up" : "Getting ready")) : _run.State switch {
 			RunState.Finished => "Finished",
 			RunState.Stopped => "Stopped",
 			RunState.Restored => "Put back",
 			_ => "Stopped by a problem",
 		};
-		var act = cur?.Activity ?? "";
+		// between and after the steps the run itself says what it is at (a setup's command, packing the old outputs)
+		var act = cur?.Activity ?? (IsRunning ? _run.Doing : "");
 		Waiting = act.StartsWith("WAITING FOR YOU: ", StringComparison.Ordinal) ? act["WAITING FOR YOU: ".Length..] : "";
 		NowActivity = Waiting != "" ? "" : act;
 		ProgressKnown = cur?.Progress != null;
