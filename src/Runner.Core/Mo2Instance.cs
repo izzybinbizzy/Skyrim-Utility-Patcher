@@ -79,15 +79,39 @@ public sealed partial class Mo2Instance
 		return Path.GetFullPath(Path.IsPathRooted(p) ? p : Path.Combine(a_relativeTo, p));
 	}
 
-	// a value as MO2 (Qt) writes it into its ini: \" for a quote and \\ for a backslash
+	// A value as MO2 (Qt) writes it into its ini: \" for a quote, \\ for a backslash, \n \t \0 and their like, and every
+	// character it will not write plainly as \x and its number in hex - as many hex digits as follow, which is how Qt reads
+	// them back (it writes the next character as an escape too when that one is a hex digit). Read off a real ModOrganizer.ini:
+	// "\0l\0o\0g\0\x44\0o\0\x63\0k". Without this a game or a tool in a folder with an accent or a non-Latin letter read as a
+	// path nobody typed, and the pre-check found no game.
 	public static string Unescape(string a_v)
 	{
 		var sb = new System.Text.StringBuilder(a_v.Length);
 		for (int i = 0; i < a_v.Length; ++i) {
-			if (a_v[i] == '\\' && i + 1 < a_v.Length && a_v[i + 1] is '\\' or '"') {
-				sb.Append(a_v[++i]);
-			} else {
+			if (a_v[i] != '\\' || i + 1 >= a_v.Length) {
 				sb.Append(a_v[i]);
+				continue;
+			}
+			var c = a_v[++i];
+			if (c == 'x') {
+				var n = 0;
+				var any = false;
+				while (i + 1 < a_v.Length && Uri.IsHexDigit(a_v[i + 1])) {
+					n = (n << 4 | Convert.ToInt32(a_v[++i].ToString(), 16)) & 0xFFFF;
+					any = true;
+				}
+				sb.Append(any ? (char)n : 'x');
+			} else if (c is >= '0' and <= '7') {
+				var n = c - '0';
+				while (i + 1 < a_v.Length && a_v[i + 1] is >= '0' and <= '7') {
+					n = (n << 3 | (a_v[++i] - '0')) & 0xFFFF;
+				}
+				sb.Append((char)n);
+			} else {
+				sb.Append(c switch {
+					'n' => '\n', 'r' => '\r', 't' => '\t', 'a' => '\a', 'b' => '\b', 'f' => '\f', 'v' => '\v',
+					_ => c,
+				});
 			}
 		}
 		return sb.ToString();
@@ -186,7 +210,8 @@ public sealed partial class Mo2Instance
 		return sections;
 	}
 
-	// Qt's escapes undone once, in one pass (a second pass turned an argument's \\server into \server)
+	// Qt's escapes undone once, in one pass (a second pass turned an argument's \\server into \server). An @ByteArray holds
+	// bytes - each character written stands for one - and the text in it (the game's folder) is UTF-8
 	static string QtValue(string a_v)
 	{
 		var m = ByteArray().Match(a_v);
@@ -194,7 +219,15 @@ public sealed partial class Mo2Instance
 		if (v.Length >= 2 && v[0] == '"' && v[^1] == '"') {
 			v = v[1..^1];
 		}
-		return Unescape(v);
+		var text = Unescape(v);
+		if (m.Success && text.Any(c => c > 0x7F) && text.All(c => c <= 0xFF)) {
+			try {
+				return new System.Text.UTF8Encoding(false, true).GetString(System.Text.Encoding.Latin1.GetBytes(text));
+			} catch (System.Text.DecoderFallbackException) {
+				// bytes that are no UTF-8 text (a window's saved place): as they were read
+			}
+		}
+		return text;
 	}
 
 	[GeneratedRegex(@"^@ByteArray\((.*)\)$")]

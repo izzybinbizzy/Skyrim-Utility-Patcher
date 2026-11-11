@@ -66,7 +66,9 @@ public static partial class InGame
 		}
 		var docs = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
 		var gog = Path.Combine(docs, "My Games", "Skyrim Special Edition GOG", "SKSE");
-		return a_mo2.GameDir.Contains("GOG", StringComparison.OrdinalIgnoreCase) && Directory.Exists(gog) ? gog :
+		// the GOG copy is known by what it ships (QuietGame.IsGog), never by the word "GOG" in a folder's name: a GOG game in
+		// "D:\Games\Skyrim" read as Steam's, a Steam game under "D:\GOG and Steam" as GOG's
+		return QuietGame.IsGog(a_mo2.GameDir) && Directory.Exists(gog) ? gog :
 			Path.Combine(docs, "My Games", "Skyrim Special Edition", "SKSE");
 	}
 
@@ -312,7 +314,7 @@ public static partial class InGame
 			return Path.Combine(a_profile.Dir, "saves");
 		}
 		var docs = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
-		var gog = a_profile.Mo2.GameDir.Contains("GOG", StringComparison.OrdinalIgnoreCase);
+		var gog = QuietGame.IsGog(a_profile.Mo2.GameDir);
 		var myGames = Path.Combine(docs, "My Games", gog ? "Skyrim Special Edition GOG" : "Skyrim Special Edition");
 		// the game's INIs: the profile's own when it keeps them (LocalSettings), else My Games'; SkyrimCustom.ini wins
 		var localInis = File.Exists(ini) && Files.ReadSharedText(ini).Split('\n').Any(l => l.Trim().Equals("LocalSettings=true", StringComparison.OrdinalIgnoreCase));

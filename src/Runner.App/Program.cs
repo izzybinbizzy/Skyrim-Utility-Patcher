@@ -11,6 +11,10 @@ public static class Program
 		if (Cli.Handles(a_args)) {
 			App.Headless = true;
 			App.LogCrashes();
+			// a command's words and a run's logs read the same on every PC: "finished in 17.5 min", never "17,5" on one player's
+			// PC and "17.5" on another's (the window keeps the player's own way of writing numbers)
+			System.Globalization.CultureInfo.DefaultThreadCurrentCulture = System.Globalization.CultureInfo.InvariantCulture;
+			System.Globalization.CultureInfo.CurrentCulture = System.Globalization.CultureInfo.InvariantCulture;
 			return Cli.Execute(a_args);
 		}
 		var app = new App();

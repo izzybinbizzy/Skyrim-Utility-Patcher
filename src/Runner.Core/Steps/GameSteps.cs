@@ -66,6 +66,17 @@ public sealed class GrassStep : IStep
 
 	static string OverwriteGrass(RunContext a_ctx) => Path.Combine(a_ctx.Mo2.OverwriteDir, "grass");
 
+	// FasterNGIO's wrapper, written as UTF-8: its second line makes cmd read the rest that way, so a path with an accent or a
+	// non-Latin letter reaches FasterNGIO as it is (written as plain ASCII such a letter became "?", cmd found no program and
+	// the step failed with "exit code 1" and no cause)
+	public static string WrapperText(string a_exe, string a_args, string a_outFile) =>
+		$"@echo off\r\nchcp 65001 >nul\r\necho started %DATE% %TIME% > \"{a_outFile}\"\r\n\"{a_exe.Replace("%", "%%", StringComparison.Ordinal)}\" {a_args} >> \"{a_outFile}\" 2>&1\r\necho exit code %ERRORLEVEL% >> \"{a_outFile}\"\r\n";
+
+	// the exit code the wrapper wrote as its own LAST line (null: it has not ended). The words "exit code" in a line of
+	// FasterNGIO's own - it reports its child processes - are not the end: read as the end, they closed a FasterNGIO still at work
+	public static string? WrapperExit(string a_output) =>
+		Regex.Match(a_output, @"^exit code (-?\d+)\s*\z", RegexOptions.Multiline) is { Success: true } m ? m.Groups[1].Value : null;
+
 	void FasterNgio(RunContext a_ctx, StepSettings a_s)
 	{
 		var exe = a_s.Req("fasterngio_exe");
@@ -85,11 +96,10 @@ public sealed class GrassStep : IStep
 		Files.TryDelete(outFile);
 		var cmd = Path.Combine(work, "run.cmd");
 		var args = (a_s.Str("fasterngio_args") ?? "--world all").Replace("%", "%%", StringComparison.Ordinal);
-		Files.WriteAtomic(cmd, $"@echo off\r\necho started %DATE% %TIME% > \"{outFile}\"\r\n\"{exe.Replace("%", "%%", StringComparison.Ordinal)}\" {args} >> \"{outFile}\" 2>&1\r\necho exit code %ERRORLEVEL% >> \"{outFile}\"\r\n",
-			System.Text.Encoding.ASCII);
+		Files.WriteAtomic(cmd, WrapperText(exe, args, outFile), new System.Text.UTF8Encoding(false));
 		var image = Path.GetFileName(exe);
 		using (new Toggle(a_ctx, [], [mod], "the grass cache", a_ctx.Cancel)) {
-			a_ctx.Control.RunInside(Path.Combine(Environment.SystemDirectory, "cmd.exe"), "/c " + cmd, image, a_ctx.Cancel);
+			var started = a_ctx.Control.RunInside(Path.Combine(Environment.SystemDirectory, "cmd.exe"), "/c " + cmd, image, a_ctx.Cancel);
 			a_ctx.Activity(Key, "FasterNGIO is building the grass cache");
 			var sw = Stopwatch.StartNew();
 			var last = Stopwatch.StartNew();
@@ -100,8 +110,13 @@ public sealed class GrassStep : IStep
 					a_ctx.Cancel.ThrowIfCancellationRequested();
 					a_ctx.Pause(TimeSpan.FromSeconds(2));
 					body = File.Exists(outFile) ? Files.ReadSharedText(outFile) : "";
-					if (body.Contains("exit code", StringComparison.Ordinal)) {
+					if (WrapperExit(body) != null) {
 						break;
+					}
+					// the wrapper's first line writes the file: with no FasterNGIO seen and no file, Mod Organizer never started
+					// it - said now, not as "wrote nothing for 10 minutes"
+					if (started == null && !File.Exists(outFile) && sw.Elapsed > TimeSpan.FromSeconds(20)) {
+						throw new StepFailedException("Mod Organizer did not start FasterNGIO (its wrapper never ran) - look at Mod Organizer for a box it shows, then run again");
 					}
 					if (body.Length != size) {
 						size = body.Length;
@@ -126,7 +141,7 @@ public sealed class GrassStep : IStep
 			foreach (var ln in lines.Where(l => l.Contains("warning", StringComparison.OrdinalIgnoreCase) || l.Contains("error", StringComparison.OrdinalIgnoreCase)).Take(8).Concat(lines.TakeLast(3))) {
 				a_ctx.Log.Detail("| " + ln.TrimEnd());
 			}
-			var code = Regex.Match(lines[^1], @"exit code (\S+)").Groups[1].Value;
+			var code = WrapperExit(body);
 			if (code != "0") {
 				throw new StepFailedException($"FasterNGIO ended with exit code {code}");
 			}

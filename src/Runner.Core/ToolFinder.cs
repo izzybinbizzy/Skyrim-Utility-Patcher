@@ -88,10 +88,27 @@ public static class ToolFinder
 		})];
 	}
 
-	// a Qt ini value: backslashes and quotes escaped, quoted where Qt would read it as a list
-	static string QtText(string a_value)
+	// A Qt ini value: backslashes and quotes escaped, quoted where Qt would read it as a list, and every character outside plain
+	// ASCII written as \x and its number in hex - which every Mod Organizer reads back the same (written as it is, a path with
+	// an accent was read as other letters by a Mod Organizer built on Qt 5). The character after such an escape is written
+	// as one too when it is a hex digit, or Qt would read it into the number: Qt's own rule
+	public static string QtText(string a_value)
 	{
-		var s = a_value.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal);
+		var sb = new System.Text.StringBuilder(a_value.Length + 8);
+		var afterHex = false;
+		foreach (var c in a_value) {
+			if (c is '\\' or '"') {
+				sb.Append('\\').Append(c);
+				afterHex = false;
+			} else if (c < 0x20 || c > 0x7E || (afterHex && Uri.IsHexDigit(c))) {
+				sb.Append("\\x").Append(((int)c).ToString("x", InvariantCulture));
+				afterHex = true;
+			} else {
+				sb.Append(c);
+				afterHex = false;
+			}
+		}
+		var s = sb.ToString();
 		return s.IndexOfAny([',', ';', '=']) >= 0 || s != s.Trim() ? "\"" + s + "\"" : s;
 	}
 

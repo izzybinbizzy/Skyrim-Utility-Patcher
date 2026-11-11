@@ -341,17 +341,29 @@ public sealed class Profile(Mo2Instance a_mo2, string a_name, Func<bool> a_mo2Ru
 
 	static string Bare(string a_line) => a_line.TrimStart('*').ToLowerInvariant();
 
-	(List<string> Lines, string Nl, bool Bom) ReadPluginFile(string a_path)
+	// Each of the two files is read, and written back, the way Mod Organizer itself reads and writes it: plugins.txt in the
+	// PC's own code page, loadorder.txt as UTF-8 (read off Mod Organizer's public source, its game_bethesda plugin:
+	// CreationGamePlugins writes plugins.txt with Qt's "System" encoding and reads it with fromLocal8Bit; GamebryoGamePlugins
+	// writes loadorder.txt as UTF-8). Read and written as UTF-8, a plugin name with an accent in plugins.txt came back as a line
+	// that names no file: Mod Organizer dropped it and listed the real plugin as new - unticked, at the end of the load order -
+	// after a run that said it had put everything back. A file that carries a mark of its own is read by that mark.
+	static (List<string> Lines, string Nl, Encoding How) ReadPluginFile(string a_path)
 	{
 		var raw = Files.ReadShared(a_path);
-		var bom = raw.Length >= 3 && raw[0] == 0xEF && raw[1] == 0xBB && raw[2] == 0xBF;
-		var text = Files.DecodeText(raw);
+		Encoding how;
+		string text;
+		if (Path.GetFileName(a_path).Equals("plugins.txt", StringComparison.OrdinalIgnoreCase) && !Files.HasMark(raw)) {
+			how = Files.AnsiEncoding;
+			text = how.GetString(raw);
+		} else {
+			text = Files.DecodeText(raw, out how);
+		}
 		var nl = text.Contains("\r\n") ? "\r\n" : "\n";
-		return (text.Replace("\r\n", "\n").Split('\n').Where(l => l != "").ToList(), nl, bom);
+		return (text.Replace("\r\n", "\n").Split('\n').Where(l => l != "").ToList(), nl, how);
 	}
 
-	static void WritePluginFile(string a_path, List<string> a_lines, string a_nl, bool a_bom) =>
-		Files.WriteAtomic(a_path, string.Join(a_nl, a_lines) + a_nl, new UTF8Encoding(a_bom));
+	static void WritePluginFile(string a_path, List<string> a_lines, string a_nl, Encoding a_how) =>
+		Files.WriteAtomic(a_path, Files.EncodeText(string.Join(a_nl, a_lines) + a_nl, a_how));
 
 	// the plugins ticked in plugins.txt ("*name")
 	public List<string> ActivePlugins() => File.Exists(PluginsTxt)
@@ -377,7 +389,7 @@ public sealed class Profile(Mo2Instance a_mo2, string a_name, Func<bool> a_mo2Ru
 			if (!File.Exists(p)) {
 				continue;
 			}
-			var (lines, nl, bom) = ReadPluginFile(p);
+			var (lines, nl, how) = ReadPluginFile(p);
 			var before = lines.ToList();
 			foreach (var rule in a_rules) {
 				var idx = lines.FindIndex(l => !l.StartsWith('#') && string.Equals(Bare(l), rule.Plugin, StringComparison.OrdinalIgnoreCase));
@@ -412,7 +424,7 @@ public sealed class Profile(Mo2Instance a_mo2, string a_name, Func<bool> a_mo2Ru
 				lines.Insert(Math.Min(pos, lines.Count), entry);
 			}
 			if (!lines.SequenceEqual(before)) {
-				WritePluginFile(p, lines, nl, bom);
+				WritePluginFile(p, lines, nl, how);
 				moved.Add(fn);
 			}
 		}
@@ -436,7 +448,7 @@ public sealed class Profile(Mo2Instance a_mo2, string a_name, Func<bool> a_mo2Ru
 			if (!File.Exists(p)) {
 				continue;
 			}
-			var (lines, nl, bom) = ReadPluginFile(p);
+			var (lines, nl, how) = ReadPluginFile(p);
 			var before = lines.ToList();
 			foreach (var (pl, path) in news) {
 				var i = lines.FindIndex(l => string.Equals(Bare(l), pl, StringComparison.OrdinalIgnoreCase));
@@ -468,7 +480,7 @@ public sealed class Profile(Mo2Instance a_mo2, string a_name, Func<bool> a_mo2Ru
 				changed.Add(pl);
 			}
 			if (!lines.SequenceEqual(before)) {
-				WritePluginFile(p, lines, nl, bom);
+				WritePluginFile(p, lines, nl, how);
 			}
 		}
 		return changed.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
@@ -494,7 +506,7 @@ public sealed class Profile(Mo2Instance a_mo2, string a_name, Func<bool> a_mo2Ru
 			return;
 		}
 		MustBeClosed("the plugin list");
-		var (lines, nl, bom) = ReadPluginFile(PluginsTxt);
+		var (lines, nl, how) = ReadPluginFile(PluginsTxt);
 		var changed = false;
 		for (int i = 0; i < lines.Count; ++i) {
 			if (lines[i].Length == 0 || lines[i].StartsWith('#') || !a_marks.TryGetValue(lines[i].TrimStart('*'), out var on) || lines[i].StartsWith('*') == on) {
@@ -504,7 +516,7 @@ public sealed class Profile(Mo2Instance a_mo2, string a_name, Func<bool> a_mo2Ru
 			changed = true;
 		}
 		if (changed) {
-			WritePluginFile(PluginsTxt, lines, nl, bom);
+			WritePluginFile(PluginsTxt, lines, nl, how);
 		}
 	}
 
@@ -537,7 +549,7 @@ public sealed class Profile(Mo2Instance a_mo2, string a_name, Func<bool> a_mo2Ru
 			return off;
 		}
 		MustBeClosed("the plugin list");
-		var (lines, nl, bom) = ReadPluginFile(PluginsTxt);
+		var (lines, nl, how) = ReadPluginFile(PluginsTxt);
 		for (int i = 0; i < lines.Count; ++i) {
 			if (lines[i].StartsWith('*') && names.Contains(lines[i][1..].ToLowerInvariant())) {
 				off.Add(lines[i][1..]);
@@ -545,7 +557,7 @@ public sealed class Profile(Mo2Instance a_mo2, string a_name, Func<bool> a_mo2Ru
 			}
 		}
 		if (off.Count > 0) {
-			WritePluginFile(PluginsTxt, lines, nl, bom);
+			WritePluginFile(PluginsTxt, lines, nl, how);
 		}
 		return off;
 	}

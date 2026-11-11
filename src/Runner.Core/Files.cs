@@ -98,6 +98,13 @@ public static partial class Files
 		return Encoding.GetEncoding(0);
 	});
 
+	public static Encoding AnsiEncoding => Ansi.Value;
+
+	// the bytes begin with a mark that says how they are written (UTF-8 or UTF-16)
+	public static bool HasMark(byte[] a_bytes) =>
+		(a_bytes.Length >= 3 && a_bytes[0] == 0xEF && a_bytes[1] == 0xBB && a_bytes[2] == 0xBF) ||
+		(a_bytes.Length >= 2 && ((a_bytes[0] == 0xFF && a_bytes[1] == 0xFE) || (a_bytes[0] == 0xFE && a_bytes[1] == 0xFF)));
+
 	public static string DecodeText(byte[] a_bytes) => DecodeText(a_bytes, out _);
 
 	// UTF-16 or UTF-8 by its mark; without one UTF-8 when the bytes are valid UTF-8, else the PC's own code page - the game's INIs

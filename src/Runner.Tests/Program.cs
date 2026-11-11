@@ -6065,6 +6065,103 @@ public static class Program
 		}
 	}
 
+	// Mod Organizer keeps plugins.txt in the PC's own code page and loadorder.txt as UTF-8: a plugin whose name has an accent is
+	// read by its real name and keeps its line byte for byte when the file is written again (written as UTF-8 its line named no
+	// file any more, and Mod Organizer listed the plugin as new: unticked, at the end of the load order)
+	static void T_PluginNamesWithAnAccentKeepTheirLines()
+	{
+		using var f = new FakeMo2();
+		var ansi = Files.AnsiEncoding;
+		const string Name = "Übersetzung - Größe.esp";
+		if (ansi.GetString(ansi.GetBytes(Name)) != Name) {
+			Console.WriteLine("      (skipped: this PC's own code page cannot write the name)");
+			return;
+		}
+		var pluginsTxt = Path.Combine(f.ProfileDir, "plugins.txt");
+		var loadOrder = Path.Combine(f.ProfileDir, "loadorder.txt");
+		File.WriteAllBytes(pluginsTxt, [.. File.ReadAllBytes(pluginsTxt), .. ansi.GetBytes("*" + Name + "\r\n")]);
+		File.WriteAllBytes(loadOrder, [.. File.ReadAllBytes(loadOrder), .. new UTF8Encoding(false).GetBytes(Name + "\r\n")]);
+		var before = File.ReadAllBytes(pluginsTxt);
+		var p = ProfileOf(f);
+		Check(p.ActivePlugins().Contains(Name), "read by its real name: " + string.Join(", ", p.ActivePlugins()));
+		p.DeactivatePlugins(["Output A"]);
+		Check(!p.ActivePlugins().Contains("OutA.esp") && p.ActivePlugins().Contains(Name), "(the file was written again, another plugin unticked)");
+		Check(File.ReadAllBytes(pluginsTxt).AsSpan().IndexOf(ansi.GetBytes("*" + Name + "\r\n")) >= 0, "its line is as Mod Organizer wrote it, byte for byte");
+		p.ActivatePlugins(["Output A"]);
+		Check(File.ReadAllBytes(pluginsTxt).AsSpan().SequenceEqual(before), "ticked again, the whole file is as it was, byte for byte");
+		// a plugin new to both files: both are written again, each in its own way
+		f.Mod("Fresh", ("Fresh.esp", false, []));
+		p.ActivatePlugins(["Fresh"]);
+		var plugins = File.ReadAllBytes(pluginsTxt);
+		Check(plugins.AsSpan().IndexOf(ansi.GetBytes("*" + Name + "\r\n")) >= 0 && plugins.AsSpan().IndexOf("*Fresh.esp"u8) >= 0, "plugins.txt: the new plugin ticked, the accented one as it was");
+		var order = File.ReadAllBytes(loadOrder);
+		Check(order.AsSpan().IndexOf(new UTF8Encoding(false).GetBytes(Name + "\r\n")) >= 0 && order.AsSpan().IndexOf("Fresh.esp"u8) >= 0, "loadorder.txt: the new plugin listed, the accented one still UTF-8");
+	}
+
+	// Mod Organizer's settings file as Qt writes it: a character it will not write plainly is \x and its number, as many hex
+	// digits as follow; the game's folder is UTF-8 bytes in a byte array. Read that way, and written that way when a tool is added
+	static void T_QtEscapesAreReadAndWrittenAsQtDoes()
+	{
+		var ini = Mo2Instance.ReadQtIni("""
+			[General]
+			gamePath=@ByteArray(D:\\Jeux\\Skyrim \xc3\x89\x64ition)
+			[customExecutables]
+			1\binary=D:/Outils/Mod\xe9s/x.exe
+			1\title=\x436\x43e\x434 tool
+			1\arguments=-o:\"D:\\LOD\\\" a\tb
+			""");
+		Equal(@"D:\Jeux\Skyrim Édition", ini["General"]["gamePath"], "the game's folder with an accent (UTF-8 bytes, the letter after them escaped too)");
+		Equal("D:/Outils/Modés/x.exe", ini["customExecutables"]["1\\binary"], "a tool's path with an accent");
+		Equal("жод tool", ini["customExecutables"]["1\\title"], "letters outside Latin");
+		Equal("-o:\"D:\\LOD\\\" a\tb", ini["customExecutables"]["1\\arguments"], "quotes, backslashes and a tab");
+		foreach (var value in new[] { "D:/Outils/Modés/décor.exe", "D:/ж/a b.exe", "a\"b\\c", "x,y; z=1", "plain" }) {
+			var written = ToolFinder.QtText(value);
+			Check(written.All(c => c is >= ' ' and <= '~'), "written in plain ASCII: " + written);
+			Equal(value, Mo2Instance.ReadQtIni("[s]\nk=" + written)["s"]["k"], "and read back as it was");
+		}
+		Equal(@"D:/Outils/Mod\xe9s/d\xe9\x63or.exe", ToolFinder.QtText("D:/Outils/Modés/décor.exe"), "the letter after an escape is escaped when it is a hex digit");
+	}
+
+	// the GOG copy is known by what it ships, never by the word in a folder's name
+	static void T_AGogGameIsKnownByItsFilesNotItsFolder()
+	{
+		using var f = new FakeMo2(a_deeper: "GOG Games");
+		var setup = f.WriteSetup(("landscapefixer", []));
+		var mo2 = Mo2Instance.Load(f.Exe, f.Instance);
+		Check(mo2.GameDir.Contains("GOG", StringComparison.Ordinal), "(the game stands in a folder named GOG)");
+		Check(!InGame.SkseLogs(setup, mo2).Contains("Special Edition GOG", StringComparison.Ordinal), "its SKSE logs are not looked for in the GOG folder");
+		Check(!InGame.SavesDir(ProfileOf(f)).Contains("Special Edition GOG", StringComparison.Ordinal), "nor its saves");
+		File.WriteAllText(Path.Combine(f.Game, "Galaxy64.dll"), "");
+		Check(InGame.SavesDir(ProfileOf(f)).Contains("Special Edition GOG", StringComparison.Ordinal), "a copy that ships GOG's own library reads the GOG folder");
+	}
+
+	// FasterNGIO's wrapper reaches a program in a folder with an accent and a non-Latin letter, and only its own last line is
+	// the end of the run
+	static void T_TheGrassWrapperReadsAnyPathAndItsOwnLastLine()
+	{
+		using var f = new FakeMo2();
+		var work = Path.Combine(Path.GetTempPath(), "trwrap" + Guid.NewGuid().ToString("N")[..8]);
+		Directory.CreateDirectory(work);
+		try {
+			// a stand-in program in the odd folder: Windows' own command processor under another name
+			var exe = Path.Combine(f.Root, "outil modé ж.exe");
+			File.Copy(Path.Combine(Environment.SystemDirectory, "cmd.exe"), exe);
+			var outFile = Path.Combine(work, "output.txt");
+			var wrapper = Path.Combine(work, "run.cmd");
+			Files.WriteAtomic(wrapper, GrassStep.WrapperText(exe, "/c echo it ran", outFile), new UTF8Encoding(false));
+			using (var p = Process.Start(new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "cmd.exe"), "/c \"" + wrapper + "\"") { CreateNoWindow = true, UseShellExecute = false })!) {
+				Check(p.WaitForExit(30000), "(the wrapper ended)");
+			}
+			var said = Files.ReadSharedText(outFile);
+			Equal("0", GrassStep.WrapperExit(said), "the program in the odd folder was found and ran: " + said);
+			Check(said.Contains("it ran", StringComparison.Ordinal), "and what it printed is kept");
+		} finally {
+			Directory.Delete(work, true);
+		}
+		Equal<string?>(null, GrassStep.WrapperExit("started\r\nworker 3 ended with exit code 0, going on\r\n"), "the words in a line of the tool's own are not the end");
+		Equal("-1073741819", GrassStep.WrapperExit("started\r\nworking\r\nexit code -1073741819 \r\n"), "the wrapper's own last line is, with its number");
+	}
+
 	// The guard for "pressing stop now still doesn't stop it" (his finds of 2026-11-04, 11-06 and 11-10): no wait of the engine
 	// longer than a moment may be a plain sleep - a step waits with RunContext.Pause / Waits.Pause, which a Stop ends at once.
 	static void T_NoStepWaitIsBlindToStop() => NoBlindSleeps(SourceDir());
