@@ -10,7 +10,28 @@ namespace ToolRunner.App;
 public partial class App : Application
 {
 	// started for the command line or the off-screen pictures (no window of the player's): nothing goes online then
-	public static bool Headless { get; private set; }
+	public static bool Headless { get; internal set; }
+
+	static bool s_logging;
+
+	// what no window can show is written down: an error on a thread of its own, and a background task that failed with nobody
+	// waiting on it (a start, a check, a look at Mod Organizer) instead of vanishing without a trace
+	public static void LogCrashes()
+	{
+		if (s_logging) {
+			return;
+		}
+		s_logging = true;
+		AppDomain.CurrentDomain.UnhandledException += (_, e) => {
+			if (e.ExceptionObject is Exception ex) {
+				LogCrash(ex);
+			}
+		};
+		TaskScheduler.UnobservedTaskException += (_, e) => {
+			LogCrash(e.Exception);
+			e.SetObserved();
+		};
+	}
 
 	// anything unexpected: written to the data folder's "crash.txt" and said in a message, never Windows' crash box
 	public static void LogCrash(Exception a_e)
@@ -25,9 +46,10 @@ public partial class App : Application
 	protected override void OnStartup(StartupEventArgs a_e)
 	{
 		base.OnStartup(a_e);
-		// with no window of its own (the command line, the off-screen pictures) an error ends the program with exit code 1: a box
-		// there would sit on the player's screen with nothing behind it, and the program would wait on it forever
-		var headless = Cli.Handles(a_e.Args) || a_e.Args is ["--snapshot" or "--page", _];
+		// with no window of its own (the off-screen pictures; a command never comes this far - Program.Main) an error ends the
+		// program with exit code 1: a box there would sit on the player's screen with nothing behind it, and the program would
+		// wait on it forever
+		var headless = a_e.Args is ["--snapshot" or "--page", _];
 		Headless = headless;
 		DispatcherUnhandledException += (_, e) => {
 			LogCrash(e.Exception);
@@ -55,22 +77,8 @@ public partial class App : Application
 				MessageBox.Show(text, Brand.Name, MessageBoxButton.OK, MessageBoxImage.Warning);
 			}
 		};
-		AppDomain.CurrentDomain.UnhandledException += (_, e) => {
-			if (e.ExceptionObject is Exception ex) {
-				LogCrash(ex);
-			}
-		};
-		// a background task that failed with nobody waiting on it (a start, a check, a look at Mod Organizer) is written down too,
-		// instead of vanishing without a trace
-		TaskScheduler.UnobservedTaskException += (_, e) => {
-			LogCrash(e.Exception);
-			e.SetObserved();
-		};
+		LogCrashes();
 		var args = a_e.Args;
-		if (Cli.Handles(args)) {
-			Shutdown(Cli.Execute(args));
-			return;
-		}
 		if (args.Length == 2 && args[0] == "--snapshot") {
 			Shutdown(Snapshot(args[1]));
 			return;

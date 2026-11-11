@@ -16,6 +16,8 @@
     <RootNamespace>ToolRunner.App</RootNamespace>
     <ApplicationIcon>Icon.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- its own Main (Program.cs): a command runs without WPF ever starting; the window starts it -->
+    <StartupObject>ToolRunner.App.Program</StartupObject>
     <Version>1.0.0</Version>
     <Authors>izzydoingit</Authors>
     <Product>Output Manager</Product>
