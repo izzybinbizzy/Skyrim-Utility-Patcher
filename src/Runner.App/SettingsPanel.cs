@@ -380,6 +380,17 @@ public static class SettingsPanel
 		var openThemes = new Button { Content = "Open the themes ...", Style = (Style)a_w.FindResource("Ghost"), HorizontalAlignment = HorizontalAlignment.Left, ToolTip = "Ctrl+T" };
 		openThemes.Click += (_, _) => a_w.ShowPanel("themes");
 		stack.Children.Add(openThemes);
+		// drawn without the graphics card unless asked: less memory and a faster start for a window of text and bars (Drawing)
+		var card = new CheckBox { IsChecked = Drawing.Hardware, Margin = new Thickness(0, 12, 0, 0),
+			Content = new TextBlock { TextWrapping = TextWrapping.Wrap, Text = "Draw this window with the graphics card (it then holds about 25 MB more memory; applies the next time the program starts)" } };
+		card.Click += (_, _) => {
+			try {
+				Drawing.Pick(card.IsChecked == true);
+			} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+				a_vm.Say("That could not be kept: " + e.Message, "bad");
+			}
+		};
+		stack.Children.Add(card);
 
 		NewVersions(a_w, stack);
 

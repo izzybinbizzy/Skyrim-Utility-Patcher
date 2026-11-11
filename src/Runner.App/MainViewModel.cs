@@ -75,8 +75,12 @@ public sealed partial class MainViewModel : Observable
 	// no moving bar while the run waits for the player: nothing is working then
 	public bool ShowProgress => IsRunning && Waiting == "";
 	// the bar that moves by itself ("working, its share not known") only while it shows: a hidden one still animates, and that
-	// kept an idle window drawing sixty times a second
-	public bool ProgressBusy => ShowProgress && !ProgressKnown;
+	// kept an idle window drawing sixty times a second. Not while the window is minimized or in the tray (nobody sees it), and
+	// not at all when Windows' own "show animations" switch is off
+	public bool ProgressBusy => ShowProgress && !ProgressKnown && !WindowAway && Drawing.Motion;
+
+	// the window is minimized or hidden (set by the window itself)
+	public bool WindowAway { get; set { if (Set(ref field, value)) OnPropertyChanged(nameof(ProgressBusy)); } }
 	public string NowTitle { get; set { if (Set(ref field, value)) OnPropertyChanged(nameof(WindowTitle)); } } = "Ready";
 	public string NowActivity { get; set => Set(ref field, value); } = "";
 	public double Progress { get; set { if (Set(ref field, value)) OnPropertyChanged(nameof(WindowTitle)); } }

@@ -17,6 +17,7 @@ public static class Program
 			System.Globalization.CultureInfo.CurrentCulture = System.Globalization.CultureInfo.InvariantCulture;
 			return Cli.Execute(a_args);
 		}
+		Drawing.Apply();
 		var app = new App();
 		app.InitializeComponent();
 		return app.Run();

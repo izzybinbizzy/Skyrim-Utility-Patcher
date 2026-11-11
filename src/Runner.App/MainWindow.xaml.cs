@@ -39,6 +39,10 @@ public partial class MainWindow : Window
 		_timer.Tick += async (_, _) => await Look();
 		_timer.Start();
 		StateChanged += (_, _) => Wake();
+		// nothing moves in a window nobody sees (minimized, or put away while a run goes)
+		void SeenOrNot() => _vm.WindowAway = WindowState == WindowState.Minimized || !IsVisible;
+		StateChanged += (_, _) => SeenOrNot();
+		IsVisibleChanged += (_, _) => SeenOrNot();
 		_vm.WantsLook += Wake;
 		// the off-screen pictures show a made-up run: nothing is watched for them
 		if (!App.Headless) {
