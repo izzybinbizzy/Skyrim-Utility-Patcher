@@ -43,10 +43,10 @@ public static class DataFolder
 			return old;
 		}
 		try {
-			Directory.Move(old, now);
+			Files.MoveDirectory(old, now);
 		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
 			try {
-				File.Delete(Path.Combine(old, Pending));
+				Files.Delete(Path.Combine(old, Pending));
 			} catch (Exception e2) when (e2 is IOException or UnauthorizedAccessException) {
 			}
 			return old;
@@ -105,7 +105,7 @@ public static class DataFolder
 			return;
 		}
 		try {
-			File.Delete(Path.Combine(a_now, Pending));
+			Files.Delete(Path.Combine(a_now, Pending));
 		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
 			// the next start repoints once more - harmless
 		}

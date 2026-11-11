@@ -71,7 +71,7 @@ public static class QueueRun
 		} finally {
 			try {
 				Files.WriteAtomic(LastFile(a_dataDir), string.Join("\n", Summary(outList)) + "\n");
-				System.IO.File.Delete(File(a_dataDir));
+				Files.Delete(File(a_dataDir));
 			} catch (IOException) {
 			} catch (UnauthorizedAccessException) {
 			}

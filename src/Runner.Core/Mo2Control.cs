@@ -89,7 +89,7 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 	// closed under it - MO2 answers "programs are still running" by ending them. a_windowed: only those with a window open
 	public List<(int Pid, string Image)> ForeignChildren(bool a_windowed)
 	{
-		var ours = new HashSet<int>(Started.SelectMany(Procs.Tree));
+		var ours = new HashSet<int>(Started.Live().SelectMany(Procs.Tree));
 		var mo2 = Pids().Concat(Unreadable()).ToHashSet();
 		var outList = new List<(int, string)>();
 		foreach (var pid in mo2.SelectMany(Procs.Tree).Distinct()) {

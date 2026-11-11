@@ -259,7 +259,7 @@ public sealed class AddOnStep(string a_key) : IStep
 		foreach (var f in fresh) {
 			var dst = Path.Combine(a_ctx.Mo2.ModDir(a_mod), Path.GetRelativePath(ow, f));
 			Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
-			File.Move(f, dst, true);
+			Files.Move(f, dst, true);
 		}
 		a_ctx.Log.Detail($"{fresh.Count} file(s) moved from overwrite into {a_mod}");
 		return true;

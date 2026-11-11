@@ -23,7 +23,7 @@ public static partial class InGame
 	{
 		Process? mine = null;
 		foreach (var p in Procs.ByImage(GameImage)) {
-			if (mine == null && a_ctx.Control.Started.Contains(p.Id)) {
+			if (mine == null && a_ctx.Control.Started.SameProcess(p.Id)) {
 				mine = p;
 			} else {
 				p.Dispose();
@@ -1180,7 +1180,7 @@ public static partial class InGame
 				return null;
 			}
 			if (Directory.Exists(part)) {
-				Directory.Delete(part, true);
+				Files.DeleteDir(part);
 			}
 			Directory.CreateDirectory(part);
 			foreach (var f in files) {
@@ -1191,7 +1191,7 @@ public static partial class InGame
 				}
 			}
 			// whole or not at all: a copy cut off part way is never taken for a full one
-			Directory.Move(part, to);
+			Files.MoveDirectory(part, to);
 			var saves = files.Count(f => f.Extension.Equals(".ess", StringComparison.OrdinalIgnoreCase));
 			a_ctx.Log.Detail($"your saves copied first: {saves} save(s), {mb:0} MB new, into the run's backup ({SavesCopyFolder})");
 			return to;
@@ -1209,7 +1209,7 @@ public static partial class InGame
 	{
 		try {
 			if (Directory.Exists(a_part)) {
-				Directory.Delete(a_part, true);
+				Files.DeleteDir(a_part);
 			}
 		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
 			// a part left behind goes with the run's backup, and is never taken for a copy

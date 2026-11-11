@@ -243,7 +243,7 @@ public sealed class AcmosStep : IStep
 			throw new StepFailedException($"ACMOS: its painted textures could not all go into {mod} ({e.Message}) - the plain ones are put back");
 		}
 		StepKit.Settled(a_ctx, plain);
-		Directory.Delete(roadsOut, true);
+		Files.DeleteDir(roadsOut);
 		a_ctx.SetAfter(mod);
 	}
 

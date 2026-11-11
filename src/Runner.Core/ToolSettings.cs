@@ -145,20 +145,20 @@ public static partial class ToolSettings
 		var dir = Folder(a_setup, a_step);
 		var fresh = dir + " new";
 		if (Directory.Exists(fresh)) {
-			Directory.Delete(fresh, true);
+			Files.DeleteDir(fresh);
 		}
 		Directory.CreateDirectory(Path.Combine(fresh, "files"));
 		var l = new Learned { Step = a_step, Tool = a_tool, At = DateTime.UtcNow, Values = a_values ?? [] };
 		for (var i = 0; i < a_files.Count; ++i) {
 			var stored = Path.Combine("files", $"{i + 1} {Path.GetFileName(a_files[i])}");
-			File.Copy(a_files[i], Path.Combine(fresh, stored));
+			Files.Copy(a_files[i], Path.Combine(fresh, stored));
 			l.Files.Add(new LearnedFile { Live = a_files[i], Stored = stored });
 		}
 		Files.WriteAtomic(Path.Combine(fresh, "learned.json"), JsonSerializer.SerializeToUtf8Bytes(l, Pretty));
 		if (Directory.Exists(dir)) {
-			Directory.Delete(dir, true);
+			Files.DeleteDir(dir);
 		}
-		Directory.Move(fresh, dir);
+		Files.MoveDirectory(fresh, dir);
 		return l;
 	}
 
@@ -179,7 +179,7 @@ public static partial class ToolSettings
 				a_profile.SetMods([], [mod], a_log);
 				a_log.Warn($"the mod \"{mod}\" was left on when learning a tool's settings was cut off - it is off again");
 			}
-			File.Delete(record);
+			Files.Delete(record);
 		} catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidOperationException or KeyNotFoundException) {
 			a_log.Warn($"a mod left on when learning a tool's settings was cut off could not be switched off ({e.Message}) - look for it in Mod Organizer");
 		}
@@ -234,7 +234,7 @@ public static partial class ToolSettings
 				try {
 					control.Close(null, CancellationToken.None);
 					profile.SetMods([], [toolMod], a_log);
-					File.Delete(SwitchRecord(a_setup));
+					Files.Delete(SwitchRecord(a_setup));
 				} catch (Exception e) when (e is Mo2BusyException or IOException or UnauthorizedAccessException or InvalidOperationException or KeyNotFoundException) {
 					a_log.Warn($"the mod \"{toolMod}\" could not be switched off again ({e.Message}) - untick it in Mod Organizer");
 				}

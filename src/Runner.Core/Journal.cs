@@ -51,6 +51,9 @@ public sealed class ParkRecord
 	public bool SetAside { get; set; }
 	// a tool's folder is all in the backup: until then what stands at From is what the move left, never the run's own
 	public bool Moved { get; set; }
+	// its copy in the backup was gone when it was to be put back (the backup cleared by hand): nothing can bring it back, the mod is
+	// left switched off, and the put-back is not held up for ever by it
+	public bool Lost { get; set; }
 }
 
 // a file outside the mods that a step changes for its run (a tool's settings, DynDOLOD's preset, NGIO's flag): its old bytes
@@ -118,6 +121,18 @@ public sealed class Journal
 		}
 	}
 
+	// for the paths that put things back: there the work comes first, and a record the disk will not take (it is full, or gone)
+	// is said by the caller - never the reason a profile stays half switched
+	public bool TrySave()
+	{
+		try {
+			Save();
+			return true;
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+			return false;
+		}
+	}
+
 	public static Journal Load(string a_folder)
 	{
 		var j = JsonSerializer.Deserialize<Journal>(Files.ReadShared(Path.Combine(a_folder, "journal.json")), Options) ??
@@ -164,6 +179,15 @@ public sealed class Journal
 	// the save to play is being made: the run's profile is already put back (it is not Unfinished - nothing to restore), but its
 	// game still runs, so the window keeps it as the running run (Stop and the close guard reach it)
 	public bool InGameAfter { get; set; }
+
+	// the run has finished and its profile is back, and the engine is still at its last chores (the setup's after-run commands,
+	// packing the old outputs): to the window still the run going - Stop ends the chores - with Doing as what it shows
+	public bool FinishingUp { get; set; }
+	public string Doing { get; set; } = "";
+
+	// what the window and the command line follow as "the run that is going", while its owner lives
+	[JsonIgnore]
+	public bool Live => Unfinished || InGameAfter || FinishingUp;
 
 	// is the program that wrote it still alive? (a run that is still going is never "unfinished")
 	public bool OwnerAlive => Pid != 0 && Procs.Alive(Pid) && IsRunner(Pid) &&
@@ -227,6 +251,38 @@ public sealed class Journal
 	}
 
 	public static Journal? Interrupted(string a_runsDir) => All(a_runsDir).FirstOrDefault(j => j.Unfinished && !j.OwnerAlive);
+
+	// The newest run's record when it cannot be read, with why (null: there is none, or it reads). An interrupted run is always
+	// the newest one - nothing starts after it - so a newest record that does not read may be exactly the run whose outputs are
+	// still off: a new run must not start over it as if there were none. (Older records that do not read are passed over.)
+	public static (string Folder, Exception Why)? NewestUnreadable(string a_runsDir)
+	{
+		if (!Directory.Exists(a_runsDir)) {
+			return null;
+		}
+		foreach (var d in Directory.GetDirectories(a_runsDir).OrderDescending()) {
+			if (!System.IO.File.Exists(Path.Combine(d, "journal.json"))) {
+				continue;
+			}
+			try {
+				Exception? last = null;
+				for (var i = 0; i < 5; ++i) {
+					try {
+						Load(d);
+						return null;
+					} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+						// held for a moment by another program: looked at again before it counts
+						last = e;
+						Thread.Sleep(200);
+					}
+				}
+				return (d, last!);
+			} catch (Exception e) when (e is JsonException or InvalidDataException) {
+				return (d, e);
+			}
+		}
+		return null;
+	}
 }
 
 // The run records for a reader that looks often (the window, once a second): a record is read again only when its file

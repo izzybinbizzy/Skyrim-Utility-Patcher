@@ -128,11 +128,11 @@ public static class StepKit
 			if (Directory.Exists(e)) {
 				Files.MoveDirectory(e, Path.Combine(dst, name));
 			} else {
-				File.Move(e, Path.Combine(dst, name));
+				Files.Move(e, Path.Combine(dst, name));
 			}
 			++n;
 		}
-		a_ctx.Log.Detail($"old {a_mod} moved to the backup ({n} item(s), {Files.CountFiles(dst)} file(s))");
+		a_ctx.Log.Detail($"old {a_mod} moved to the backup ({n} item(s))");
 		return n;
 	}
 
@@ -148,7 +148,7 @@ public static class StepKit
 			var dir = Path.Combine(a_ctx.BackupFolder, "files");
 			Directory.CreateDirectory(dir);
 			backup = Path.Combine(dir, $"{a_ctx.Journal.Kept.Count + 1} {Path.GetFileName(a_path)}");
-			File.Copy(a_path, backup, true);
+			Files.Copy(a_path, backup, true);
 		}
 		a_ctx.Journal.Kept.Add(new KeptFile { Path = a_path, Backup = backup });
 		a_ctx.Journal.Save();
@@ -162,8 +162,14 @@ public static class StepKit
 			try {
 				if (k.Backup == null) {
 					if (File.Exists(k.Path)) {
-						File.Delete(k.Path);
+						Files.Delete(k.Path);
 					}
+				} else if (!File.Exists(k.Backup)) {
+					// its old copy is gone from the backup (a backup folder cleared by hand, a drive that is not there): nothing can
+					// bring it back, and counting it as "could not be put back" would keep every later put-back from ever finishing
+					k.Done = true;
+					a_ctx.Log.Warn($"{k.Path} is left as it is: its old copy is no longer in the backup ({k.Backup})");
+					continue;
 				} else {
 					Files.WriteAtomic(k.Path, File.ReadAllBytes(k.Backup));
 					// as it was, its time too: a file in overwrite with a new time reads as the step's own
@@ -248,7 +254,7 @@ public static class StepKit
 			}
 			park.Moved = true;
 			a_ctx.Journal.Save();
-			a_ctx.Log.Detail($"old {a_label} moved to the backup ({Files.CountFiles(dst)} file(s))");
+			a_ctx.Log.Detail($"old {a_label} moved to the backup");
 		}
 		Directory.CreateDirectory(a_path);
 	}
@@ -261,9 +267,9 @@ public static class StepKit
 			throw new StepFailedException($"{StepCatalog.Name(a_step)} made {n} file(s) - too few for {a_mod}");
 		}
 		ParkMod(a_ctx, a_step, a_mod);
-		var got = Files.MoveContents(a_src, a_ctx.Mo2.ModDir(a_mod));
-		a_ctx.Log.Detail($"{a_mod} now holds {got} file(s)");
-		return got;
+		Files.MoveContents(a_src, a_ctx.Mo2.ModDir(a_mod));
+		a_ctx.Log.Detail($"{a_mod} now holds the {n} file(s) it made");
+		return n;
 	}
 
 	// a tool left open keeps MO2 locked: its windows asked to close, then the process tree ended (by PID)
@@ -272,8 +278,11 @@ public static class StepKit
 	// the processes of this image that this run started, and the children of them (a packed program runs its window in a child)
 	public static List<int> StartedRunning(Mo2Control a_control, string a_image)
 	{
-		var mine = new HashSet<int>(a_control.Started);
-		foreach (var root in a_control.Started) {
+		// only what is still the very process the run started: hours into a run the list holds many ended ones, and Windows hands
+		// their numbers out again - to a program of the player's, which must never be closed as "the run's"
+		var live = a_control.Started.Live();
+		var mine = new HashSet<int>(live);
+		foreach (var root in live) {
 			foreach (var c in Procs.Tree(root)) {
 				mine.Add(c);
 			}

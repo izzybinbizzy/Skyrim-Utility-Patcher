@@ -92,7 +92,7 @@ public static partial class PowerAfter
 	static void TryDelete(string a_f)
 	{
 		try {
-			System.IO.File.Delete(a_f);
+			Files.Delete(a_f);
 		} catch (IOException) {
 		} catch (UnauthorizedAccessException) {
 		}

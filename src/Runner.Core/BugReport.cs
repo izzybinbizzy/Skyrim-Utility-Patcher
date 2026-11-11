@@ -146,7 +146,7 @@ public static class BugReport
 					w.Write(Mask(text, names));
 				}
 			}
-			File.Move(tmp, zip, true);
+			Files.Move(tmp, zip, true);
 		} catch {
 			Files.TryDelete(tmp);
 			throw;

@@ -379,7 +379,7 @@ public sealed class SynthesisStep : IStep
 		}
 		if (File.Exists(espOw) && File.GetLastWriteTimeUtc(espOw) > t0) {
 			StepKit.ParkMod(a_ctx, Key, mod);
-			File.Move(espOw, espMod, true);
+			Files.Move(espOw, espMod, true);
 			a_ctx.Log.Detail($"Synthesis.esp moved from overwrite into {mod}");
 		} else if (!File.Exists(espMod) || File.GetLastWriteTimeUtc(espMod) < t0) {
 			throw new StepFailedException("Synthesis wrote no new Synthesis.esp");
@@ -613,7 +613,7 @@ public sealed class WryeBashStep : IStep
 			foreach (var p in ours) {
 				var dst = Path.Combine(a_ctx.Mo2.ModDir(a_mod), Path.GetRelativePath(ow, p));
 				Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
-				File.Move(p, dst, true);
+				Files.Move(p, dst, true);
 			}
 			a_ctx.Log.Detail($"{a_patch} moved from overwrite into {a_mod} ({ours.Count} file(s))");
 		} else if (!File.Exists(inMod) || File.GetLastWriteTimeUtc(inMod) <= a_t0) {

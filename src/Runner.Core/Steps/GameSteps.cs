@@ -137,7 +137,7 @@ public sealed class GrassStep : IStep
 			}
 			StepKit.ParkMod(a_ctx, Key, mod);
 			Files.MoveContents(ow, Path.Combine(a_ctx.Mo2.ModDir(mod), "grass"));
-			Directory.Delete(ow, true);
+			Files.DeleteDir(ow);
 		}
 		a_ctx.SetAfter(mod);
 	}
@@ -218,7 +218,7 @@ public sealed class GrassStep : IStep
 			}
 			StepKit.ParkMod(a_ctx, Key, mod);
 			Files.MoveContents(ow, Path.Combine(a_ctx.Mo2.ModDir(mod), "grass"));
-			Directory.Delete(ow, true);
+			Files.DeleteDir(ow);
 		}
 		a_ctx.SetAfter(mod);
 	}
@@ -578,7 +578,7 @@ public sealed class ShaderStep : IStep
 		var owCache = Path.Combine(a_ctx.Mo2.OverwriteDir, "ShaderCache");
 		if (Directory.Exists(owCache) && Directory.EnumerateFileSystemEntries(owCache).Any()) {
 			StepKit.ParkDir(a_ctx, owCache, "overwrite ShaderCache (before)");
-			Directory.Delete(owCache, true);
+			Files.DeleteDir(owCache);
 		}
 		var logs = InGame.LogFolders(a_ctx.Setup, a_ctx.Mo2);
 		string? result = null;
@@ -708,7 +708,7 @@ public sealed class ShaderStep : IStep
 			}
 			StepKit.ParkMod(a_ctx, "shaders", c.OutputMod);
 			Files.MoveContents(owCache, Path.Combine(a_ctx.Mo2.ModDir(c.OutputMod), "ShaderCache"));
-			Directory.Delete(owCache, true);
+			Files.DeleteDir(owCache);
 			StepKit.MarkReplaced(a_ctx, c.OutputMod);
 		}
 		// stamped against the profile as it is put back, the state the next freshness check reads - never the compile's own switches

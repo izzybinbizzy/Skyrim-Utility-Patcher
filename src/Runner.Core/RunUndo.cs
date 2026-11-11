@@ -27,7 +27,7 @@ public static class RunUndo
 			if (!Directory.Exists(dir) || !Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories).Any()) {
 				return;
 			}
-			File.Delete(part);
+			Files.Delete(part);
 			want = Sizes(dir);
 			ZipFile.CreateFromDirectory(dir, part, CompressionLevel.Fastest, false);
 			using (var z = ZipFile.OpenRead(part)) {
@@ -36,11 +36,11 @@ public static class RunUndo
 					throw new InvalidDataException($"the zip holds {files.Count} of {want.Count} files");
 				}
 			}
-			File.Move(part, zip, true);
+			Files.Move(part, zip, true);
 		} catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException or NotSupportedException) {
 			a_log.Warn("the old outputs stay unpacked in this run's backup: " + e.Message);
 			try {
-				File.Delete(part);
+				Files.Delete(part);
 			} catch (Exception e2) when (e2 is IOException or UnauthorizedAccessException) {
 				// a part left behind goes with the run's backup
 			}
@@ -51,7 +51,7 @@ public static class RunUndo
 			foreach (var f in new DirectoryInfo(dir).EnumerateFiles("*", SearchOption.AllDirectories).Where(f => f.IsReadOnly)) {
 				f.IsReadOnly = false;
 			}
-			Directory.Delete(dir, true);
+			Files.DeleteDir(dir);
 			a_log.Detail($"the old outputs in this run's backup packed: {want.Count} file(s), {want.Values.Sum() / 1048576} MB into {new FileInfo(zip).Length / 1048576} MB");
 		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
 			a_log.Warn("the old outputs are packed in this run's backup, but part of their folder could not be removed: " + e.Message);
@@ -66,7 +66,7 @@ public static class RunUndo
 			return;
 		}
 		ZipFile.ExtractToDirectory(zip, Path.Combine(a_backup, OutputsFolder), true);
-		File.Delete(zip);
+		Files.Delete(zip);
 	}
 
 	// what stands at a_from (its meta.ini stays) moved into a folder of its own under a_aside: what is set aside is never written over,

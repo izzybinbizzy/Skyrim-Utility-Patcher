@@ -112,7 +112,7 @@ public static class Schedule
 		try {
 			return Schtasks("/Create", "/TN", a_name, "/XML", file, "/F").Code == 0;
 		} finally {
-			File.Delete(file);
+			Files.Delete(file);
 		}
 	}
 

@@ -105,6 +105,12 @@ public static class Runner
 			return Refuse(string.Join("; ", problems));
 		}
 		var runs = RunsDir(a_req.DataDir);
+		// the newest run's record must read before "no run was interrupted" can be believed
+		if (Journal.NewestUnreadable(runs) is { } dim) {
+			return Refuse(dim.Why is System.Text.Json.JsonException or InvalidDataException
+				? $"the record of the last run ({Path.GetFileName(dim.Folder)}) is damaged, so it cannot be told whether that run finished - look at your profile in Mod Organizer, then move that run's folder out of {runs} to go on"
+				: $"the record of the last run ({Path.GetFileName(dim.Folder)}) cannot be read right now ({dim.Why.Message}) - try again in a moment");
+		}
 		// any setup's interrupted run (two setups can share a profile, and the window refuses the same way)
 		if (Journal.Interrupted(runs) is { } open) {
 			return Refuse($"the run of {open.Started.ToString("MMM d HH:mm", InvariantCulture)} ({open.SetupName}) did not finish - put the profile back first (Restore)");
@@ -121,7 +127,14 @@ public static class Runner
 		} catch (Exception e) when (e is IOException) {
 			return Refuse(e.Message);
 		}
-		var check = Preflight.Run(setup, mo2, todo.Select(s => s.Key).ToList());
+		List<Issue> check;
+		try {
+			check = Preflight.Run(setup, mo2, todo.Select(s => s.Key).ToList());
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or InvalidDataException or InvalidOperationException) {
+			// a check that cannot look (a drive that is not there, a folder it may not read) refuses the run in words - nothing has
+			// been touched, and it never ends as a crash
+			return Refuse("the check before the run could not finish: " + e.Message);
+		}
 		var blocking = check.Where(i => i.Blocking).ToList();
 		if (blocking.Count > 0) {
 			return Refuse(string.Join("; ", blocking.Select(i => $"{StepCatalog.Name(i.Step)}: {i.Text}")));
@@ -137,7 +150,20 @@ public static class Runner
 		};
 		Directory.CreateDirectory(journal.Folder);
 		journal.Save();
-		using var log = new RunLog(journal.Folder);
+		RunLog opened;
+		try {
+			opened = new RunLog(journal.Folder);
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+			// the record says "running" already: closed again, or once this program has ended the window would offer to put back
+			// a run that never touched the profile
+			journal.State = RunState.Failed;
+			journal.Verdict = "stopped before anything was changed: the run's log could not be opened (" + e.Message + ")";
+			journal.Ended = DateTime.Now;
+			journal.Pid = 0;
+			journal.TrySave();
+			return new RunOutcome(RunState.Failed, journal.Verdict, journal.Folder);
+		}
+		using var log = opened;
 		log.Mirror(Path.Combine(runs, "current log.txt"));
 		using var cts = new CancellationTokenSource();
 		var commands = new Commands(journal, cts.Cancel);
@@ -166,7 +192,6 @@ public static class Runner
 			log.Warn($"{StepCatalog.Name(w.Step)}: {w.Text}");
 			log.Simple($"Note: {StepCatalog.Name(w.Step)}: {w.Text}");
 		}
-		Native.KeepAwake(true);
 		// Stop ends this run's own game and tools at once - only a process it started, still the same process (started after
 		// this run began - a PID can be reused), and never Mod Organizer itself (the put-back closes that the normal way)
 		commands.OnStop = () => {
@@ -179,16 +204,21 @@ public static class Runner
 				}
 			}
 		};
-		commands.Start();
 		Dictionary<string, byte[]>? snap0 = null;
 		var total = Stopwatch.StartNew();
+		// true once a finished run's profile is back: from there nothing may put it back a second time, and what goes wrong is a
+		// note on a finished run. afterRan: the setup's after-run commands were reached (they never run twice, and never not at all)
+		var finished = false;
+		var afterRan = false;
 		try {
+			Native.KeepAwake(true);
+			commands.Start();
 			// what changed outside the runner is looked at before the setup's own before-run commands can change anything (Mod
 			// Organizer may still be open: its files as saved); what those commands change, and Mod Organizer's last save as it
 			// closes, is the run's (MO2 is closed only after them - one may be the claim that makes closing it safe)
 			NoteChanges(mo2, a_req.DataDir, Mo2Changes.Outside, log);
 			foreach (var cmd in setup.BeforeRun) {
-				Hook(log, cmd, "before the run");
+				Hook(ctx, cmd, "before the run", cts.Token);
 			}
 			// the one close of an MO2 the player opened that the player asked for: pressing Start (the preview says MO2 closes);
 			// from here on an MO2 the player opens is waited for, never closed (Mo2Control.WaitForTheirs)
@@ -202,10 +232,14 @@ public static class Runner
 			NoteChanges(mo2, a_req.DataDir, RunWho(journal), log);
 			ToolSettings.UndoLeftSwitch(setup, profile, log);
 			BackupProfile(ctx);
-			foreach (var s in todo) {
-				if (new StepSettings(s.Settings).OutputMod is { } om) {
-					profile.EnsureMod(om, log);
-				}
+			// the output mods this run is about to make go on record BEFORE the first is made: a failure or a crash from here
+			// on finds them there and takes the empty ones out again (a failed run leaves no empty output in Mod Organizer)
+			var outputs = todo.Select(s => new StepSettings(s.Settings).OutputMod).OfType<string>().Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+			var listed = profile.States();
+			journal.Added = outputs.Where(m => !listed.ContainsKey(m)).ToList();
+			journal.Save();
+			foreach (var om in outputs) {
+				profile.EnsureMod(om, log);
 			}
 			journal.Added = [.. profile.Added];
 			snap0 = profile.Snapshot();
@@ -233,18 +267,24 @@ public static class Runner
 				if (!RunStep(ctx, s)) {
 					return Finish(ctx, snap0, commands.Stopped ? RunState.Stopped : RunState.Failed);
 				}
-				if (journal.StopAfterStep && s != todo.Last(t => t.Key != "playsave")) {
+				// "stop after this step" holds while anything is still to come - a later tool, or the save to play, which starts the
+				// game: asked during the last tool it once started the game all the same
+				if (journal.StopAfterStep && journal.Steps.FirstOrDefault(r => r.State == StepState.Pending) is { } next) {
 					log.Say("stopped after this step, as asked");
 					foreach (var r in journal.Steps.Where(r => r.State == StepState.Pending)) {
 						r.State = StepState.Skipped;
 					}
-					return Finish(ctx, snap0, RunState.Stopped, $"stopped after {StepCatalog.Name(s.Key)}, as asked - carry on from the next step");
+					return Finish(ctx, snap0, RunState.Stopped, $"stopped after {StepCatalog.Name(s.Key)}, as asked - carry on from {next.Name}");
 				}
 			}
 			var outcome = Finish(ctx, snap0, RunState.Finished);
 			if (outcome.State != RunState.Finished) {
 				return outcome;
 			}
+			finished = true;
+			// still the run going, to the window, until the last chore is done (Stop ends the chores; the profile is back already)
+			journal.FinishingUp = true;
+			journal.TrySave();
 			if (playsave) {
 				var ps = todo.First(t => t.Key == "playsave");
 				// still the running run to the window while its game is up (the profile is already back - nothing to restore)
@@ -265,55 +305,90 @@ public static class Runner
 					log.Simple("Done, except the save to play: " + journal.Verdict);
 					SaySaves(ctx);
 					journal.Ended = DateTime.Now;
-					journal.Save();
+					journal.TrySave();
 					PruneBackups(ctx);
 					return new RunOutcome(journal.State, journal.Verdict, journal.Folder);
 				}
 				control.Close();
 			}
-			RecycleScratch(ctx, todo);
-			// the run has finished and the profile is back: what goes wrong from here is said, never a second put-back (and the
-			// after-run commands never run twice)
-			foreach (var cmd in setup.AfterRun) {
+			// The run has finished and the profile is back. Each chore from here stands on its own: one that fails is a note on a
+			// finished run - never a second put-back, never the after-run commands twice
+			void Chore(string a_what, Action a_do)
+			{
 				try {
-					Hook(log, cmd, "after the run");
-				} catch (StepFailedException e) {
-					log.Warn(e.Message);
-					journal.Notes.Add(e.Message);
+					a_do();
+				} catch (OperationCanceledException) {
+					log.Warn($"{a_what}: left out, Stop was pressed");
+				} catch (Exception e) {
+					log.Warn($"{a_what} did not work: {Plain(e)}");
+					journal.Notes.Add($"{a_what} did not work: {Plain(e)}");
 				}
 			}
-			ReportOverwrite(ctx);
-			PruneBackups(ctx);
-			try {
-				ToolVersions.Remember(setup, mo2, journal.Steps.Where(r => r.State == StepState.Done).Select(r => r.Key));
-			} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
-				log.Warn("the tools' versions were not noted for the next run: " + e.Message);
+			Chore("clearing the scratch folder", () => RecycleScratch(ctx, todo));
+			afterRan = true;
+			foreach (var cmd in setup.AfterRun) {
+				journal.Doing = "the setup's command after the run";
+				journal.TrySave();
+				Chore("the command after the run", () => Hook(ctx, cmd, "after the run", cts.Token));
 			}
-			journal.Verdict = $"finished: {todo.Count} step(s) in {total.Elapsed.TotalMinutes:0} min";
-			journal.Ended = DateTime.Now;
-			journal.Save();
+			Chore("the look at Mod Organizer's overwrite", () => ReportOverwrite(ctx));
+			Chore("tidying old backups", () => PruneBackups(ctx));
+			Chore("noting the tools' versions for the next run", () => ToolVersions.Remember(setup, mo2, journal.Steps.Where(r => r.State == StepState.Done).Select(r => r.Key)));
 			// his checklist 456: said at the end too - a run's own placement may have just moved them; a look that fails changes nothing
-			try {
+			Chore("the look at the output plugins' places", () => {
 				foreach (var i in PluginPlaces.Check(profile.ActivePlugins())) {
 					log.Warn(i.Text);
 					log.Simple("Note: " + i.Text);
 				}
-			} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
-				log.Detail("the output plugins' places could not be looked at: " + e.Message);
-			}
+			});
+			journal.Verdict = $"finished: {todo.Count} step(s) in {total.Elapsed.TotalMinutes.ToString("0", InvariantCulture)} min";
+			journal.Ended = DateTime.Now;
+			journal.TrySave();
 			log.Say("ALL DONE: " + journal.Verdict);
 			log.Simple("ALL DONE: " + journal.Verdict);
+			// his checklist 454: the old outputs packed into one zip, as the very last thing and only after a run that finished -
+			// it can take minutes, the window says so, and Stop ends it at once (the run stays finished)
+			if (Setup.Bool(setup.Root, "zipBackups") != false && !journal.Parked.Any(p => !p.Replaced && !p.PutBack)) {
+				Chore("packing the old outputs", () => RunUndo.Pack(ctx.BackupFolder, log, cts.Token, a_doing => {
+					journal.Doing = a_doing;
+					journal.TrySave();
+				}));
+			}
 			return new RunOutcome(RunState.Finished, journal.Verdict, journal.Folder);
 		} catch (Exception e) when (snap0 == null) {
 			// nothing was switched yet: the run stops with the profile untouched (a Stop pressed this early reads as stopped)
 			var state = commands.Stopped ? RunState.Stopped : RunState.Failed;
 			journal.State = state;
 			journal.Verdict = "stopped before anything was changed: " + (commands.Stopped ? "Stop was pressed" : Plain(e));
+			// an output mod made a moment ago is still empty: out of the mod list again (Mod Organizer is closed by now)
+			var left = new List<string>();
+			foreach (var a in journal.Added.ToList()) {
+				try {
+					if (profile.TakeOutEmptyOutput(a, journal.BackupDir, log)) {
+						journal.Added.Remove(a);
+					} else if (profile.States().ContainsKey(a)) {
+						left.Add(a);
+					}
+				} catch (Exception e2) when (e2 is IOException or UnauthorizedAccessException or Mo2BusyException or InvalidOperationException) {
+					left.Add(a);
+				}
+			}
 			journal.Ended = DateTime.Now;
-			journal.Save();
+			journal.TrySave();
 			log.Error(journal.Verdict);
-			log.Simple("The run " + journal.Verdict + ". Nothing in Mod Organizer was changed.");
+			log.Simple("The run " + journal.Verdict + (left.Count == 0 ? ". Nothing in Mod Organizer was changed." :
+				". Your mods are as they were; the new, empty output mod(s) it had just added are still in the list: " + string.Join(", ", left) + "."));
 			return new RunOutcome(state, journal.Verdict, journal.Folder);
+		} catch (Exception e) when (finished) {
+			// after the put-back of a finished run (the save to play's own ending, a record the disk refused): the run stays finished
+			log.Warn("after the run had finished: " + Plain(e));
+			journal.Notes.Add("after the run had finished: " + Plain(e));
+			if (journal.State == RunState.Finished && journal.Verdict == "") {
+				journal.Verdict = $"finished: {todo.Count} step(s) in {total.Elapsed.TotalMinutes.ToString("0", InvariantCulture)} min";
+			}
+			journal.Ended ??= DateTime.Now;
+			journal.TrySave();
+			return new RunOutcome(journal.State, journal.Verdict, journal.Folder);
 		} catch (Exception e) {
 			log.Error("the run stopped: " + Plain(e));
 			return Finish(ctx, snap0, commands.Stopped ? RunState.Stopped : RunState.Failed, Plain(e));
@@ -322,12 +397,18 @@ public static class Runner
 			Native.KeepAwake(false);
 			// the run is over: it no longer has an owner (a run that still needs its profile put back is then offered at once)
 			journal.Pid = 0;
-			journal.Save();
-			foreach (var cmd in setup.AfterRun.Where(_ => journal.State != RunState.Finished)) {
-				try {
-					Hook(log, cmd, "after the run");
-				} catch (StepFailedException e) {
-					log.Warn(e.Message);
+			journal.FinishingUp = false;
+			journal.Doing = "";
+			journal.TrySave();
+			// after a run that did not finish (or whose ending never reached them) the setup's after-run commands still run, once:
+			// they give back what the before-run commands took. No Stop can cut them short here - the run is already over
+			if (!afterRan) {
+				foreach (var cmd in setup.AfterRun) {
+					try {
+						Hook(ctx, cmd, "after the run", CancellationToken.None);
+					} catch (StepFailedException e) {
+						log.Warn(e.Message);
+					}
 				}
 			}
 			NoteChanges(mo2, a_req.DataDir, RunWho(journal), log);
@@ -350,11 +431,25 @@ public static class Runner
 		}
 	}
 
+	// an error in words for the player. The engine's own (a step that failed, Mod Organizer busy) and Windows' own about a file
+	// read as they are; anything else is a fault of the program, said as one - its type helps a bug report, the log has the rest
 	public static string Plain(Exception a_e) => a_e switch {
 		OperationCanceledException => "stopped on request",
-		StepFailedException or Mo2BusyException or InvalidOperationException or KeyNotFoundException => a_e.Message,
-		_ => a_e.GetType().Name + ": " + a_e.Message,
+		StepFailedException or Mo2BusyException or IOException or UnauthorizedAccessException => a_e.Message,
+		_ when ThrownHere(a_e) => a_e.Message,
+		_ => $"something unexpected went wrong ({a_e.GetType().Name}: {a_e.Message}) - the run's detailed log has more",
 	};
+
+	// thrown by the engine's own code, so worded by it for the player ("Windows could not start ...", "not in the mod list: ...");
+	// the same type thrown inside .NET reads "Sequence contains no matching element"
+	static bool ThrownHere(Exception a_e)
+	{
+		try {
+			return a_e.TargetSite?.DeclaringType?.Assembly == typeof(Runner).Assembly;
+		} catch (Exception e) when (e is NotSupportedException or InvalidOperationException) {
+			return false;
+		}
+	}
 
 	static void RunPhase(RunContext a_ctx, string a_step, string a_title, Action a_work)
 	{
@@ -374,7 +469,7 @@ public static class Runner
 			r.Note = Plain(e);
 			r.Ended = DateTime.Now;
 			r.Activity = "";
-			a_ctx.Journal.Save();
+			a_ctx.Journal.TrySave();
 			throw;
 		}
 	}
@@ -446,10 +541,6 @@ public static class Runner
 
 	static void PruneBackupsUnguarded(RunContext a_ctx)
 	{
-		// his checklist 454: nothing can still need the old outputs as a folder when every parked one is settled
-		if (Setup.Bool(a_ctx.Setup.Root, "zipBackups") != false && !a_ctx.Journal.Parked.Any(p => !p.Replaced && !p.PutBack)) {
-			RunUndo.Pack(a_ctx.BackupFolder, a_ctx.Log);
-		}
 		PruneBackupsOf(a_ctx.Setup, Path.GetDirectoryName(a_ctx.Journal.Folder)!, a_ctx.BackupFolder, Setup.Int(a_ctx.Setup.Root, "keepBackups") ?? 5, a_ctx.Log);
 		PruneRunRecords(Path.GetDirectoryName(a_ctx.Journal.Folder)!, a_ctx.Journal.SetupFile, a_ctx.Journal.Folder, RunsKept, a_ctx.Log);
 	}
@@ -541,11 +632,13 @@ public static class Runner
 		r.Started ??= DateTime.Now;
 		r.Activity = "starting";
 		a_ctx.Journal.Save();
-		var overwriteBefore = OverwriteFiles(a_ctx);
+		Dictionary<string, DateTime>? overwriteBefore = null;
 		var stepBegan = DateTime.UtcNow;
 		List<string> learned = [];
 		var sw = Stopwatch.StartNew();
 		try {
+			// inside the try: a folder of overwrite that cannot be listed fails this step like any other fault, with its record closed
+			overwriteBefore = OverwriteFiles(a_ctx);
 			a_ctx.Cancel.ThrowIfCancellationRequested();
 			if (step == null) {
 				throw new StepFailedException("this step is not available in this version");
@@ -553,7 +646,12 @@ public static class Runner
 			learned = ToolSettings.Apply(a_ctx, a_s.Key);
 			var ranFrom = DateTime.Now;
 			step.Run(a_ctx, new StepSettings(a_s.Settings));
-			ToolSettings.CheckValues(a_ctx, a_s.Key, ranFrom);
+			// a note for the player, never what decides a step that has finished
+			try {
+				ToolSettings.CheckValues(a_ctx, a_s.Key, ranFrom);
+			} catch (Exception e) when (e is not OperationCanceledException) {
+				a_ctx.Log.Warn("the values the tool ran with could not be compared with the learned ones: " + Plain(e));
+			}
 			StepKit.CloseTool(a_ctx, new StepSettings(a_s.Settings).Str("image"));
 			foreach (var live in learned) {
 				StepKit.PutFilesBack(a_ctx, live);
@@ -565,7 +663,7 @@ public static class Runner
 			r.Note = Plain(e);
 			r.Ended = DateTime.Now;
 			r.Activity = "";
-			a_ctx.Journal.Save();
+			a_ctx.Journal.TrySave();
 			a_ctx.Log.Error($"{StepCatalog.Name(a_s.Key)} {(stopped ? "STOPPED" : "FAILED")}: {r.Note}");
 			var why = stopped ? null : ToolErrors.Explain(a_s.Key, r.Note);
 			if (why != null) {
@@ -992,7 +1090,7 @@ public static class Runner
 		var dst = Path.Combine(a_ctx.BackupFolder, "profile " + a_ctx.Profile.Name);
 		Directory.CreateDirectory(dst);
 		foreach (var f in Directory.GetFiles(a_ctx.Profile.Dir)) {
-			File.Copy(f, Path.Combine(dst, Path.GetFileName(f)), true);
+			Files.Copy(f, Path.Combine(dst, Path.GetFileName(f)), true);
 		}
 		a_ctx.Log.Detail($"profile {a_ctx.Profile.Name} backed up");
 	}
@@ -1015,7 +1113,7 @@ public static class Runner
 				continue;
 			}
 			try {
-				Directory.Delete(d, true);
+				Files.DeleteDir(d);
 				a_ctx.Log.Detail("empty scratch folder removed: " + d);
 			} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
 				a_ctx.Log.Warn($"scratch folder not removed ({e.Message}): {d}");
@@ -1065,7 +1163,7 @@ public static class Runner
 			foreach (var f in fresh) {
 				var dst = Path.Combine(a_ctx.BackupFolder, "unfinished", "overwrite", Path.GetRelativePath(ow, f));
 				Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
-				File.Move(f, dst, true);
+				Files.Move(f, dst, true);
 				if (InGame.IsCrashReport(Path.GetFileName(f))) {
 					reports.Add(dst);
 				}

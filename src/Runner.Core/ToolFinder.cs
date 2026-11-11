@@ -170,7 +170,7 @@ public static class ToolFinder
 			added.Add(title);
 		}
 		if (added.Count > 0) {
-			File.Copy(a_mo2.IniPath, BackupOf(a_mo2), true);
+			Files.Copy(a_mo2.IniPath, BackupOf(a_mo2), true);
 			Files.WriteAtomic(a_mo2.IniPath, text);
 		}
 		return added;
