@@ -272,6 +272,18 @@ public static class StepKit
 		return n;
 	}
 
+	// A tool whose work is done (its own "done" line was read, its output is whole) is waited for to close by itself. One that is
+	// slow to close, or sits idle while it lets go, is then closed by the step's own CloseTool: it never turns a finished step
+	// into a failed one (a 24-minute DynDOLOD once read FAILED "passed its 3 minute limit"). A Stop still ends the wait.
+	public static void LetClose(RunContext a_ctx, string a_step, Process a_proc, TimeSpan a_wait, string a_tool)
+	{
+		try {
+			Waits.Exit(a_ctx, a_step, a_proc, a_wait);
+		} catch (StepFailedException e) {
+			a_ctx.Log.Warn($"{a_tool} had finished but did not close by itself ({e.Message}) - it is closed now");
+		}
+	}
+
 	// a tool left open keeps MO2 locked: its windows asked to close, then the process tree ended (by PID)
 	public static void CloseTool(RunContext a_ctx, string? a_image) => CloseTool(a_ctx.Control, a_image, a_ctx.Log);
 

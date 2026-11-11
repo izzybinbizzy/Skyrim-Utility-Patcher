@@ -67,7 +67,7 @@ public sealed class XLodGenStep : IStep
 				}, a_every: TimeSpan.FromSeconds(5));
 				a_ctx.Log.Detail("xLODGen: LOD generation done");
 				Native.PostMessage((nint)main.Current.NativeWindowHandle, Native.WM_CLOSE, 0, 0);
-				Waits.Exit(a_ctx, Key, proc, TimeSpan.FromMinutes(2));
+				StepKit.LetClose(a_ctx, Key, proc, TimeSpan.FromMinutes(2), "xLODGen");
 			} finally {
 				StepKit.CloseTool(a_ctx, image);
 			}
@@ -343,13 +343,20 @@ public static class Cli
 		}
 		a_ctx.Log.Detail(Path.GetFileName(a_exe) + " " + string.Join(" ", psi.ArgumentList.Select(Mo2Control.Quote)));
 		using var p = Process.Start(psi) ?? throw new StepFailedException("could not start " + a_exe);
+		// one of the run's own processes: Stop's sweep ends it at once, and the setup's lower priority reaches the tools that
+		// load every core
+		a_ctx.Control.Ours(p.Id);
 		p.StandardInput.Close();
 		var sb = new System.Text.StringBuilder();
 		string? latest = null;
+		// each stream's end (its last line has arrived)
+		var outEnd = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		var errEnd = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 		// the output arrives on other threads: kept here, shown by the run's own thread (the run record is not thread-safe)
-		void Add(string? a_line)
+		void Add(string? a_line, TaskCompletionSource a_end)
 		{
 			if (a_line == null) {
+				a_end.TrySetResult();
 				return;
 			}
 			lock (sb) {
@@ -357,8 +364,8 @@ public static class Cli
 				latest = a_line;
 			}
 		}
-		p.OutputDataReceived += (_, e) => Add(e.Data);
-		p.ErrorDataReceived += (_, e) => Add(e.Data);
+		p.OutputDataReceived += (_, e) => Add(e.Data, outEnd);
+		p.ErrorDataReceived += (_, e) => Add(e.Data, errEnd);
 		p.BeginOutputReadLine();
 		p.BeginErrorReadLine();
 		try {
@@ -387,8 +394,10 @@ public static class Cli
 			}
 			Files.WriteAtomic(a_outFile, text);
 		}
-		// the last output lines, but never forever: a child process that kept the output pipe open would hold it
-		p.WaitForExit(TimeSpan.FromSeconds(30));
+		// The last output lines: both streams read to their end (a wait on the process alone returns the moment it has ended,
+		// before its last lines have arrived - a finished tool's "Done" line was then missed). Never for long: a child process
+		// that kept the output pipe open would hold it
+		Task.WaitAll([outEnd.Task, errEnd.Task], TimeSpan.FromSeconds(30));
 		string all;
 		lock (sb) {
 			all = sb.ToString();
@@ -439,6 +448,7 @@ public abstract class DynDolodFamily : IStep
 		var outDir = a_s.Req("output_dir");
 		var image = a_s.Str("image") ?? (Tool + "x64.exe");
 		StepKit.ParkDir(a_ctx, outDir, Tool + " output");
+		var began = DateTime.UtcNow;
 		using (new Toggle(a_ctx, [.. a_s.List("enable_during"), .. StepKit.ToolMods(a_ctx, a_s)], [.. ExtraOff(a_s), .. a_s.List("disable_during")], Tool, a_ctx.Cancel)) {
 			try {
 				var args = XLodGenStep.WithData(a_s.Str("args") ?? a_ctx.Mo2.Executable(a_s.Req("executable"))?.Arguments ?? "", a_ctx.Mo2.GameDir);
@@ -495,7 +505,8 @@ public abstract class DynDolodFamily : IStep
 				});
 				a_ctx.Log.Detail($"{Tool} finished");
 				FinalQuestion(a_ctx, image);
-				Waits.Exit(a_ctx, Key, proc, TimeSpan.FromMinutes(3));
+				Saved(a_ctx, outDir, began);
+				StepKit.LetClose(a_ctx, Key, proc, TimeSpan.FromMinutes(3), Tool);
 			} finally {
 				StepKit.CloseTool(a_ctx, image);
 			}
@@ -503,6 +514,9 @@ public abstract class DynDolodFamily : IStep
 		StepKit.IntoMod(a_ctx, Key, outDir, a_s.OutputMod!, a_s.Int("min_files", 1));
 		a_ctx.SetAfter(a_s.OutputMod!);
 	}
+
+	// what the tool writes after its last question, waited for before it may be closed (TexGen: nothing)
+	protected virtual void Saved(RunContext a_ctx, string a_outDir, DateTime a_sinceUtc) { }
 
 	protected virtual void DriveOptions(RunContext a_ctx, AutomationElement a_opts, StepSettings a_s)
 	{
@@ -525,7 +539,7 @@ public abstract class DynDolodFamily : IStep
 					a_ctx.Log.Detail($"pressed {Uia.Name(hit)}");
 					Uia.Press(hit);
 					if (Tool == "DynDOLOD") {
-						a_ctx.Pause(TimeSpan.FromSeconds(20));           // it writes DynDOLOD.esm / .esp and Occlusion.esp before closing
+						// it now writes DynDOLOD.esm / .esp and Occlusion.esp before closing: Saved waits for them
 						return;
 					}
 					// a press can land while the box is still busy (TexGen opens its summary page then): the same question still up 10 s
@@ -587,6 +601,42 @@ public sealed class DynDolodStep : DynDolodFamily
 		}
 		base.Run(a_ctx, a_s);
 		a_ctx.Journal.Retire.AddRange(a_s.List("replaces").Where(m => !a_ctx.Journal.Retire.Contains(m)));
+	}
+
+	// how long its plugins must stand unchanged before they count as saved, and how long the save may take (the offline tests
+	// shorten both)
+	public static TimeSpan SaveQuiet { get; set; } = TimeSpan.FromSeconds(10);
+	public static TimeSpan SaveLimit { get; set; } = TimeSpan.FromMinutes(15);
+
+	protected override void Saved(RunContext a_ctx, string a_outDir, DateTime a_sinceUtc) => WaitSaved(a_ctx, a_outDir, a_sinceUtc);
+
+	// DynDOLOD's plugins are what its save writes: waited for until a fresh DynDOLOD.esp stands in the output folder and no
+	// plugin there has changed for a while. Only then may the tool be closed - a fixed twenty seconds once let the close
+	// reach it in the middle of the save on a large load order
+	public static void WaitSaved(RunContext a_ctx, string a_outDir, DateTime a_sinceUtc)
+	{
+		var esp = Path.Combine(a_outDir, "DynDOLOD.esp");
+		var sw = Stopwatch.StartNew();
+		(DateTime Newest, long Bytes)? last = null;
+		var quietSince = TimeSpan.Zero;
+		while (true) {
+			a_ctx.Cancel.ThrowIfCancellationRequested();
+			if (File.Exists(esp) && File.GetLastWriteTimeUtc(esp) > a_sinceUtc) {
+				var plugins = new DirectoryInfo(a_outDir).EnumerateFiles("*.es?").ToList();
+				var now = (plugins.Max(f => f.LastWriteTimeUtc), plugins.Sum(f => f.Length));
+				if (now != last) {
+					last = now;
+					quietSince = sw.Elapsed;
+				} else if (sw.Elapsed - quietSince >= SaveQuiet) {
+					a_ctx.Log.Detail($"DynDOLOD's plugins are saved ({string.Join(", ", plugins.Select(f => f.Name))})");
+					return;
+				}
+			}
+			if (sw.Elapsed > SaveLimit) {
+				throw new StepFailedException($"DynDOLOD did not save its plugins within {SaveLimit.TotalMinutes:0} minutes of its last question - no new DynDOLOD.esp in {a_outDir}");
+			}
+			a_ctx.Pause(TimeSpan.FromSeconds(1));
+		}
 	}
 
 	protected override void DriveOptions(RunContext a_ctx, AutomationElement a_opts, StepSettings a_s)

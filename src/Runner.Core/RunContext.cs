@@ -197,6 +197,17 @@ public sealed class Toggle : IDisposable
 	}
 }
 
+// A stopwatch of the time the PC was awake. A plain stopwatch goes on counting through a closed lid or the player's own
+// Sleep: a tool twenty minutes into its work then woke to a limit that had "run out" overnight
+public sealed class AwakeClock
+{
+	readonly ulong _start = Native.AwakeTicks();
+
+	public static AwakeClock StartNew() => new();
+
+	public TimeSpan Elapsed => TimeSpan.FromTicks((long)(Native.AwakeTicks() - _start));
+}
+
 // waiting on a tool: its own "done" signal (poll), a deadline, and its whole process tree's CPU - a tool that uses no CPU for
 // the setup's idle minutes is looked at at once (his rule: a finished tool is noticed within 2 minutes)
 public static class Waits
@@ -224,6 +235,11 @@ public static class Waits
 	// how often a tool's whole window text is read for the idle rule (the tests shorten it with their idle limit)
 	public static TimeSpan ProgressEvery { get; set; } = TimeSpan.FromSeconds(30);
 
+	// How long a tool that has closed is still given to show it finished (its last file written, its output gone quiet) before
+	// the step fails as "closed before it finished" - never the rest of its limit, which is an hour for most tools (the offline
+	// tests shorten it). Longer than any step's own settling time: PGPatcher's output must be quiet for a minute
+	public static TimeSpan GoneGrace { get; set; } = TimeSpan.FromMinutes(3);
+
 	// a_progress: for a tool driven through its window - what its window says; a change counts as work, and so does CPU its CHILD
 	// processes use (a long patcher shows nothing new for minutes - the fourth review, M2), never the window process's own (a
 	// window drawing itself uses CPU while the tool does nothing - Synthesis sat 4 min on its main screen, 2026-10-27)
@@ -232,7 +248,10 @@ public static class Waits
 	{
 		string? lastSeen = null;
 		var every = a_every ?? TimeSpan.FromSeconds(2);
-		var sw = Stopwatch.StartNew();
+		// time the PC was awake: a closed lid or the player's own Sleep in the middle of a long tool is not time the tool had,
+		// and on waking neither its limit nor the idle rule may have run out
+		var sw = AwakeClock.StartNew();
+		TimeSpan? goneAt = null;
 		var idleLimit = IdleForTests ?? TimeSpan.FromMinutes(Math.Max(1, a_ctx.Setup.IdleMinutes));
 		var lastCpu = TimeSpan.Zero;
 		IReadOnlyDictionary<int, TimeSpan> lastChildren = new Dictionary<int, TimeSpan>();
@@ -257,6 +276,14 @@ public static class Waits
 					alive = !a_proc.HasExited;
 				} catch (InvalidOperationException) {
 					alive = false;
+				}
+				if (!alive) {
+					// closed (or crashed) and still not done by the step's own signs: a short while more, then said - it used to
+					// be waited for until the tool's whole limit
+					goneAt ??= sw.Elapsed;
+					if (sw.Elapsed - goneAt > GoneGrace) {
+						throw new StepFailedException($"{StepCatalog.Name(a_step)} closed before it finished");
+					}
 				}
 				if (alive) {
 					// a window whose text cannot be read (empty) is judged by the tool's CPU, so a working tool is never called idle

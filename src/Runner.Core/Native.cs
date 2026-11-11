@@ -47,10 +47,30 @@ public static partial class Native
 	[LibraryImport("user32.dll", EntryPoint = "SendMessageTimeoutW")]
 	private static partial nint SendMessageTimeout(nint a_hwnd, uint a_msg, nint a_w, nint a_l, uint a_flags, uint a_ms, out nint a_result);
 
-	const uint WM_NULL = 0x0000, SMTO_ABORTIFHUNG = 0x0002;
+	[DllImport("user32.dll", EntryPoint = "SendMessageTimeoutW", CharSet = CharSet.Unicode)]
+	static extern nint SendMessageTimeoutBuf(nint a_hwnd, uint a_msg, nint a_w, [Out] char[] a_buf, uint a_flags, uint a_ms, out nint a_result);
+
+	[DllImport("user32.dll", EntryPoint = "SendMessageTimeoutW")]
+	static extern nint SendMessageTimeoutRect(nint a_hwnd, uint a_msg, nint a_w, ref RECT a_rect, uint a_flags, uint a_ms, out nint a_result);
+
+	const uint WM_NULL = 0x0000, SMTO_BLOCK = 0x0001, SMTO_ABORTIFHUNG = 0x0002;
 
 	// the window's thread answers a message within a_ms (a window busy loading or hung does not)
 	public static bool Responds(nint a_hwnd, uint a_ms = 1000) => SendMessageTimeout(a_hwnd, WM_NULL, 0, 0, SMTO_ABORTIFHUNG, a_ms, out _) != 0;
+
+	// how long another program's window is given to answer one message (the offline tests shorten it)
+	public static uint SendLimitMs { get; set; } = 5000;
+
+	// A message to another program's window, with a time limit: a tool whose window thread hangs (or is busy for minutes, as
+	// the xEdit-based tools are) never holds the step that asks. The step's own deadline and idle rule are looked at by the
+	// very loop that sends these, so a plain send to a hung window stopped the clock that should have ended the step. False =
+	// no answer in time, or the window is gone
+	public static bool TrySend(nint a_hwnd, uint a_msg, nint a_w, nint a_l, out nint a_result) =>
+		SendMessageTimeout(a_hwnd, a_msg, a_w, a_l, SMTO_ABORTIFHUNG | SMTO_BLOCK, SendLimitMs, out a_result) != 0;
+
+	// the same for a message that fills a rectangle (a list row's place)
+	public static bool TrySend(nint a_hwnd, uint a_msg, nint a_w, ref RECT a_rect) =>
+		SendMessageTimeoutRect(a_hwnd, a_msg, a_w, ref a_rect, SMTO_ABORTIFHUNG | SMTO_BLOCK, SendLimitMs, out _) != 0;
 
 	[LibraryImport("user32.dll")]
 	public static partial uint GetWindowThreadProcessId(nint a_hwnd, out uint a_pid);
@@ -85,11 +105,6 @@ public static partial class Native
 	[DllImport("user32.dll", EntryPoint = "GetClassNameW", CharSet = CharSet.Unicode)]
 	static extern int GetClassNameW(nint a_hwnd, [Out] char[] a_text, int a_max);
 
-	[LibraryImport("user32.dll", EntryPoint = "SendMessageW")]
-	public static partial nint SendMessage(nint a_hwnd, uint a_msg, nint a_w, nint a_l);
-
-	[DllImport("user32.dll", EntryPoint = "SendMessageW", CharSet = CharSet.Unicode)]
-	static extern nint SendMessageBuf(nint a_hwnd, uint a_msg, nint a_w, [Out] char[] a_buf);
 
 	[LibraryImport("user32.dll", EntryPoint = "PostMessageW")]
 	[return: MarshalAs(UnmanagedType.Bool)]
@@ -114,6 +129,13 @@ public static partial class Native
 	[LibraryImport("user32.dll")]
 	[return: MarshalAs(UnmanagedType.Bool)]
 	public static partial bool PrintWindow(nint a_hwnd, nint a_hdc, uint a_flags);
+
+	[LibraryImport("kernel32.dll")]
+	[return: MarshalAs(UnmanagedType.Bool)]
+	private static partial bool QueryUnbiasedInterruptTime(out ulong a_ticks);
+
+	// how long the PC has been awake since it started, in 100-nanosecond ticks: time asleep or hibernating is not in it
+	public static ulong AwakeTicks() => QueryUnbiasedInterruptTime(out var t) ? t : (ulong)Environment.TickCount64 * TimeSpan.TicksPerMillisecond;
 
 	[LibraryImport("kernel32.dll")]
 	public static partial uint SetThreadExecutionState(uint a_flags);
@@ -150,15 +172,15 @@ public static partial class Native
 
 	// the FULL text of an edit / memo (UI Automation cuts a VCL memo at 2048 characters), unpacked when a tool answers with its
 	// ANSI bytes packed two to a character (xLODGen 4.1.5o, 2026-10-12)
+	// A window that does not answer in time reads as no text this look: the caller's loop goes on to its own clock
 	public static string ControlText(nint a_hwnd)
 	{
-		var n = (int)SendMessage(a_hwnd, WM_GETTEXTLENGTH, 0, 0);
-		if (n <= 0) {
+		if (!TrySend(a_hwnd, WM_GETTEXTLENGTH, 0, 0, out var length) || (int)length <= 0) {
 			return "";
 		}
+		var n = (int)length;
 		var buf = new char[n + 1];
-		var got = (int)SendMessageBuf(a_hwnd, WM_GETTEXT, n + 1, buf);
-		return FromBuffer(buf, got);
+		return SendMessageTimeoutBuf(a_hwnd, WM_GETTEXT, n + 1, buf, SMTO_ABORTIFHUNG | SMTO_BLOCK, SendLimitMs, out var got) != 0 ? FromBuffer(buf, (int)got) : "";
 	}
 
 	// A tool that packs its ANSI bytes two to a character counts BYTES in its answer, so half the buffer stays empty; the text

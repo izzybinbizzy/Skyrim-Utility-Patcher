@@ -5922,6 +5922,149 @@ public static class Program
 		Check(ToolRunner.App.Engine.Active([j]) == null && ToolRunner.App.Engine.Interrupted([j]) == null, "an engine that died at its chores left a finished run: neither going nor to put back");
 	}
 
+	[System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+	static extern nint CreateWindowExW(uint a_ex, string a_class, string a_title, uint a_style, int a_x, int a_y, int a_w, int a_h, nint a_parent, nint a_menu, nint a_instance, nint a_param);
+
+	[System.Runtime.InteropServices.DllImport("user32.dll")]
+	[return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+	static extern bool DestroyWindow(nint a_hwnd);
+
+	// a window that takes messages only: never on anyone's screen
+	static nint MessageWindow(string a_text) => CreateWindowExW(0, "STATIC", a_text, 0, 0, 0, 0, 0, -3, 0, 0, 0);
+
+	// A tool whose window thread hangs never holds the step that reads it: a message to it has a time limit, no answer reads as
+	// no text, and the step's own clock goes on (a plain send once sat there for as long as the tool hung)
+	static void T_AHungWindowNeverHoldsAStep()
+	{
+		var mine = MessageWindow("its log says done");
+		Check(mine != 0, "(a window to ask)");
+		nint hung = 0;
+		using var made = new ManualResetEventSlim();
+		using var letGo = new ManualResetEventSlim();
+		// its own thread makes it and then never looks at a message again
+		var owner = new Thread(() => {
+			hung = MessageWindow("never read");
+			made.Set();
+			letGo.Wait();
+			DestroyWindow(hung);
+		}) { IsBackground = true };
+		var keep = Native.SendLimitMs;
+		Native.SendLimitMs = 300;
+		try {
+			owner.Start();
+			made.Wait();
+			Check(hung != 0, "(a hung window to ask)");
+			Equal("its log says done", Native.ControlText(mine), "a window that answers is read whole");
+			var sw = Stopwatch.StartNew();
+			Check(!Native.TrySend(hung, Native.WM_GETTEXTLENGTH, 0, 0, out _), "a hung window gives no answer");
+			Equal("", Native.ControlText(hung), "and reads as no text");
+			Check(sw.Elapsed < TimeSpan.FromSeconds(5), $"within the limit, not for as long as it hangs: {sw.Elapsed.TotalSeconds:0.0} s");
+		} finally {
+			Native.SendLimitMs = keep;
+			letGo.Set();
+			owner.Join(5000);
+			DestroyWindow(mine);
+		}
+	}
+
+	// A tool that closed (or crashed) before it showed it was done is given a short while and then said - never waited for to
+	// the end of its hour; the tool clock counts the time the PC was awake
+	static void T_AToolThatClosedIsNotWaitedForToItsLimit()
+	{
+		using var f = new FakeMo2();
+		var keep = Waits.GoneGrace;
+		Waits.GoneGrace = TimeSpan.FromSeconds(2);
+		try {
+			StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => {
+				using var p = Process.Start(new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "cmd.exe"), "/c exit 0") { CreateNoWindow = true, UseShellExecute = false })!;
+				p.WaitForExit(10000);
+				Waits.Tool(ctx, "landscapefixer", p, TimeSpan.FromMinutes(10), () => Waits.Poll.Wait);
+			}));
+			f.WriteSetup(("landscapefixer", []));
+			var sw = Stopwatch.StartNew();
+			var r = Runner.Run(new RunRequest(f.SetupFile, f.Data));
+			Check(r.State == RunState.Failed && r.Verdict.Contains("closed before it finished", StringComparison.Ordinal), "said as closed: " + r.Verdict);
+			Check(sw.Elapsed < TimeSpan.FromSeconds(60), $"after {sw.Elapsed.TotalSeconds:0.0} s, not at its ten-minute limit");
+		} finally {
+			Waits.GoneGrace = keep;
+		}
+		var awake = AwakeClock.StartNew();
+		Thread.Sleep(300);
+		Check(awake.Elapsed > TimeSpan.FromMilliseconds(200) && awake.Elapsed < TimeSpan.FromSeconds(10), "the awake clock runs while the PC is awake: " + awake.Elapsed);
+	}
+
+	// A tool that has finished and is slow to close never fails its step; DynDOLOD's plugins are waited for until they are
+	// saved and quiet before it may be closed
+	static void T_AFinishedToolSlowToCloseNeverFailsItsStep()
+	{
+		using var f = new FakeMo2();
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => {
+			using var p = Process.Start(new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "ping.exe"), "-n 40 127.0.0.1") { CreateNoWindow = true, UseShellExecute = false })!;
+			try {
+				StepKit.LetClose(ctx, "landscapefixer", p, TimeSpan.FromSeconds(3), "The tool");
+			} finally {
+				p.Kill();
+			}
+		}));
+		f.WriteSetup(("landscapefixer", []));
+		var r = Runner.Run(new RunRequest(f.SetupFile, f.Data));
+		Equal(RunState.Finished, r.State, "the step that had finished stays finished: " + r.Verdict);
+		Check(File.ReadAllText(Path.Combine(r.Folder!, "log.txt")).Contains("did not close by itself", StringComparison.Ordinal), "and the log says the tool was closed");
+
+		var (quiet, limit) = (DynDolodStep.SaveQuiet, DynDolodStep.SaveLimit);
+		DynDolodStep.SaveQuiet = TimeSpan.FromSeconds(2);
+		DynDolodStep.SaveLimit = TimeSpan.FromSeconds(4);
+		var ctx = StepContext(f, "landscapefixer");
+		try {
+			var outDir = Path.Combine(f.Root, "DynDOLOD_Output");
+			Directory.CreateDirectory(outDir);
+			var since = DateTime.UtcNow.AddSeconds(-1);
+			Throws<StepFailedException>(() => DynDolodStep.WaitSaved(ctx, outDir, since), "plugins that never come");
+			var lastWrite = TimeSpan.Zero;
+			var sw = Stopwatch.StartNew();
+			var saving = Task.Run(() => {
+				Thread.Sleep(300);
+				File.WriteAllText(Path.Combine(outDir, "DynDOLOD.esm"), "esm");
+				Thread.Sleep(500);
+				File.WriteAllText(Path.Combine(outDir, "DynDOLOD.esp"), "esp");
+				Thread.Sleep(1200);
+				File.WriteAllText(Path.Combine(outDir, "Occlusion.esp"), "occlusion");
+				lastWrite = sw.Elapsed;
+			});
+			DynDolodStep.SaveLimit = TimeSpan.FromSeconds(30);
+			DynDolodStep.WaitSaved(ctx, outDir, since);
+			var saved = sw.Elapsed;
+			saving.Wait();
+			Check(File.Exists(Path.Combine(outDir, "Occlusion.esp")), "the last plugin was waited for");
+			Check(saved - lastWrite >= TimeSpan.FromSeconds(1.5), $"and they stood unchanged first: saved at {saved.TotalSeconds:0.0} s, last write at {lastWrite.TotalSeconds:0.0} s");
+		} finally {
+			(DynDolodStep.SaveQuiet, DynDolodStep.SaveLimit) = (quiet, limit);
+			ctx.Log.Dispose();
+		}
+	}
+
+	// a command-line tool is one of the run's own processes (Stop's sweep, the lower priority), and its last line is read
+	// before its output is judged (a finished tool's "Done" line was once missed in the moment it ended)
+	static void T_ACommandLineToolIsTheRunsOwnAndItsLastLineIsRead()
+	{
+		using var f = new FakeMo2();
+		f.WriteSetup(("landscapefixer", []));
+		var ctx = StepContext(f, "landscapefixer");
+		try {
+			var cmd = Path.Combine(Environment.SystemDirectory, "cmd.exe");
+			for (var i = 0; i < 3; ++i) {
+				var outFile = Path.Combine(f.Root, $"tool output {i}.txt");
+				var (code, text) = ToolRunner.Steps.Cli.Run(ctx, "landscapefixer", cmd, ["/c", "echo working& echo Done in 2.3 min"], TimeSpan.FromMinutes(1), outFile);
+				Equal(0, code, "its exit code");
+				Check(text.Contains("Done in 2.3 min", StringComparison.Ordinal), $"round {i}: its last line is in what it said: {text}");
+				Check(File.ReadAllText(outFile).Contains("working", StringComparison.Ordinal), "and its output is kept in the run's folder");
+			}
+			Equal(3, ctx.Control.Started.Count, "each start is on record as the run's own");
+		} finally {
+			ctx.Log.Dispose();
+		}
+	}
+
 	// The guard for "pressing stop now still doesn't stop it" (his finds of 2026-11-04, 11-06 and 11-10): no wait of the engine
 	// longer than a moment may be a plain sleep - a step waits with RunContext.Pause / Waits.Pause, which a Stop ends at once.
 	static void T_NoStepWaitIsBlindToStop() => NoBlindSleeps(SourceDir());
