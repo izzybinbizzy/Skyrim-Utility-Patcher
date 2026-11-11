@@ -33,11 +33,11 @@ public partial class MainWindow : Window
 			await _vm.PollAsync();
 			// the notification-area icon (there once a run started or a notification was shown) says what runs
 			if (_vm.IsRunning || _tray?.Shown == true) {
-				_tray?.Show("Skyrim Utility Patcher - " + _vm.NowTitle);
+				_tray?.Show("Output Manager - " + _vm.NowTitle);
 			}
 		};
 		_timer.Start();
-		Footer.Text = $"Ctrl+Enter start  ·  F5 check  ·  Ctrl+H history  ·  Ctrl+M MO2 changes  ·  Ctrl+, settings  ·  Alt+Up / Down move a step   ·   version {AppVersion}";
+		Footer.Text = $"Ctrl+Enter start  ·  F5 check  ·  Ctrl+H history  ·  Ctrl+M MO2 changes  ·  Ctrl+T themes  ·  Ctrl+, settings  ·  Alt+Up / Down move a step   ·   version {AppVersion}";
 		Footer.ToolTip = "Data folder: " + AppPaths.Data;
 		PreviewKeyDown += OnKeys;
 		// a mod ticked in Mod Organizer while the window was in the background: each step's last run is worked out again
@@ -133,6 +133,9 @@ public partial class MainWindow : Window
 			a_e.Handled = true;
 		} else if (ctrl && a_e.Key == Key.OemComma) {
 			ShowPanel("settings");
+			a_e.Handled = true;
+		} else if (ctrl && a_e.Key == Key.T) {
+			ShowPanel("themes");
 			a_e.Handled = true;
 		} else if (ctrl && a_e.Key == Key.F && _panel == "settings" && Drawer.Visibility == Visibility.Visible) {
 			SettingsPanel.FocusFind();
@@ -253,6 +256,7 @@ public partial class MainWindow : Window
 	// ---------------------------------------------------------------- drawers
 	void History_Click(object a_s, RoutedEventArgs a_e) => ShowPanel("history");
 	void Settings_Click(object a_s, RoutedEventArgs a_e) => ShowPanel("settings");
+	void Themes_Click(object a_s, RoutedEventArgs a_e) => ShowPanel("themes");
 	void CloseDrawer_Click(object a_s, RoutedEventArgs a_e) => CloseDrawer();
 	void Shade_MouseDown(object a_s, MouseButtonEventArgs a_e) => CloseDrawer();
 
@@ -328,10 +332,11 @@ public partial class MainWindow : Window
 			return;
 		}
 		_panel = a_which;
-		DrawerTitle.Text = a_which switch { "history" => "PAST RUNS", "changes" => "WHAT MO2 CHANGED", _ => "SETTINGS" };
+		DrawerTitle.Text = a_which switch { "history" => "PAST RUNS", "changes" => "WHAT MO2 CHANGED", "themes" => "THEMES", _ => "SETTINGS" };
 		DrawerBody.Content = a_which switch {
 			"history" => WithSwitch(HistoryPanel(), a_which),
 			"changes" => WithSwitch(ChangesPanel(null), a_which),
+			"themes" => ThemeGallery.Build(this, _vm),
 			_ => SettingsPanel.Build(this, _vm),
 		};
 		if (DrawerBody.Content is DependencyObject drawn) {
@@ -341,7 +346,7 @@ public partial class MainWindow : Window
 		if (opening) {
 			_beforeDrawer = Keyboard.FocusedElement;
 		}
-		System.Windows.Automation.AutomationProperties.SetName(Drawer, a_which switch { "history" => "Past runs", "changes" => "What MO2 changed", _ => "Settings" });
+		System.Windows.Automation.AutomationProperties.SetName(Drawer, a_which switch { "history" => "Past runs", "changes" => "What MO2 changed", "themes" => "Themes", _ => "Settings" });
 		Drawer.Visibility = Shade.Visibility = Visibility.Visible;
 		// the keyboard moves into the drawer (Tab then stays inside it - its own cycle - until Esc or Close), and a screen reader
 		// hears which one opened

@@ -67,7 +67,7 @@ public static class DataRemoval
 	}
 
 	// the offline tests point this elsewhere (the real ProgramData folders are never touched by a test)
-	public static IEnumerable<string> WorkRoots { get; set; } = [Brand.WorkRoot, Brand.OldWorkRoot];
+	public static IEnumerable<string> WorkRoots { get; set; } = [Brand.WorkRoot, .. Brand.OldWorkRoots];
 
 	public static List<string> BackupsOf(string a_backupDir, string a_setupName)
 	{

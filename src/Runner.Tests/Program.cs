@@ -655,10 +655,10 @@ public static class Program
 	{
 		var mon = new DateTime(2026, 10, 26, 3, 0, 0, DateTimeKind.Utc);
 		var thu = mon.AddDays(3);
-		Equal("Skyrim Utility Patcher - clean save", InGame.PlaySaveFrom("Skyrim Utility Patcher - clean save", null, mon, "Save9", thu).Save, "this run's clean save first");
+		Equal("Output Manager - clean save", InGame.PlaySaveFrom("Output Manager - clean save", null, mon, "Save9", thu).Save, "this run's clean save first");
 		Equal("Named", InGame.PlaySaveFrom(null, "Named", mon, "Save9", thu).Save, "then the one the setup names");
 		Equal("Save9", InGame.PlaySaveFrom(null, null, mon, "Save9", thu).Save, "an old clean save loses to newer progress of the player's");
-		Equal("Skyrim Utility Patcher - clean save", InGame.PlaySaveFrom(null, null, thu, "Save9", mon).Save, "a clean save newer than every save of theirs is used");
+		Equal("Output Manager - clean save", InGame.PlaySaveFrom(null, null, thu, "Save9", mon).Save, "a clean save newer than every save of theirs is used");
 		Equal("Save9", InGame.PlaySaveFrom(null, null, null, "Save9", mon).Save, "no clean save: the player's newest");
 		Equal<string?>(null, InGame.PlaySaveFrom(null, null, null, null, null).Save, "nothing at all: no save");
 		// only the runner's GAME steps count as its own time - a save the player made while a tool step ran is theirs
@@ -2578,13 +2578,13 @@ public static class Program
 	// runs at a set time are gone (his checklist answer 451): only a task an older version made is recognised, and removed
 	static void T_OldTimedRunsAreClearedAway()
 	{
-		Check(Schedule.IsOurs("Skyrim Utility Patcher - Bottled Shaders 1A2B3C"), "a task of ours");
+		Check(Schedule.IsOurs("Output Manager - Bottled Shaders 1A2B3C"), "a task of ours");
 		Check(Schedule.IsOurs("\\MO2 Tool Runner - Bottled Shaders 1A2B3C"), "one made under the old name");
 		Check(!Schedule.IsOurs("MicrosoftEdgeUpdateTaskMachineCore"), "anyone else's task");
 		Check(!Schedule.IsOurs("MO2 Tool Runner"), "only the name followed by \" - \"");
 		Check(Schedule.IsOurs("mo2 tool runner - Bottled 1A2B3C"), "any case");
 		Check(Schedule.StartsOurs("<Exec><Command>\"C:\\Some Folder\\MO2 Tool Runner.exe\"</Command></Exec>"), "a task starting the old program");
-		Check(Schedule.StartsOurs("<Exec><Command>C:\\x\\Skyrim Utility Patcher.exe</Command></Exec>"), "or the new one");
+		Check(Schedule.StartsOurs("<Exec><Command>C:\\x\\Output Manager.exe</Command></Exec>"), "or the new one");
 		Check(!Schedule.StartsOurs("<Exec><Command>cmd.exe</Command></Exec>"), "a task of the player's own that only shares the name");
 		// Windows itself, only where asked (harmless tasks a year ahead, removed at once)
 		if (Environment.GetEnvironmentVariable("SUP_SCHEDULE_PROBE") != "1") {
@@ -3130,6 +3130,97 @@ public static class Program
 	// the window's pictures read the way the window reads them: an Icon.ico WPF could not decode crashed the program at start
 	// (2026-11-03) - a picture like that fails here, never on a player's screen. Covered: every picture compiled into the program
 	// and every picture App.xaml's resources make; NOT a picture a window names by its own address (use the Logo resource way)
+	// the template's rules for a theme, held for every theme the program ships (his order 2026-11-10: more themes, each one checked):
+	// text and its quieter kind readable on every panel, the outlined and the primary button's text readable, the three states
+	// readable and apart, borders visible. The work folder's "make themes.py" checks the same before it writes a theme
+	static void T_EveryShippedThemeKeepsTheRules()
+	{
+		static double Lum(string a_hex)
+		{
+			var c = Convert.FromHexString(a_hex.TrimStart('#')[^6..]);
+			static double Lin(byte a_v) => a_v / 255.0 <= 0.03928 ? a_v / 255.0 / 12.92 : Math.Pow((a_v / 255.0 + 0.055) / 1.055, 2.4);
+			return 0.2126 * Lin(c[0]) + 0.7152 * Lin(c[1]) + 0.0722 * Lin(c[2]);
+		}
+		static double Ratio(string a_a, string a_b) => (Math.Max(Lum(a_a), Lum(a_b)) + 0.05) / (Math.Min(Lum(a_a), Lum(a_b)) + 0.05);
+		static double Hue(string a_hex)
+		{
+			var c = Convert.FromHexString(a_hex.TrimStart('#')[^6..]);
+			double r = c[0] / 255.0, g = c[1] / 255.0, b = c[2] / 255.0, max = Math.Max(r, Math.Max(g, b)), min = Math.Min(r, Math.Min(g, b));
+			if (max - min < 1e-9) {
+				return 0;
+			}
+			var h = max == r ? (g - b) / (max - min) % 6 : max == g ? (b - r) / (max - min) + 2 : (r - g) / (max - min) + 4;
+			return (h * 60 + 360) % 360;
+		}
+		var names = ToolRunner.App.Theme.ShippedNames.Prepend(ToolRunner.App.Theme.Default).ToList();
+		Check(names.Count >= 10 && names.Distinct().Count() == names.Count, "a real collection of themes, each named once");
+		var light = 0;
+		foreach (var name in names) {
+			var t = System.Text.Json.Nodes.JsonNode.Parse(ToolRunner.App.Theme.ShippedText(name))!;
+			Equal(name, t["name"]!["value"]!.ToString(), "the theme's own name is its file's");
+			string C(string a_key) => t["colors"]![a_key]!["value"]!.ToString();
+			void Need(string a_what, string a_a, string a_b, double a_least) =>
+				Check(Ratio(a_a, a_b) >= a_least, $"{name}: {a_what} is {Ratio(a_a, a_b):0.00} : 1, needs {a_least:0.0} ({a_a} on {a_b})");
+			var mode = t["windowsMode"]!["value"]!.ToString();
+			Check(mode is "Light" or "Dark", name + ": its mode");
+			light += mode == "Light" ? 1 : 0;
+			Equal(mode == "Dark", Lum(C("Bg")) < 0.2, name + ": its mode matches its background");
+			foreach (var back in new[] { "Bg", "Panel", "Panel2" }) {
+				Need("text on " + back, C("Text"), C(back), 4.5);
+				Need("quiet text on " + back, C("Muted"), C(back), 4.5);
+			}
+			foreach (var back in new[] { "Panel2", "HoverFill", "Panel" }) {
+				Need("an outlined button's text on " + back, C("AccentLight"), C(back), 4.5);
+			}
+			foreach (var back in new[] { "Panel", "Bg" }) {
+				Need("a heading on " + back, C("Accent"), C(back), 3.0);
+				Need("a border on " + back, C("Line"), C(back), 1.25);
+			}
+			var stops = t["gradients"]!["PrimaryAndProgress"]!["stops"]!.AsArray();
+			Check(stops.Count >= 2, name + ": the primary gradient has its stops");
+			foreach (var stop in stops) {
+				Need("the primary button's text on its gradient", C("OnAccent"), stop!["color"]!.ToString(), 4.5);
+			}
+			Need("a tick on a ticked box", C("OnAccent"), C("Accent"), 4.5);
+			foreach (var state in new[] { "Good", "Warn", "Bad" }) {
+				Need(state + " on a panel", C(state), C("Panel"), 4.5);
+				Need(state + " inside a box", C(state), C("Panel2"), 4.5);
+			}
+			foreach (var fill in new[] { "BannerBad", "GuidedFill", "HoverFill" }) {
+				Need("text on " + fill, C("Text"), C(fill), 4.5);
+			}
+			foreach (var (a, b) in new[] { ("Good", "Warn"), ("Warn", "Bad"), ("Good", "Bad") }) {
+				var d = Math.Abs(Hue(C(a)) - Hue(C(b)));
+				Check(Math.Min(d, 360 - d) >= 25, $"{name}: {a} and {b} are told apart by hue too");
+			}
+			var accent = t["windowsAccent"]!.AsObject();
+			Check(new[] { "Light3", "Light2", "Light1", "Base", "Dark1", "Dark2", "Dark3" }.All(k => accent[k] != null), name + ": Windows' own controls get all seven accent shades");
+		}
+		Check(light >= 3 && names.Count - light >= 3, "light and dark themes both");
+		// Color-blind safe changes only the three states, over the default: each still readable there
+		foreach (var state in new[] { "#0072B2", "#7A5C00", "#B34E00" }) {
+			Check(Ratio(state, "#FFFFFF") >= 4.5 && Ratio(state, "#F3F6FA") >= 4.5, "a color-blind safe state is readable on the default's panels: " + state);
+		}
+		// a new theme started from an existing one: the whole template with that theme's values, under a free name, its lines of where kept
+		var made = ToolRunner.App.Theme.CopyAs("Midnight", null);
+		try {
+			var copy = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(made))!;
+			Equal("#0B1220", copy["colors"]!["Bg"]!["value"]!.ToString(), "the copy has the theme's colors");
+			Check(copy["colors"]!["Bg"]!["where"]!.ToString().Length > 10 && copy["fonts"]!["Ui"]!["value"]!.ToString().Length > 0, "and the template's guidance and the values the theme left alone");
+			Equal("Dark", copy["windowsMode"]!["value"]!.ToString(), "and its mode");
+			Equal("Midnight copy", copy["name"]!["value"]!.ToString(), "under a name of its own");
+			var second = ToolRunner.App.Theme.CopyAs("Midnight", null);
+			try {
+				Check(!string.Equals(second, made, StringComparison.OrdinalIgnoreCase), "a second copy never overwrites the first");
+			} finally {
+				File.Delete(second);
+			}
+			Check(ToolRunner.App.Theme.List().Any(x => x.File != null && string.Equals(x.File, made, StringComparison.OrdinalIgnoreCase) && x.Name == "Midnight copy"), "and it is listed as a theme of the player's");
+		} finally {
+			File.Delete(made);
+		}
+	}
+
 	static void T_EveryWindowPictureLoads()
 	{
 		string[] kinds = [".png", ".ico", ".jpg", ".jpeg", ".bmp", ".gif"];
@@ -3172,10 +3263,38 @@ public static class Program
 				// the mode in use is last, so it wins
 				Check(app.Resources.MergedDictionaries.Any(d => d.Contains("TextControlElevationBorderFocusedBrush")), "the accent brushes load with App.xaml");
 				ToolRunner.App.Theme.Apply(ToolRunner.App.Theme.Default, false);
-				Equal("Accent.xaml", ToolRunner.App.Theme.AccentInUse, "the dark set after the built-in look");
-				var ours = app.Resources.MergedDictionaries.Last(d => d.Source?.OriginalString.EndsWith("/Accent.xaml", StringComparison.Ordinal) == true);
+				Equal("AccentLight.xaml", ToolRunner.App.Theme.AccentInUse, "the light set after the built-in look");
+				var ours = app.Resources.MergedDictionaries.Last(d => d.Source?.OriginalString.EndsWith("/AccentLight.xaml", StringComparison.Ordinal) == true);
 				Check(ReferenceEquals(app.Resources["TextControlElevationBorderFocusedBrush"], ours["TextControlElevationBorderFocusedBrush"]),
 					"the text box's focus line is the program's own brush, not the Fluent theme's");
+				// the default look is App.xaml's own values, and they are its theme file's: the gallery's picture of the default and a
+				// theme started from it show what the window shows
+				var daylight = System.Text.Json.Nodes.JsonNode.Parse(ToolRunner.App.Theme.ShippedText(ToolRunner.App.Theme.Default))!;
+				foreach (var (key, node) in daylight["colors"]!.AsObject()) {
+					var resource = key switch { "Accent" or "AccentLight" or "AccentDim" => key, _ => key } + "Color";
+					Equal(((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(node!["value"]!.ToString())).ToString(),
+						((System.Windows.Media.Color)app.Resources[resource]).ToString(), $"App.xaml's {resource} is the default theme file's {key}");
+				}
+				// every shipped theme applies whole (no value left as the default's by a misread), takes its own mode and accent set, and
+				// the default comes back as it was
+				foreach (var name in ToolRunner.App.Theme.ShippedNames) {
+					var problems = ToolRunner.App.Theme.Apply(name, false);
+					Check(problems.Count == 0, $"the theme {name} applies with nothing left out: {string.Join("; ", problems)}");
+					Equal(name, ToolRunner.App.Theme.Current, "the theme in use");
+					var file = System.Text.Json.Nodes.JsonNode.Parse(ToolRunner.App.Theme.ShippedText(name))!;
+					Equal(file["windowsMode"]!["value"]!.ToString(), ToolRunner.App.Theme.Mode, $"{name}'s mode");
+					Equal(ToolRunner.App.Theme.Mode == "Light" ? "AccentLight.xaml" : "Accent.xaml", ToolRunner.App.Theme.AccentInUse, $"{name}'s accent set");
+					Equal(((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(file["colors"]!["Bg"]!["value"]!.ToString())).ToString(),
+						((System.Windows.Media.Color)app.Resources["BgColor"]).ToString(), $"{name}'s background reached the window");
+				}
+				Check(ToolRunner.App.Theme.Apply(ToolRunner.App.Theme.ColorBlind, false).Count == 0 && ToolRunner.App.Theme.Apply(ToolRunner.App.Theme.HighContrast, false).Count == 0,
+					"the two looks built in code apply");
+				ToolRunner.App.Theme.Apply(ToolRunner.App.Theme.Default, false);
+				Equal("#FFE9EEF5", ((System.Windows.Media.Color)app.Resources["BgColor"]).ToString(), "the default is back after the others");
+				Equal("Light", ToolRunner.App.Theme.Mode, "and its mode");
+				// each theme's card in the gallery reads its own file, never the look in use
+				var midnight = ToolRunner.App.Theme.LookOf("Midnight", null);
+				Check(midnight.Dark && midnight.Problem == null && midnight.Bg.ToString() == "#FF0B1220" && midnight.About.Length > 0, "the gallery reads a theme without applying it");
 				foreach (var k in app.Resources.Keys) {
 					if (app.Resources[k] is System.Windows.Media.Imaging.BitmapSource b) {
 						Whole(b, $"the {k} picture");
@@ -3800,7 +3919,7 @@ public static class Program
 		Check(Files.SamePath(setupsDir, Path.Combine(f.Data, "Setups")), "the fake setup lives in the data folder's Setups");
 		// its ProgramData work folder (FasterNGIO's wrapper) - a stand-in, the real one is never touched by a test
 		var keepRoots = DataRemoval.WorkRoots;
-		var work = Path.Combine(f.Root, "ProgramData SkyrimUtilityPatcher");
+		var work = Path.Combine(f.Root, "ProgramData OutputManager");
 		Directory.CreateDirectory(work);
 		DataRemoval.WorkRoots = [work, Path.Combine(f.Root, "not there")];
 		try {
@@ -4117,7 +4236,7 @@ public static class Program
 		var t0 = DateTime.UtcNow.AddDays(-2);
 		Save("Save2_Bjorn", "Björn", t0.AddHours(1));
 		Save("Save3_Lydia", "Lydia", t0.AddHours(2));
-		Save("Skyrim Utility Patcher - clean save", "Lydia", t0.AddHours(3));
+		Save("Output Manager - clean save", "Lydia", t0.AddHours(3));
 		Equal("Save3_Lydia", InGame.NewestPlayerSave(p), "no character picked: anyone's newest (never one the runner made)");
 		Equal("Save2_Bjorn", InGame.NewestPlayerSave(p, null, "björn"), "the picked character's newest, though another played since");
 		Equal("Lydia", InGame.OtherCharacter(p, "Save3_Lydia", "Björn"), "a save of another character is told apart");
@@ -4527,7 +4646,7 @@ public static class Program
 	// is in-game, on the full run's list)
 	static void T_ASaveThatDidNotHappenIsSaid()
 	{
-		var first = InGame.SaveNotMade("Skyrim Utility Patcher - clean save", false);
+		var first = InGame.SaveNotMade("Output Manager - clean save", false);
 		Check(first.Contains("clean save", StringComparison.Ordinal) && first.Contains("may be blocking saves", StringComparison.Ordinal) && first.Contains("Force the save", StringComparison.Ordinal),
 			"names the save, the likely cause and the setting: " + first);
 		var forced = InGame.SaveNotMade("x", true);
@@ -4749,15 +4868,15 @@ public static class Program
 	{
 		using var f = new FakeMo2();
 		var mo2 = Mo2Instance.Load(f.Exe, f.Instance);
-		const string Program = @"D:\Tools\Skyrim Utility Patcher.exe";
+		const string Program = @"D:\Tools\Output Manager.exe";
 		Check(!Mo2MenuEntry.IsCurrent(mo2, Program), "not there yet");
 		Mo2MenuEntry.Add(mo2, Program);
 		Check(Mo2MenuEntry.IsCurrent(mo2, Program), "added");
-		var file = Path.Combine(Path.GetDirectoryName(f.Exe)!, "plugins", "skyrimutilitypatcher.py");
+		var file = Path.Combine(Path.GetDirectoryName(f.Exe)!, "plugins", "outputmanager.py");
 		var text = File.ReadAllText(file);
 		Check(text.Contains("PROGRAM = r\"" + Program + "\"", StringComparison.Ordinal) && !text.Contains("@PROGRAM@", StringComparison.Ordinal), "it points at the program");
 		Check(text.Contains("\"--for-profile\"", StringComparison.Ordinal) && text.Contains("\"--mo2\"", StringComparison.Ordinal) && text.Contains("\"--base\"", StringComparison.Ordinal), "and asks for what the window takes");
-		Check(!Mo2MenuEntry.IsCurrent(mo2, @"E:\Moved\Skyrim Utility Patcher.exe"), "a program moved since is offered it again");
+		Check(!Mo2MenuEntry.IsCurrent(mo2, @"E:\Moved\Output Manager.exe"), "a program moved since is offered it again");
 		Check(Mo2Control.IsThisProgram(Brand.Name + ".exe"), "this program under Mod Organizer is not one a run waits for");
 		Check(!Mo2Control.IsThisProgram("SSEEdit.exe"), "another program is");
 	}
@@ -5005,7 +5124,7 @@ public static class Program
 	{
 		using var f = new FakeMo2();
 		var mo2 = Mo2Instance.Load(f.Exe, f.Instance);
-		var folder = Path.Combine(Path.GetDirectoryName(f.Exe)!, "plugins", "data", "SkyrimUtilityPatcher");
+		var folder = Path.Combine(Path.GetDirectoryName(f.Exe)!, "plugins", "data", "OutputManager");
 		Check(!Companion.Ask(mo2, "Test", "ping", TimeSpan.FromMilliseconds(150), CancellationToken.None), "nobody there: no answer");
 		Equal(0, Directory.GetFiles(folder).Length, "and nothing left behind");
 		using var stop = new CancellationTokenSource();
@@ -5026,11 +5145,11 @@ public static class Program
 		answering.Wait();
 		Equal($"refresh\n{mo2.BaseDir}\nTest", heard.Single(), "what was asked, and of which Mod Organizer");
 		Equal(0, Directory.GetFiles(folder).Length, "and nothing left behind");
-		var entry = Mo2MenuEntry.Text(@"D:\Tools\Skyrim Utility Patcher.exe");
+		var entry = Mo2MenuEntry.Text(@"D:\Tools\Output Manager.exe");
 		Check(entry.Contains("self._mine(base, profile)", StringComparison.Ordinal), "the plugin answers only for its own instance and profile");
 		Check(entry.Contains("onNextRefresh", StringComparison.Ordinal) && entry.Contains("refresh(False)", StringComparison.Ordinal), "the plugin reads the lists back in, without saving its own over them");
 		Check(!Mo2MenuEntry.Present(mo2), "no entry yet");
-		Mo2MenuEntry.Add(mo2, @"D:\Tools\Skyrim Utility Patcher.exe");
+		Mo2MenuEntry.Add(mo2, @"D:\Tools\Output Manager.exe");
 		Check(Mo2MenuEntry.Present(mo2), "the entry is there");
 		var control = new Mo2Control(mo2, "Test", RunLog.Null);
 		Check(!control.HeldOpen, "Mod Organizer is not held open unless asked");
@@ -5485,14 +5604,55 @@ public static class Program
 	// to its exe's name so a future rename cannot split them again
 	static void T_TheEngineIsKnownByItsRealName()
 	{
-		foreach (var n in new[] { "Skyrim Utility Patcher", "skyrim utility patcher", "MO2 Tool Runner", "Patcher Unification Project", "Runner.Tests" }) {
+		foreach (var n in new[] { "Output Manager", "skyrim utility patcher", "MO2 Tool Runner", "Patcher Unification Project", "Runner.Tests" }) {
 			Check(Journal.IsRunnerName(n), $"\"{n}\" is the program");
 		}
-		foreach (var n in new[] { "ModOrganizer", "Skyrim Utility Patcher Helper", "SkyrimSE", "" }) {
+		foreach (var n in new[] { "ModOrganizer", "Output Manager Helper", "SkyrimSE", "" }) {
 			Check(!Journal.IsRunnerName(n), $"\"{n}\" is not the program");
 		}
 		Equal(Brand.Name, typeof(ToolRunner.App.App).Assembly.GetName().Name, "the program's name is its exe's name");
 		Check(Journal.IsRunner(Environment.ProcessId), "this process (the tests) counts as the program");
+	}
+
+	// the rename to Output Manager (his pick 2026-11-10): what a player or a modder made under the name before it is still the program's own -
+	// an output mod's mark, an add-on's folder, the ProgramData folders, and the Tools menu entry, which never shows twice
+	static void T_WhatAnOlderNameMadeIsStillItsOwn()
+	{
+		Equal("Skyrim Utility Patcher", Brand.OldNames[0], "the name it had last is the first old one");
+		Check(Brand.Is("skyrim utility patcher") && Brand.Is("Output Manager") && Brand.Is("MO2 Tool Runner") && !Brand.Is("Output Manager 2") && !Brand.Is(null), "a name of its own, whole, any case");
+		Check(Brand.Made("Skyrim Utility Patcher - ready to play") && Brand.Made("Output Manager - clean save"), "saves under either name are its own");
+		Check(Profile.MadeByUs("[General]\r\ncomments=made by Skyrim Utility Patcher\r\n") && Profile.MadeByUs("comments=made by Output Manager") &&
+		      !Profile.MadeByUs("comments=made by DynDOLOD"), "an output mod made under the old name is known as its own");
+		Check(!Brand.Compact.Contains(' ', StringComparison.Ordinal) && Brand.OldCompact.Contains("SkyrimUtilityPatcher") && Brand.OldWorkRoots.Any(r => r.EndsWith("SkyrimUtilityPatcher", StringComparison.Ordinal)) &&
+		      Brand.WorkRoot.EndsWith("OutputManager", StringComparison.Ordinal), "its ProgramData folder, and the old ones the clean removal still takes");
+		Check(DataRemoval.WorkRoots.Count() == 1 + Brand.OldCompact.Length, "the clean removal looks in every one of them");
+
+		using var f = new FakeMo2();
+		var mo2 = Mo2Instance.Load(f.Exe, f.Instance);
+		// an add-on a modder shipped for the old name: found in its old folder
+		var mod = Path.Combine(f.Mods, "Base Mod");
+		Directory.CreateDirectory(Path.Combine(mod, "Skyrim Utility Patcher"));
+		Directory.CreateDirectory(Path.Combine(mod, "tools"));
+		File.WriteAllText(Path.Combine(mod, "tools", "MyPatcher.exe"), "");
+		File.WriteAllText(Path.Combine(mod, "Skyrim Utility Patcher", "patcher.json"),
+			"""{ "schema": 1, "name": "My Patcher", "author": "A Modder", "page": "https://example.com/p", "program": "tools/MyPatcher.exe", "arguments": "--auto", "output": "My Patcher Output", "minutes": 30, "makes": "MyPatch.esp", "after": "synthesis" }""");
+		var found = AddOns.Find(mo2, ProfileOf(f));
+		Check(found.Count == 1 && found[0].Problems.Count == 0 && found[0].AddOn?.Name == "My Patcher", "an add-on in the old name's folder is found: " + string.Join("; ", found.SelectMany(x => x.Problems)));
+		Check(AddOns.IsFolderInMod("Skyrim Utility Patcher") && AddOns.IsFolderInMod(AddOns.FolderInMod) && !AddOns.IsFolderInMod("tools"), "and its folder is known by either name");
+
+		// the Tools menu entry: the old-named file leaves when the new one is added; another author's file of that name stays
+		const string Program = @"D:\Tools\Output Manager.exe";
+		var plugins = Path.Combine(Path.GetDirectoryName(f.Exe)!, "plugins");
+		Directory.CreateDirectory(plugins);
+		var old = Path.Combine(plugins, "skyrimutilitypatcher.py");
+		File.WriteAllText(old, Mo2MenuEntry.Text(@"D:\Tools\Skyrim Utility Patcher.exe"));
+		Check(!Mo2MenuEntry.Present(mo2) && Mo2MenuEntry.OldOnes(mo2).Single() == old, "only the old name's entry is there: it is not this version's");
+		Mo2MenuEntry.Add(mo2, Program);
+		Check(Mo2MenuEntry.IsCurrent(mo2, Program) && !File.Exists(old), "the new entry is in and the old one gone - the program is in the menu once");
+		File.WriteAllText(old, "# someone else's plugin that happens to have this name\n");
+		Check(!Mo2MenuEntry.OldOnes(mo2).Any() && Mo2MenuEntry.IsCurrent(mo2, Program), "a file of that name that is not the entry is not touched");
+		Mo2MenuEntry.Add(mo2, Program);
+		Check(File.Exists(old), "and stays");
 	}
 
 	// a setup keeps its newest 100 run records; an unfinished one and the running one are never removed, another setup's never

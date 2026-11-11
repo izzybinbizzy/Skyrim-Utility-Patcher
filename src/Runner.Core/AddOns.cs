@@ -6,7 +6,7 @@ using ToolRunner.Steps;
 
 namespace ToolRunner;
 
-// His checklist 433-435: a modder adds their patcher with one file in their own mod, <mod>\Skyrim Utility Patcher\<anything>.json, saying what it is, how to
+// His checklist 433-435: a modder adds their patcher with one file in their own mod, <mod>\Output Manager\<anything>.json, saying what it is, how to
 // start it, what it makes and where it goes in the order. No code of theirs is loaded into this program. The player sees exactly what it will start
 // and says yes once; a file that changes later is asked about again (a setting turns the question off). What the tool writes lands in overwrite, and goes
 // into the add-on's own output mod, never another mod.
@@ -25,7 +25,10 @@ public sealed record AddOn(string File, string ModDir, string Name, string Autho
 public static class AddOns
 {
 	public const string KeyPrefix = "addon:";
-	public const string FolderInMod = "Skyrim Utility Patcher";
+	// the folder inside a modder's own mod: named after the program, under any name it had (an add-on made for an older name still counts)
+	public const string FolderInMod = Brand.Name;
+
+	public static bool IsFolderInMod(string? a_folderName) => Brand.Is(a_folderName);
 	public const string NoAskSetting = "addonsNoAsk";
 	const int Schema = 1;
 	const int DefaultMinutes = 60, MostMinutes = 600, LongestName = 60;
@@ -111,11 +114,7 @@ public static class AddOns
 		var found = new List<Found>();
 		foreach (var mod in a_profile.States().Where(s => s.Value == '+').Select(s => s.Key)) {
 			var modDir = a_mo2.ModDir(mod);
-			var dir = Path.Combine(modDir, FolderInMod);
-			if (!Directory.Exists(dir)) {
-				continue;
-			}
-			foreach (var f in Directory.GetFiles(dir, "*.json")) {
+			foreach (var f in Brand.AllNames.Select(n => Path.Combine(modDir, n)).Where(Directory.Exists).SelectMany(d => Directory.GetFiles(d, "*.json"))) {
 				try {
 					var problems = Problems(Files.ReadSharedText(f), modDir);
 					found.Add(new Found(f, mod, problems.Count == 0 ? Read(f, modDir) : null, problems));

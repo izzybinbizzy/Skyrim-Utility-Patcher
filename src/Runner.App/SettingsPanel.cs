@@ -375,83 +375,11 @@ public static class SettingsPanel
 		stack.Children.Add(languageRow);
 
 		Head("THE WINDOW'S LOOK");
-		var themeNote = new TextBlock { Text = "A theme is a copy of \"Theme template.json\" (in the Themes folder) with new values. It applies at once.",
-			Style = (Style)a_w.FindResource("MutedText"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 8) };
-		var themeRow = new StackPanel { Orientation = Orientation.Horizontal };
-		var themes = new ComboBox { MinWidth = 220, Margin = new Thickness(0, 0, 10, 0) };
-		System.Windows.Automation.AutomationProperties.SetName(themes, "Theme");
-		// the Themes folder is read off the window's thread (many or slow files never freeze it)
-		var filling = false;
-		async void FillThemes()
-		{
-			var (list, error) = await Task.Run(() => {
-				string? err = null;
-				try {
-					Theme.EnsureFolder();
-				} catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException) {
-					err = "The Themes folder could not be made: " + e.Message;
-				}
-				// an unreadable folder still shows the built-in look, with why (the fourth review, L8)
-				try {
-					return (Theme.List(), err);
-				} catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Security.SecurityException) {
-					// the theme in use stays listed beside the built-in one, so the picker shows what is on screen and the built-in
-					// look can still be picked (CodeRabbit on PR #4)
-					var keep = new List<(string Name, string? File)> { (Theme.Default, null) };
-					keep.AddRange(Theme.BuiltInNames.Select(b => (b, (string?)null)));
-					if (Theme.Current != Theme.Default && !Theme.BuiltInNames.Contains(Theme.Current)) {
-						keep.Add((Theme.Current, null));
-					}
-					return (keep, "The Themes folder could not be read: " + e.Message);
-				}
-			});
-			if (error != null) {
-				themeNote.Text = error;
-			}
-			filling = true;
-			themes.ItemsSource = list.Select(t => t.Name).ToList();
-			themes.SelectedItem = list.Any(t => t.Name == Theme.Current) ? Theme.Current : Theme.Default;
-			filling = false;
-		}
-		FillThemes();
-		// a look changed by Windows (high contrast followed) shows in the picker while Settings is open
-		void OnChanged() => themes.Dispatcher.BeginInvoke(() => {
-			filling = true;
-			themes.SelectedItem = Theme.Current;
-			filling = false;
-		});
-		Theme.Changed += OnChanged;
-		themes.Unloaded += (_, _) => Theme.Changed -= OnChanged;
-		themes.SelectionChanged += async (_, _) => {
-			if (filling || themes.SelectedItem is not string name || name == Theme.Current) {
-				return;
-			}
-			var problems = await Theme.ApplyAsync(name);
-			themeNote.Text = problems.Count == 0 ? $"\"{Theme.Current}\" in use." : "In use, with these values left as the default: " + string.Join("; ", problems.Take(6));
-		};
-		var openThemes = new Button { Content = "Open the Themes folder", Style = (Style)a_w.FindResource("Ghost"), Margin = new Thickness(0, 0, 8, 0) };
-		openThemes.Click += (_, _) => System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(Theme.Folder) { UseShellExecute = true });
-		var reload = new Button { Content = "Look again", Style = (Style)a_w.FindResource("Ghost"), ToolTip = "Reads the Themes folder again (a theme just added)" };
-		reload.Click += (_, _) => FillThemes();
-		themeRow.Children.Add(themes);
-		themeRow.Children.Add(openThemes);
-		themeRow.Children.Add(reload);
-		stack.Children.Add(themeNote);
-		stack.Children.Add(themeRow);
-		// his checklist 473: bigger text for every theme, kept for the next start
-		stack.Children.Add(new TextBlock { Text = "Text size", Foreground = Brushes2.Get("Gold"), Margin = new Thickness(0, 12, 0, 4) });
-		var size = new ComboBox { MinWidth = 220, HorizontalAlignment = HorizontalAlignment.Left, ItemsSource = Theme.TextScales.Select(s => $"{s * 100:0} %").ToList(),
-			SelectedIndex = Math.Max(0, Array.IndexOf(Theme.TextScales, Theme.TextScale)) };
-		System.Windows.Automation.AutomationProperties.SetName(size, "Text size");
-		size.SelectionChanged += (_, _) => {
-			if (size.SelectedIndex >= 0) {
-				Theme.SetTextScale(Theme.TextScales[size.SelectedIndex]);
-			}
-		};
-		stack.Children.Add(size);
-		stack.Children.Add(new TextBlock { Text = "The \"High contrast\" theme takes Windows' own high-contrast colors and is used by itself while Windows has high contrast on " +
-			"and no theme was picked here. \"Color-blind safe\" keeps finished, warning and failed apart by more than red and green. Every state also has its own mark.",
-			Style = (Style)a_w.FindResource("MutedText"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 0) });
+		stack.Children.Add(new TextBlock { Text = "Themes and the text size have their own page: every look shown as a picture, one click to use it.",
+			Style = (Style)a_w.FindResource("MutedText"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 8) });
+		var openThemes = new Button { Content = "Open the themes ...", Style = (Style)a_w.FindResource("Ghost"), HorizontalAlignment = HorizontalAlignment.Left, ToolTip = "Ctrl+T" };
+		openThemes.Click += (_, _) => a_w.ShowPanel("themes");
+		stack.Children.Add(openThemes);
 
 		NewVersions(a_w, stack);
 
@@ -528,7 +456,7 @@ public static class SettingsPanel
 			}
 			try {
 				var parent = Path.GetDirectoryName(d.FileName);
-				var problems = AddOns.Problems(Files.ReadSharedText(d.FileName), Path.GetFileName(parent) == AddOns.FolderInMod ? Path.GetDirectoryName(parent) : null);
+				var problems = AddOns.Problems(Files.ReadSharedText(d.FileName), AddOns.IsFolderInMod(Path.GetFileName(parent)) ? Path.GetDirectoryName(parent) : null);
 				a_vm.Say(problems.Count == 0 ? "That add-on file is right." : string.Join(" ", problems.Select(p => p + ".")), problems.Count == 0 ? "good" : "bad");
 			} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
 				a_vm.Say("That file could not be read: " + e.Message, "bad");
@@ -980,7 +908,7 @@ public static class SettingsPanel
 		var row = new Grid { Margin = new Thickness(0, 0, 0, 10) };
 		row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(230) });
 		row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-		var label = new TextBlock { Text = a_label, Foreground = Brushes2.Get("Gold"), TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 12, 0) };
+		var label = new TextBlock { Text = a_label, Foreground = Brushes2.Get("Accent"), TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 12, 0) };
 		row.Children.Add(label);
 		FrameworkElement edit;
 		var cur = a_obj[a_key];
@@ -1057,7 +985,7 @@ public static class SettingsPanel
 		var row = new Grid { Margin = new Thickness(0, 0, 0, 10) };
 		row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(230) });
 		row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-		row.Children.Add(new TextBlock { Text = a_label, Foreground = Brushes2.Get("Gold"), TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 12, 0) });
+		row.Children.Add(new TextBlock { Text = a_label, Foreground = Brushes2.Get("Accent"), TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 12, 0) });
 		var box = new ComboBox { ItemsSource = a_options.Select(o => o.Text).ToList() };
 		var cur = Setup.Str(a_obj, a_key);
 		box.SelectedIndex = Math.Max(0, Array.FindIndex(a_options, o => string.Equals(o.Value, cur, StringComparison.OrdinalIgnoreCase)));

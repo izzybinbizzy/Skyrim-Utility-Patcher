@@ -30,7 +30,7 @@ public static class NewSetupDialog
 
 		void Row(string a_label, FrameworkElement a_edit, FrameworkElement? a_extra = null)
 		{
-			stack.Children.Add(new TextBlock { Text = a_label, Foreground = Brushes2.Get("Gold"), Margin = new Thickness(0, 8, 0, 4) });
+			stack.Children.Add(new TextBlock { Text = a_label, Foreground = Brushes2.Get("Accent"), Margin = new Thickness(0, 8, 0, 4) });
 			var d = new DockPanel();
 			if (a_extra != null) {
 				DockPanel.SetDock(a_extra, Dock.Right);

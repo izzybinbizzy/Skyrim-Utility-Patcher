@@ -4,9 +4,9 @@ using System.Windows.Media.Imaging;
 
 namespace ToolRunner.App;
 
-//   "Skyrim Utility Patcher.exe"                       the window
-//   "Skyrim Utility Patcher.exe" run | check | ...     the command line (Cli.cs) - no window
-//   "Skyrim Utility Patcher.exe" --snapshot <folder>   the window drawn off screen into <folder>\*.png (nothing is shown)
+//   "Output Manager.exe"                       the window
+//   "Output Manager.exe" run | check | ...     the command line (Cli.cs) - no window
+//   "Output Manager.exe" --snapshot <folder>   the window drawn off screen into <folder>\*.png (nothing is shown)
 public partial class App : Application
 {
 	// started for the command line or the off-screen pictures (no window of the player's): nothing goes online then
@@ -177,10 +177,10 @@ public partial class App : Application
 		Pump(w, 600);
 		Picture(w, a_dir, "3 a guided step");
 		// past runs: their logs written into a scratch folder for the history view to read, removed after
-		var runs = Path.Combine(Path.GetTempPath(), $"Skyrim Utility Patcher page runs {Guid.NewGuid():N}");
+		var runs = Path.Combine(Path.GetTempPath(), $"Output Manager page runs {Guid.NewGuid():N}");
 		try {
 			var steps = StepCatalog.DefaultOrder.Where(k => k is not ("wryebash" or "anvillod" or "easynpc" or "upf" or "smash" or "reqtificator")).ToList();
-			var full = new List<string> { "21:02:10  Skyrim Utility Patcher - " + name + " (profile " + name + "), " + steps.Count + " steps",
+			var full = new List<string> { "21:02:10  Output Manager - " + name + " (profile " + name + "), " + steps.Count + " steps",
 				"21:02:10  every output switched off - each back on once its tool rebuilt it" };
 			var at = new DateTime(2026, 10, 27, 21, 2, 22);
 			foreach (var k in steps) {
@@ -198,9 +198,9 @@ public partial class App : Application
 			foreach (var (when, took, verdict, ok, log) in new[] {
 				("Tue Oct 27  21:02", "1h 41m", $"finished: {steps.Count} step(s) in 101 min", true, full),
 				("Mon Oct 26  23:15", "30m", "finished: 3 step(s) in 30 min", true,
-					new List<string> { "23:15:02  Skyrim Utility Patcher - " + name + " (profile " + name + "), from TexGen: 3 steps", "23:45:10  ALL DONE: finished: 3 step(s) in 30 min" }),
+					new List<string> { "23:15:02  Output Manager - " + name + " (profile " + name + "), from TexGen: 3 steps", "23:45:10  ALL DONE: finished: 3 step(s) in 30 min" }),
 				("Sun Oct 25  22:40", "48m", "stopped at DynDOLOD - the profile is back as it was, with this run's finished outputs on; carry on from DynDOLOD", false,
-					new List<string> { "22:40:11  Skyrim Utility Patcher - " + name + " (profile " + name + "), " + steps.Count + " steps", "23:28:30  stopped on request" }),
+					new List<string> { "22:40:11  Output Manager - " + name + " (profile " + name + "), " + steps.Count + " steps", "23:28:30  stopped on request" }),
 			}) {
 				var folder = Path.Combine(runs, rows.Count.ToString(System.Globalization.CultureInfo.InvariantCulture));
 				Directory.CreateDirectory(folder);
@@ -282,6 +282,10 @@ public partial class App : Application
 			Pump(w, 400);
 			Save(name);
 		}
+		// the theme gallery: every look as its own card (its themes are read off the window's thread, so it gets a moment)
+		w.ShowPanel("themes");
+		Pump(w, 1500);
+		Save("3d themes");
 		w.CloseDrawerNow();
 		// the preview before a run (his checklist 270), for a made-up run
 		var demo = new RunPreview();
@@ -313,29 +317,13 @@ public partial class App : Application
 		w.Demo(true);
 		Pump(w, 600);
 		Save("6 a guided step");
-		// a made-up theme over the same run: every themeable value changed, so the picture shows what a theme reaches
-		var demoTheme = Path.Combine(Path.GetTempPath(), $"Skyrim Utility Patcher demo theme {Guid.NewGuid():N}.json");
-		try {
-			File.WriteAllText(demoTheme, """
-				{ "name": { "value": "Demo" }, "windowsMode": { "value": "Light" },
-				  "colors": { "Bg": { "value": "#E9EEF5" }, "Panel": { "value": "#FFFFFF" }, "Panel2": { "value": "#F3F6FA" }, "Line": { "value": "#C9D3E0" },
-				    "Accent": { "value": "#1F6FD1" }, "AccentLight": { "value": "#0E4FA0" }, "AccentDim": { "value": "#8DB3E2" }, "Text": { "value": "#1B2430" },
-				    "Muted": { "value": "#5B6878" }, "Good": { "value": "#1E8A4C" }, "Warn": { "value": "#A86A00" }, "Bad": { "value": "#C2362B" },
-				    "OnAccent": { "value": "#FFFFFF" }, "HoverFill": { "value": "#DCE8F7" }, "BannerBad": { "value": "#FBE3E0" }, "GuidedFill": { "value": "#E3EEFB" },
-				    "Shade": { "value": "#660B1A2E" } },
-				  "gradients": { "PrimaryAndProgress": { "stops": [ { "color": "#1F6FD1", "at": 0 }, { "color": "#3D8BEB", "at": 1 } ] } },
-				  "fonts": { "Ui": { "value": "Segoe UI" }, "Heading": { "value": "Segoe UI Semibold" }, "Mono": { "value": "Consolas" } },
-				  "sizes": { "Heading1": 20, "StepTitle": 24, "Clock": 18 },
-				  "shape": { "CardCorner": 14, "ButtonCorner": 12, "CheckBoxCorner": 9, "GuidedBoxCorner": 12, "ProgressBarHeight": 5 },
-				  "glyphs": { "Running": "→", "Done": "✓" } }
-				""");
-			var themeProblems = Theme.ApplyFileForPicture(demoTheme);
+		// the same run in some of the shipped themes, a dark and a light one among them: what a theme reaches
+		foreach (var theme in new[] { Theme.BlackAndGold, "Midnight", "Paper", Theme.ColorBlind }) {
+			var themeProblems = Theme.Apply(theme, false);
 			Pump(w, 800);
-			Save("8 a theme (demo)" + (themeProblems.Count > 0 ? " - with problems" : ""));
-		} finally {
-			Theme.Apply(Theme.Default, false);
-			File.Delete(demoTheme);
+			Save("8 a run going - " + theme + (themeProblems.Count > 0 ? " - with problems" : ""));
 		}
+		Theme.Apply(Theme.Default, false);
 		w.Close();
 		return 0;
 	}

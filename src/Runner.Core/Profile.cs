@@ -206,7 +206,7 @@ public sealed class Profile(Mo2Instance a_mo2, string a_name, Func<bool> a_mo2Ru
 		var d = Mo2.ModDir(a_mod);
 		if (!Directory.Exists(d)) {
 			Directory.CreateDirectory(d);
-			Files.WriteAtomic(Path.Combine(d, "meta.ini"), "[General]\r\nmodid=0\r\nversion=\r\ncomments=made by Skyrim Utility Patcher\r\n");
+			Files.WriteAtomic(Path.Combine(d, "meta.ini"), $"[General]\r\nmodid=0\r\nversion=\r\ncomments={MadeBy}{Brand.Name}\r\n");
 			a_log?.Detail($"made the output mod {a_mod}");
 		}
 		if (!States().ContainsKey(a_mod)) {
@@ -228,7 +228,12 @@ public sealed class Profile(Mo2Instance a_mo2, string a_name, Func<bool> a_mo2Ru
 		Directory.Exists(a_dir) &&
 		Directory.EnumerateFileSystemEntries(a_dir).All(e => Path.GetFileName(e).Equals("meta.ini", StringComparison.OrdinalIgnoreCase)) &&
 		File.Exists(Path.Combine(a_dir, "meta.ini")) &&
-		File.ReadAllText(Path.Combine(a_dir, "meta.ini")).Contains("made by Skyrim Utility Patcher", StringComparison.OrdinalIgnoreCase);
+		MadeByUs(File.ReadAllText(Path.Combine(a_dir, "meta.ini")));
+
+	// the mark an output mod it made carries in its meta.ini, under the name the program had then
+	const string MadeBy = "made by ";
+
+	public static bool MadeByUs(string a_metaText) => Brand.AllNames.Any(n => a_metaText.Contains(MadeBy + n, StringComparison.OrdinalIgnoreCase));
 
 	public bool TakeOutEmptyOutput(string a_mod, string a_parkIn, RunLog? a_log = null)
 	{

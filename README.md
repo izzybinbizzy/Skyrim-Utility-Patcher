@@ -1,4 +1,4 @@
-# Skyrim Utility Patcher
+# Output Manager
 
 Runs the generators of a Mod Organizer 2 setup for Skyrim Special Edition / Anniversary Edition in the right order, unattended, and puts your profile back exactly as it was.
 
@@ -59,7 +59,7 @@ Shader caches, DynDOLOD's clean save, Wrye Bash (guided), Synthesis, SnowFixer, 
 ## Quick start
 
 1. Unpack the zip anywhere outside the game folder and outside Mod Organizer.
-2. Start `Skyrim Utility Patcher.exe` on its own, not from Mod Organizer. It closes and starts Mod Organizer itself.
+2. Start `Output Manager.exe` on its own, not from Mod Organizer. It closes and starts Mod Organizer itself.
 3. **New setup** (Ctrl+N): pick `ModOrganizer.exe`, its instance and a profile. The steps are found from your Executables list.
 4. **Settings** (Ctrl+,): for each step, **Learn its settings (opens its own window)**.
 5. **Check** (F5), then **Start** (Ctrl+Enter).
@@ -67,15 +67,15 @@ Shader caches, DynDOLOD's clean save, Wrye Bash (guided), Synthesis, SnowFixer, 
 ## Command line
 
 ```
-"Skyrim Utility Patcher.exe" run --setup <file> [--only <step> | --from <step> | --until <step>]
-"Skyrim Utility Patcher.exe" check --setup <file>
-"Skyrim Utility Patcher.exe" preview --setup <file>
-"Skyrim Utility Patcher.exe" lod --setup <file> --step <step>
-"Skyrim Utility Patcher.exe" updates --setup <file>
-"Skyrim Utility Patcher.exe" restore [--setup <file>]
-"Skyrim Utility Patcher.exe" stop | stop-after
-"Skyrim Utility Patcher.exe" changes --setup <file> [--look]
-"Skyrim Utility Patcher.exe" import --file <setup file> [--name <name>]
+"Output Manager.exe" run --setup <file> [--only <step> | --from <step> | --until <step>]
+"Output Manager.exe" check --setup <file>
+"Output Manager.exe" preview --setup <file>
+"Output Manager.exe" lod --setup <file> --step <step>
+"Output Manager.exe" updates --setup <file>
+"Output Manager.exe" restore [--setup <file>]
+"Output Manager.exe" stop | stop-after
+"Output Manager.exe" changes --setup <file> [--look]
+"Output Manager.exe" import --file <setup file> [--name <name>]
 ```
 
 | exit code | meaning |
@@ -91,19 +91,19 @@ Shader caches, DynDOLOD's clean save, Wrye Bash (guided), Synthesis, SnowFixer, 
 Windows, .NET 10 SDK.
 
 ```
-dotnet build "src/Skyrim Utility Patcher.slnx" -c Release
+dotnet build "src/Output Manager.slnx" -c Release
 dotnet run --project src/Runner.Tests -c Release
 ```
 
 - `src/Runner.Core` - the engine: setups, the run and its record, the steps, Mod Organizer and the game (no window).
-- `src/Runner.App` - the window and the command line (`Skyrim Utility Patcher.exe`).
+- `src/Runner.App` - the window and the command line (`Output Manager.exe`).
 - `src/Runner.Tests` - the offline tests, against a fake Mod Organizer folder in a scratch directory. They need no MO2 and no game.
 
 The release is one framework-dependent, single-file exe: `dotnet publish src/Runner.App -c Release`.
 
 ## Credits
 
-The tools it runs belong to their authors. Skyrim Utility Patcher only starts the copy the player downloaded and presses its buttons; none of their files are in this repository or the download.
+The tools it runs belong to their authors. Output Manager only starts the copy the player downloaded and presses its buttons; none of their files are in this repository or the download.
 
 - DynDOLOD, TexGen and xLODGen - sheson
 - PGPatcher - hakasapl and its contributors

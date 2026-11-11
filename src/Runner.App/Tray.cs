@@ -73,7 +73,7 @@ public sealed unsafe partial class Tray : IDisposable
 	{
 		if (_added) {
 			_added = false;
-			Show(_tip == "" ? "Skyrim Utility Patcher" : _tip);
+			Show(_tip == "" ? "Output Manager" : _tip);
 		}
 	}
 
@@ -108,7 +108,7 @@ public sealed unsafe partial class Tray : IDisposable
 	public bool Notify(string a_title, string a_text, bool a_sound)
 	{
 		if (!_added) {
-			Show("Skyrim Utility Patcher");
+			Show("Output Manager");
 		}
 		if (!_added) {
 			return false;

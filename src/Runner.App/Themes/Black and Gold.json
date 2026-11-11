@@ -1,0 +1,106 @@
+{
+  "name": {
+    "value": "Black and Gold"
+  },
+  "author": {
+    "value": "izzydoingit"
+  },
+  "description": {
+    "value": "Near-black panels, gold accents."
+  },
+  "windowsMode": {
+    "value": "Dark"
+  },
+  "colors": {
+    "Bg": {
+      "value": "#0B0B0D"
+    },
+    "Panel": {
+      "value": "#141418"
+    },
+    "Panel2": {
+      "value": "#1B1B21"
+    },
+    "Line": {
+      "value": "#2E2A20"
+    },
+    "Accent": {
+      "value": "#D4AF37"
+    },
+    "AccentLight": {
+      "value": "#F2D57A"
+    },
+    "AccentDim": {
+      "value": "#7A6420"
+    },
+    "Text": {
+      "value": "#ECE6D6"
+    },
+    "Muted": {
+      "value": "#9A9384"
+    },
+    "Good": {
+      "value": "#6FCF8E"
+    },
+    "Warn": {
+      "value": "#E8C06A"
+    },
+    "Bad": {
+      "value": "#E8776A"
+    },
+    "OnAccent": {
+      "value": "#0B0B0D"
+    },
+    "HoverFill": {
+      "value": "#241F12"
+    },
+    "BannerBad": {
+      "value": "#3A1B17"
+    },
+    "GuidedFill": {
+      "value": "#2A2410"
+    },
+    "Shade": {
+      "value": "#99000000"
+    }
+  },
+  "gradients": {
+    "PrimaryAndProgress": {
+      "stops": [
+        {
+          "color": "#997823",
+          "at": 0.0
+        },
+        {
+          "color": "#F2D57A",
+          "at": 0.6
+        },
+        {
+          "color": "#D4AF37",
+          "at": 1.0
+        }
+      ]
+    }
+  },
+  "windowsAccent": {
+    "Light3": "#EAD79C",
+    "Light2": "#E2CA7A",
+    "Light1": "#DBBC59",
+    "Base": "#D4AF37",
+    "Dark1": "#BA9828",
+    "Dark2": "#997C21",
+    "Dark3": "#77611A"
+  },
+  "shape": {
+    "CardCorner": 8,
+    "ButtonCorner": 6,
+    "CheckBoxCorner": 4,
+    "GuidedBoxCorner": 6,
+    "ProgressBarHeight": 8
+  },
+  "fonts": {
+    "Heading": {
+      "value": "Bahnschrift SemiBold, Segoe UI Semibold"
+    }
+  }
+}

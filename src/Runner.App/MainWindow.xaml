@@ -40,8 +40,8 @@
           <ColumnDefinition Width="Auto"/>
         </Grid.ColumnDefinitions>
         <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
-          <Image Source="{DynamicResource Logo}" Width="30" Height="30" Margin="0,0,12,0" RenderOptions.BitmapScalingMode="HighQuality" AutomationProperties.Name="Skyrim Utility Patcher"/>
-          <TextBlock Text="SKYRIM UTILITY PATCHER" Style="{StaticResource H1}" VerticalAlignment="Center"/>
+          <Image Source="{DynamicResource Logo}" Width="30" Height="30" Margin="0,0,12,0" RenderOptions.BitmapScalingMode="HighQuality" AutomationProperties.Name="Output Manager"/>
+          <TextBlock Text="OUTPUT MANAGER" Style="{StaticResource H1}" VerticalAlignment="Center"/>
         </StackPanel>
         <DockPanel Grid.Column="1" VerticalAlignment="Center" Margin="28,0,16,0">
           <TextBlock DockPanel.Dock="Left" Text="Setup" Foreground="{DynamicResource Muted}" VerticalAlignment="Center" Margin="0,0,8,0"/>
@@ -55,6 +55,7 @@
                   AutomationProperties.AcceleratorKey="F5"/>
           <Button Content="_History" Style="{StaticResource Ghost}" Click="History_Click" ToolTip="Past runs (Ctrl+H)" Margin="0,0,8,0" AutomationProperties.AcceleratorKey="Ctrl+H"/>
           <Button Content="_Queue" Style="{StaticResource Ghost}" Click="Queue_Click" ToolTip="Run several setups one after another" Margin="0,0,8,0"/>
+          <Button Content="_Themes" Style="{StaticResource Ghost}" Click="Themes_Click" ToolTip="The window's look (Ctrl+T)" Margin="0,0,8,0" AutomationProperties.AcceleratorKey="Ctrl+T"/>
           <Button Content="_Settings" Style="{StaticResource Ghost}" Click="Settings_Click" ToolTip="This setup's settings (Ctrl+,)" AutomationProperties.AcceleratorKey="Ctrl+Comma"/>
         </StackPanel>
       </Grid>
@@ -77,7 +78,7 @@
           <TextBlock Text="{Binding Interrupted}" Foreground="{DynamicResource Text}" VerticalAlignment="Center" TextWrapping="Wrap" Margin="0,0,16,0"/>
         </DockPanel>
       </Border>
-      <Border Background="{DynamicResource Panel2}" BorderBrush="{DynamicResource Gold}" BorderThickness="0,0,0,1" Padding="20,10"
+      <Border Background="{DynamicResource Panel2}" BorderBrush="{DynamicResource Accent}" BorderThickness="0,0,0,1" Padding="20,10"
               Visibility="{Binding NewVersion, Converter={StaticResource NotEmpty}}">
         <DockPanel>
           <Button DockPanel.Dock="Right" Content="Not now" Style="{StaticResource Ghost}" Command="{Binding SetAsideNewVersionCommand}" Margin="8,0,0,0"
@@ -163,7 +164,7 @@
                              Visibility="{Binding LastRun, Converter={StaticResource NotEmpty}}"/>
                 </StackPanel>
                 <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
-                  <TextBlock x:Name="elapsed" Text="{Binding Elapsed}" Foreground="{DynamicResource GoldLight}" Margin="0,0,8,0"/>
+                  <TextBlock x:Name="elapsed" Text="{Binding Elapsed}" Foreground="{DynamicResource AccentLight}" Margin="0,0,8,0"/>
                   <TextBlock x:Name="usual" Text="{Binding Usual}" Style="{StaticResource MutedText}" ToolTip="its usual time"/>
                 </StackPanel>
                 <TextBlock x:Name="glyph" Grid.Column="4" Text="{Binding Glyph}" HorizontalAlignment="Right" VerticalAlignment="Center" FontSize="{DynamicResource SizeBody}"
@@ -197,19 +198,19 @@
           <StackPanel>
             <DockPanel>
               <StackPanel DockPanel.Dock="Right" HorizontalAlignment="Right">
-                <TextBlock Text="{Binding Clock}" FontFamily="{DynamicResource HeadFont}" FontSize="{DynamicResource SizeClock}" Foreground="{DynamicResource GoldLight}" HorizontalAlignment="Right"/>
+                <TextBlock Text="{Binding Clock}" FontFamily="{DynamicResource HeadFont}" FontSize="{DynamicResource SizeClock}" Foreground="{DynamicResource AccentLight}" HorizontalAlignment="Right"/>
                 <TextBlock Text="{Binding Left}" Style="{StaticResource MutedText}" HorizontalAlignment="Right"/>
               </StackPanel>
               <StackPanel>
-                <TextBlock Text="{Binding NowTitle}" FontFamily="{DynamicResource HeadFont}" FontSize="{DynamicResource SizeStepTitle}" Foreground="{DynamicResource GoldLight}"/>
+                <TextBlock Text="{Binding NowTitle}" FontFamily="{DynamicResource HeadFont}" FontSize="{DynamicResource SizeStepTitle}" Foreground="{DynamicResource AccentLight}"/>
                 <TextBlock Text="{Binding NowActivity}" TextWrapping="Wrap" Margin="0,4,0,0" Foreground="{DynamicResource Text}"/>
               </StackPanel>
             </DockPanel>
-            <ProgressBar Height="{DynamicResource ProgressBarHeight}" Margin="0,14,0,0" Maximum="1" Value="{Binding Progress}" Foreground="{DynamicResource GoldBar}" AutomationProperties.Name="Run progress"
+            <ProgressBar Height="{DynamicResource ProgressBarHeight}" Margin="0,14,0,0" Maximum="1" Value="{Binding Progress}" Foreground="{DynamicResource AccentBar}" AutomationProperties.Name="Run progress"
                          IsIndeterminate="{Binding ProgressKnown, Converter={StaticResource Not}}"
                          Visibility="{Binding ShowProgress, Converter={StaticResource Vis}}"/>
             <!-- a guided in-game step waits for the player -->
-            <Border Margin="0,14,0,0" Padding="14" CornerRadius="{DynamicResource GuidedBoxCorner}" Background="{DynamicResource GuidedFill}" BorderBrush="{DynamicResource Gold}" BorderThickness="1"
+            <Border Margin="0,14,0,0" Padding="14" CornerRadius="{DynamicResource GuidedBoxCorner}" Background="{DynamicResource GuidedFill}" BorderBrush="{DynamicResource Accent}" BorderThickness="1"
                     Visibility="{Binding Waiting, Converter={StaticResource NotEmpty}}">
               <DockPanel>
                 <Button DockPanel.Dock="Right" Content="_Done" Style="{StaticResource Primary}" Command="{Binding ContinueCommand}" Margin="12,0,0,0"/>
@@ -219,7 +220,7 @@
                 </StackPanel>
               </DockPanel>
             </Border>
-            <TextBlock Text="{Binding QueueText}" TextWrapping="Wrap" Margin="0,12,0,0" Foreground="{DynamicResource Gold}"
+            <TextBlock Text="{Binding QueueText}" TextWrapping="Wrap" Margin="0,12,0,0" Foreground="{DynamicResource Accent}"
                        Visibility="{Binding QueueText, Converter={StaticResource NotEmpty}}"/>
             <TextBlock Text="{Binding Verdict}" TextWrapping="Wrap" Margin="0,12,0,0" FontSize="{DynamicResource SizeVerdict}"
                        Foreground="{Binding VerdictKind, Converter={StaticResource KindBrush}}"
@@ -310,7 +311,7 @@
     <Border x:Name="Shade" Grid.Row="0" Grid.RowSpan="4" Background="{DynamicResource Shade}" Visibility="Collapsed" MouseDown="Shade_MouseDown"/>
     <!-- Tab stays inside an open drawer (its own cycle) until Esc or Close - the window behind it is shaded and out of reach -->
     <Border x:Name="Drawer" Grid.Row="1" Grid.RowSpan="3" HorizontalAlignment="Right" Width="640" Background="{DynamicResource Panel}"
-            BorderBrush="{DynamicResource GoldDim}" BorderThickness="1,0,0,0" Visibility="Collapsed"
+            BorderBrush="{DynamicResource AccentDim}" BorderThickness="1,0,0,0" Visibility="Collapsed"
             KeyboardNavigation.TabNavigation="Cycle" KeyboardNavigation.ControlTabNavigation="Cycle" KeyboardNavigation.DirectionalNavigation="Contained">
       <DockPanel Margin="20">
         <DockPanel DockPanel.Dock="Top" Margin="0,0,0,12">
