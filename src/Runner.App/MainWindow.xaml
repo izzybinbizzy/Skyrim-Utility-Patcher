@@ -207,7 +207,7 @@
               </StackPanel>
             </DockPanel>
             <ProgressBar Height="{DynamicResource ProgressBarHeight}" Margin="0,14,0,0" Maximum="1" Value="{Binding Progress}" Foreground="{DynamicResource AccentBar}" AutomationProperties.Name="Run progress"
-                         IsIndeterminate="{Binding ProgressKnown, Converter={StaticResource Not}}"
+                         IsIndeterminate="{Binding ProgressBusy}"
                          Visibility="{Binding ShowProgress, Converter={StaticResource Vis}}"/>
             <!-- a guided in-game step waits for the player -->
             <Border Margin="0,14,0,0" Padding="14" CornerRadius="{DynamicResource GuidedBoxCorner}" Background="{DynamicResource GuidedFill}" BorderBrush="{DynamicResource Accent}" BorderThickness="1"

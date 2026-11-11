@@ -69,15 +69,18 @@ public sealed partial class MainViewModel : Observable
 	public bool GameRunning { get; set { if (Set(ref field, value)) OnPropertyChanged(nameof(GameText)); } }
 	public string Mo2Text => Mo2Open ? "Mod Organizer open" : "Mod Organizer closed";
 	public string GameText => GameRunning ? "Skyrim running" : "Skyrim not running";
-	public bool IsRunning { get; set { if (Set(ref field, value)) { OnPropertyChanged(nameof(ShowProgress)); OnPropertyChanged(nameof(CanStart)); OnPropertyChanged(nameof(LastCardText)); OnPropertyChanged(nameof(WindowTitle)); } } }
+	public bool IsRunning { get; set { if (Set(ref field, value)) { OnPropertyChanged(nameof(ShowProgress)); OnPropertyChanged(nameof(ProgressBusy)); OnPropertyChanged(nameof(CanStart)); OnPropertyChanged(nameof(LastCardText)); OnPropertyChanged(nameof(WindowTitle)); } } }
 	// START needs a setup that reads and no run going
 	public bool CanStart => !IsRunning && Setup != null;
 	// no moving bar while the run waits for the player: nothing is working then
 	public bool ShowProgress => IsRunning && Waiting == "";
+	// the bar that moves by itself ("working, its share not known") only while it shows: a hidden one still animates, and that
+	// kept an idle window drawing sixty times a second
+	public bool ProgressBusy => ShowProgress && !ProgressKnown;
 	public string NowTitle { get; set { if (Set(ref field, value)) OnPropertyChanged(nameof(WindowTitle)); } } = "Ready";
 	public string NowActivity { get; set => Set(ref field, value); } = "";
 	public double Progress { get; set { if (Set(ref field, value)) OnPropertyChanged(nameof(WindowTitle)); } }
-	public bool ProgressKnown { get; set { if (Set(ref field, value)) OnPropertyChanged(nameof(WindowTitle)); } }
+	public bool ProgressKnown { get; set { if (Set(ref field, value)) { OnPropertyChanged(nameof(ProgressBusy)); OnPropertyChanged(nameof(WindowTitle)); } } }
 	// the title bar and the taskbar button say what runs (read out on Alt+Tab, seen with the window behind the game)
 	public string WindowTitle => !IsRunning ? Brand.Name :
 		Waiting != "" ? $"Your turn in the game - {Brand.Name}" :
@@ -103,7 +106,7 @@ public sealed partial class MainViewModel : Observable
 	public string Left { get; set => Set(ref field, value); } = "";
 	public string Verdict { get; set => Set(ref field, value); } = "";
 	public string VerdictKind { get; set => Set(ref field, value); } = "";
-	public string Waiting { get; set { if (Set(ref field, value)) { OnPropertyChanged(nameof(ShowProgress)); OnPropertyChanged(nameof(WindowTitle)); } } } = "";
+	public string Waiting { get; set { if (Set(ref field, value)) { OnPropertyChanged(nameof(ShowProgress)); OnPropertyChanged(nameof(ProgressBusy)); OnPropertyChanged(nameof(WindowTitle)); } } } = "";
 	public string Interrupted { get; set => Set(ref field, value); } = "";
 	public string Message { get; set => Set(ref field, value); } = "";
 	public string MessageKind { get; set => Set(ref field, value); } = "";
@@ -168,6 +171,8 @@ public sealed partial class MainViewModel : Observable
 
 	public Setup? Setup { get; private set { field = value; OnPropertyChanged(nameof(CanStart)); OnPropertyChanged(nameof(NewGame)); } }
 	public event Action<string, string>? Alert;
+	// something was just set going from here: the window looks at once and then at its lively pace
+	public event Action? WantsLook;
 	// new log text (and true when the box must be emptied first: another run's log)
 	public event Action<string, bool>? LogChanged;
 
@@ -368,24 +373,38 @@ public sealed partial class MainViewModel : Observable
 		Message = a_text;
 	}
 
-	// ---------------------------------------------------------------- the live view, once a second
-	bool _polling;
+	// ---------------------------------------------------------------- the live view
+	bool _polling, _pollAgain;
 
-	// the timer's poll: the process list and the run records are read off the window's thread, one poll at a time
+	// Mod Organizer, then the game's images: one look at the process list answers both
+	static readonly string[] Watched = ["ModOrganizer.exe", .. Mo2Control.GameImages];
+
+	static (bool Mo2, bool Game) Seen()
+	{
+		var up = Procs.Running(Watched);
+		return (up[0], up.AsSpan(1).Contains(true));
+	}
+
+	// the window's look: the process list and the run records are read off the window's thread, one look at a time. A look
+	// asked for while one is out (a record changed meanwhile) runs right after it, so the newest state is never left unread
 	public async Task PollAsync()
 	{
 		if (_polling) {
+			_pollAgain = true;
 			return;
 		}
 		_polling = true;
 		try {
-			var (mo2, game, runs, queue, power) = await Task.Run(() => {
-				var runs = Engine.Runs();
-				return (Procs.Running("ModOrganizer.exe"), Mo2Control.GameImages.Any(Procs.Running), runs, QueueLook(runs), PowerAfter.Look(AppPaths.Data));
-			});
-			Poll(mo2, game, runs, queue, power);
+			do {
+				_pollAgain = false;
+				var (seen, runs, queue, power) = await Task.Run(() => {
+					var runs = Engine.Runs();
+					return (Seen(), runs, QueueLook(runs), PowerAfter.Look(AppPaths.Data));
+				});
+				Poll(seen.Mo2, seen.Game, runs, queue, power);
+			} while (_pollAgain);
 		} catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception or InvalidOperationException) {
-			// a file or process that changed mid-read: the next tick reads it again
+			// a file or process that changed mid-read: the next look reads it again
 		} finally {
 			_polling = false;
 		}
@@ -394,8 +413,14 @@ public sealed partial class MainViewModel : Observable
 	public void Poll()
 	{
 		var runs = Engine.Runs();
-		Poll(Procs.Running("ModOrganizer.exe"), Mo2Control.GameImages.Any(Procs.Running), runs, QueueLook(runs), PowerAfter.Look(AppPaths.Data));
+		var (mo2, game) = Seen();
+		Poll(mo2, game, runs, QueueLook(runs), PowerAfter.Look(AppPaths.Data));
 	}
+
+	// something is going that the window shows second by second (a run and its clock, a start being checked, a queue between two
+	// setups, the countdown before the PC sleeps); while nothing is, the window looks seldom
+	public bool Busy => IsRunning || Starting || _queueGoing || PowerText != "";
+	bool _queueGoing;
 
 	// the queue going (its line for the window), else the last queue's summary while nothing has started since it ended
 	sealed record QueueSeen(QueueRun.State? Going, string Text);
@@ -437,6 +462,7 @@ public sealed partial class MainViewModel : Observable
 		// the run going, else the one just watched, else this setup's last run (its log and verdict stay on screen)
 		_run = active ?? (_run is { } r && Directory.Exists(r.Folder) ? Fresh(runs, r) : Engine.Latest(SelectedSetup?.File, runs));
 		var queue = a_queue.Going;
+		_queueGoing = queue != null;
 		QueueText = a_queue.Text;
 		var interrupted = Engine.Interrupted(runs);
 		Interrupted = interrupted == null ? "" : $"The run of {interrupted.Started:ddd HH:mm} ({interrupted.SetupName}) did not finish - your profile may still have outputs switched off.";
@@ -698,6 +724,7 @@ public sealed partial class MainViewModel : Observable
 		Say("Starting - checking every tool and setting ...", "");
 		_startAsked = DateTime.Now;
 		_run = null;
+		WantsLook?.Invoke();
 	}
 
 	DateTime? _startAsked;
@@ -810,6 +837,7 @@ public sealed partial class MainViewModel : Observable
 		Say($"Queue of {a_files.Count} setups starting - checking the first one ...", "");
 		_startAsked = DateTime.Now;
 		_run = null;
+		WantsLook?.Invoke();
 	}
 
 	void StopAfter()

@@ -171,11 +171,17 @@ public sealed class Journal
 
 	public static bool IsRunner(int a_pid)
 	{
+		if (Procs.Name(a_pid) is not { } name) {
+			return false;
+		}
+		if (IsRunnerName(name)) {
+			return true;
+		}
 		try {
-			using var p = System.Diagnostics.Process.GetProcessById(a_pid);
 			// a copy the player renamed is known by the product name inside its file (the start time check above keeps a reused
 			// PID out)
-			return IsRunnerName(p.ProcessName) || IsRunnerName(ProductOf(p));
+			using var p = System.Diagnostics.Process.GetProcessById(a_pid);
+			return IsRunnerName(ProductOf(p));
 		} catch (ArgumentException) {
 			return false;
 		} catch (InvalidOperationException) {

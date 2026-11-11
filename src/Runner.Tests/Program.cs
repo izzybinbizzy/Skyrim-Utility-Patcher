@@ -5614,6 +5614,70 @@ public static class Program
 		Check(Journal.IsRunner(Environment.ProcessId), "this process (the tests) counts as the program");
 	}
 
+	// every look at the process list by name is one walk of it: found by an image's name in any case and with or without ".exe", a
+	// process's own name read back, several names answered at once - and a process that ended is gone though its handle is still held
+	static void T_AProcessIsFoundByItsImageInOneLook()
+	{
+		using var ping = Process.Start(new ProcessStartInfo("ping", "-n 30 127.0.0.1") { CreateNoWindow = true, UseShellExecute = false, RedirectStandardOutput = true })!;
+		try {
+			Check(Procs.Pids("ping.exe").Contains(ping.Id) && Procs.Pids("PING").Contains(ping.Id), "its id, by its image in any case, with or without .exe");
+			Check(Procs.Running("Ping.exe") && !Procs.Running("no such program 7f3a.exe") && !Procs.Running("pin.exe"), "running or not, by the whole name");
+			var both = Procs.Running(["no such program 7f3a.exe", "PING.EXE"]);
+			Check(both is [false, true], "several images answered from one look");
+			Check(string.Equals("PING.EXE", Procs.Image(ping.Id), StringComparison.OrdinalIgnoreCase) && string.Equals("PING", Procs.Name(ping.Id), StringComparison.OrdinalIgnoreCase),
+				"a process's own image and its name");
+			var found = Procs.ByImage("ping.exe");
+			Check(found.Any(p => p.Id == ping.Id), "the process itself for a caller that needs more than its id");
+			found.ForEach(p => p.Dispose());
+			Check(Procs.Snapshot().Contains((ping.Id, Environment.ProcessId)), "its parent is this process");
+			Check(Procs.Tree(Environment.ProcessId).Contains(ping.Id), "so it is in this process's tree");
+		} finally {
+			ping.Kill();
+			ping.WaitForExit();
+		}
+		Equal("", Procs.Image(ping.Id), "ended: no image, though this test still holds its handle");
+		Check(Procs.Name(ping.Id) == null && !Procs.Pids("ping.exe").Contains(ping.Id), "and no name, and not in the list");
+	}
+
+	// the window follows the runs folder: a run record, the queue or the notice before the PC sleeps written there wakes its look at
+	// once (so it may look seldom while nothing runs); a log line or a new folder does not
+	static void T_AChangedRunRecordWakesTheWindow()
+	{
+		var followed = ToolRunner.App.RunsWatch.Followed;
+		Check(followed.Contains("journal.json") && followed.Contains(Path.GetFileName(QueueRun.File("x"))) && followed.Contains(Path.GetFileName(QueueRun.LastFile("x"))) &&
+		      followed.Contains(Path.GetFileName(PowerAfter.File("x"))) && followed.Contains(Path.GetFileName(ToolRunner.App.Engine.RefusalFile)), "every file the window's look reads is followed");
+		var dir = Path.Combine(Path.GetTempPath(), "mo2 tool runner tests", "runs watch " + Guid.NewGuid().ToString("N")[..8]);
+		try {
+			using var woke = new ManualResetEventSlim();
+			using var watch = new ToolRunner.App.RunsWatch(dir, woke.Set);
+			Check(watch.Watching, "the runs folder is watched (and made when it was not there)");
+			var run = Path.Combine(dir, "2026-11-10 21-00-00 My Profile");
+			Directory.CreateDirectory(run);
+			File.WriteAllText(Path.Combine(run, "log.txt"), "a line\n");
+			Check(!woke.Wait(400), "a new run folder and a log line wake nothing");
+			Files.WriteAtomic(Path.Combine(run, "journal.json"), "{}");
+			Check(woke.Wait(5000), "a run record written wakes it");
+			Thread.Sleep(300);
+			woke.Reset();
+			Files.WriteAtomic(Path.Combine(dir, "queue.json"), "{}");
+			Check(woke.Wait(5000), "the queue's file too");
+			Thread.Sleep(300);
+			woke.Reset();
+			File.Delete(Path.Combine(run, "journal.json"));
+			Check(woke.Wait(5000), "and a record that goes");
+		} finally {
+			Directory.Delete(dir, true);
+		}
+		// a folder that cannot be made or watched leaves no watcher and no error: the timer alone looks
+		var file = Path.GetTempFileName();
+		try {
+			using var none = new ToolRunner.App.RunsWatch(Path.Combine(file, "Runs"), () => { });
+			Check(!none.Watching, "nowhere to watch: no watcher, nothing thrown");
+		} finally {
+			File.Delete(file);
+		}
+	}
+
 	// the rename to Output Manager (his pick 2026-11-10): what a player or a modder made under the name before it is still the program's own -
 	// an output mod's mark, an add-on's folder, the ProgramData folders, and the Tools menu entry, which never shows twice
 	static void T_WhatAnOlderNameMadeIsStillItsOwn()

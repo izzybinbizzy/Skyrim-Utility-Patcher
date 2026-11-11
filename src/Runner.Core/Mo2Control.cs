@@ -244,7 +244,10 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 
 	public static readonly string[] GameImages = ["SkyrimSE.exe", "skse64_loader.exe"];
 
-	public static Func<List<string>> GameProbe { get; set; } = () => GameImages.Where(Procs.Running).ToList();
+	public static Func<List<string>> GameProbe { get; set; } = () => {
+		var up = Procs.Running(GameImages);
+		return GameImages.Where((_, i) => up[i]).ToList();
+	};
 
 	public static List<string> GameRunning() => GameProbe();
 

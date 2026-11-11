@@ -14,7 +14,14 @@ namespace ToolRunner.App;
 public partial class MainWindow : Window
 {
 	readonly MainViewModel _vm = new();
-	readonly DispatcherTimer _timer = new() { Interval = TimeSpan.FromSeconds(1) };
+	// How often the window looks: every second while something is going (a run's clock and progress, a start being checked, the
+	// countdown before the PC sleeps), seldom while nothing is, hardly at all while it is minimised. A change in the runs folder
+	// (RunsWatch) and the window coming back wake it at once, so a slow look loses nothing
+	static readonly TimeSpan Live = TimeSpan.FromSeconds(1), Calm = TimeSpan.FromSeconds(3), Away = TimeSpan.FromSeconds(20);
+	readonly DispatcherTimer _timer = new() { Interval = Live };
+	RunsWatch? _watch;
+	int _woken;
+	bool _demo;
 	string _panel = "";
 	Tray? _tray;
 
@@ -29,19 +36,22 @@ public partial class MainWindow : Window
 		_vm.Alert += Notify;
 		_vm.ConfirmRun = a_text => Ask.Show(this, "What this run will do", a_text, "Start the run", "Not now");
 		_vm.LogChanged += OnLog;
-		_timer.Tick += async (_, _) => {
-			await _vm.PollAsync();
-			// the notification-area icon (there once a run started or a notification was shown) says what runs
-			if (_vm.IsRunning || _tray?.Shown == true) {
-				_tray?.Show("Output Manager - " + _vm.NowTitle);
-			}
-		};
+		_timer.Tick += async (_, _) => await Look();
 		_timer.Start();
+		StateChanged += (_, _) => Wake();
+		_vm.WantsLook += Wake;
+		// the off-screen pictures show a made-up run: nothing is watched for them
+		if (!App.Headless) {
+			_watch = new RunsWatch(AppPaths.Runs, Wake);
+		}
 		Footer.Text = $"Ctrl+Enter start  ·  F5 check  ·  Ctrl+H history  ·  Ctrl+M MO2 changes  ·  Ctrl+T themes  ·  Ctrl+, settings  ·  Alt+Up / Down move a step   ·   version {AppVersion}";
 		Footer.ToolTip = "Data folder: " + AppPaths.Data;
 		PreviewKeyDown += OnKeys;
 		// a mod ticked in Mod Organizer while the window was in the background: each step's last run is worked out again
-		Activated += async (_, _) => await _vm.LoadLastRunsIfStale();
+		Activated += async (_, _) => {
+			Wake();
+			await _vm.LoadLastRunsIfStale();
+		};
 		if (_vm.Setups.Count == 0) {
 			_vm.Say("No setup yet: press New setup and pick your Mod Organizer and profile.", "warn");
 		}
@@ -59,6 +69,36 @@ public partial class MainWindow : Window
 	}
 
 	public void Say(string a_text) => _vm.Say(a_text, "warn");
+
+	// one look, and the pace of the next ones set by what it found
+	async Task Look()
+	{
+		await _vm.PollAsync();
+		// the notification-area icon (there once a run started or a notification was shown) says what runs
+		if (_vm.IsRunning || _tray?.Shown == true) {
+			_tray?.Show(Brand.Name + " - " + _vm.NowTitle);
+		}
+		var pace = _vm.Busy ? Live : WindowState == WindowState.Minimized ? Away : Calm;
+		if (_timer.Interval != pace) {
+			_timer.Interval = pace;
+		}
+	}
+
+	// from any thread: a look soon. Wakes that come before it has run are that one look
+	void Wake()
+	{
+		if (!_demo && Interlocked.Exchange(ref _woken, 1) == 0) {
+			Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(Woken));
+		}
+	}
+
+	async void Woken()
+	{
+		Interlocked.Exchange(ref _woken, 0);
+		if (!_demo) {
+			await Look();
+		}
+	}
 
 	public void ShowProfile(string a_mo2Exe, string a_base, string a_profile)
 	{
@@ -309,15 +349,21 @@ public partial class MainWindow : Window
 	// the off-screen pictures only: the live view stops and a made-up run is shown (a_frame moves it on a minute a frame)
 	public void Demo(bool a_waiting, int a_frame = 0)
 	{
-		_timer.Stop();
+		StopLooking();
 		_vm.Demo(a_waiting, a_frame);
 	}
 
 	// the page's pictures only: the dashboard with nothing running, and past runs of the made-up setup
 	public void DemoReady()
 	{
-		_timer.Stop();
+		StopLooking();
 		_vm.DemoReady();
+	}
+
+	void StopLooking()
+	{
+		_demo = true;
+		_timer.Stop();
 	}
 
 	public void DemoHistory(IEnumerable<HistoryRow> a_rows) => _vm.DemoHistory(a_rows);
@@ -697,7 +743,9 @@ public partial class MainWindow : Window
 	protected override void OnClosed(EventArgs a_e)
 	{
 		Theme.Applied -= _vm.Repaint;
+		_demo = true;
 		_timer.Stop();
+		_watch?.Dispose();
 		_tray?.Dispose();
 		base.OnClosed(a_e);
 	}
