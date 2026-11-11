@@ -83,7 +83,7 @@ public sealed class GrassStep : IStep
 		var mod = a_s.OutputMod!;
 		var ow = OverwriteGrass(a_ctx);
 		if (Directory.Exists(ow) && Directory.EnumerateFileSystemEntries(ow).Any()) {
-			StepKit.ParkDir(a_ctx, ow, "overwrite grass (before)");
+			StepKit.ParkDir(a_ctx, ow, "overwrite grass (before)", Key);
 		}
 		// no space and no quote in the wrapper's path: MO2 passes it through cmd /c (the user's temp folder holds the user name,
 		// which often has a space - ProgramData does not)
@@ -167,7 +167,7 @@ public sealed class GrassStep : IStep
 		var flag = Path.Combine(a_ctx.Mo2.GameDir, "PrecacheGrass.txt");
 		var ow = OverwriteGrass(a_ctx);
 		if (Directory.Exists(ow) && Directory.EnumerateFileSystemEntries(ow).Any()) {
-			StepKit.ParkDir(a_ctx, ow, "overwrite grass (before)");
+			StepKit.ParkDir(a_ctx, ow, "overwrite grass (before)", Key);
 		}
 		using (new Toggle(a_ctx, [], off, "the grass cache", a_ctx.Cancel)) {
 			// the flag in the game folder is in the run record first: a crash leaves no game that precaches at every start
@@ -592,7 +592,7 @@ public sealed class ShaderStep : IStep
 		var c = a_b.Cache;
 		var owCache = Path.Combine(a_ctx.Mo2.OverwriteDir, "ShaderCache");
 		if (Directory.Exists(owCache) && Directory.EnumerateFileSystemEntries(owCache).Any()) {
-			StepKit.ParkDir(a_ctx, owCache, "overwrite ShaderCache (before)");
+			StepKit.ParkDir(a_ctx, owCache, "overwrite ShaderCache (before)", "shaders");
 			Files.DeleteDir(owCache);
 		}
 		var logs = InGame.LogFolders(a_ctx.Setup, a_ctx.Mo2);

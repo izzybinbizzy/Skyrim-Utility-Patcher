@@ -399,9 +399,19 @@ public static class Cli
 			Console.WriteLine("a setup with that name exists: " + dst);
 			return 1;
 		}
+		// a file from elsewhere: what it gives as a mod's name must be one, and it brings no command of its own to run here
+		var wrong = s.ModNames().Where(m => !Setup.PlainName(m.Name)).Select(m => $"{m.Where}: {m.Name}").Distinct().ToList();
+		if (wrong.Count > 0) {
+			Console.WriteLine("not brought in - these are not mod names (a plain folder name each): " + string.Join("; ", wrong.Take(8)));
+			return 1;
+		}
+		var commands = s.TakeOutCommands();
 		Directory.CreateDirectory(AppPaths.Setups);
 		s.Save(dst);
 		Console.WriteLine("setup written: " + dst);
+		if (commands > 0) {
+			Console.WriteLine($"its {commands} own command(s) to run before or after a run were taken out - a setup from elsewhere runs no command on this PC; add your own in Settings");
+		}
 		return 0;
 	}
 

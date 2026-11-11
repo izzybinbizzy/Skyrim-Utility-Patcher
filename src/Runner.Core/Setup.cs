@@ -134,7 +134,60 @@ public sealed class Setup
 		}
 		var unknown = Steps.Where(s => !StepCatalog.Known(s.Key) && s.Key is not "snowfixer" and not "autoblend").Select(s => s.Key).ToList();
 		if (unknown.Count > 0) p.Add("unknown step(s): " + string.Join(", ", unknown));
+		// A setup file comes from anywhere (a guide, a Discord). What it gives as a mod's name is joined to Mod Organizer's mods
+		// folder as it stands: with a folder part in it ("..\..\profiles\Default") or a whole path, a meta.ini was written there,
+		// a line put into the mod list and everything in that folder moved into the run's backup. Only a plain folder name is a mod
+		foreach (var (where, name) in ModNames().Where(m => !PlainName(m.Name)).DistinctBy(m => m.Name).Take(5)) {
+			p.Add($"{where} is not a mod's name (one plain folder name: no \\ / : and no \"..\"): {name}");
+		}
 		return p;
+	}
+
+	// the settings whose value the engine takes as a mod's name (or, "settings", as a file's own name in a fixed folder)
+	static readonly string[] NameKeys = ["output_mod", "then_move_to_mod", "tool_writes", "pgpatcher_mod", "shader_mod", "settings_mod", "settings",
+		"replaces", "enable_during", "disable_during"];
+
+	// every such value in the setup (a cache list's too), with where it stands
+	public IEnumerable<(string Where, string Name)> ModNames()
+	{
+		static IEnumerable<(string, string)> Walk(JsonNode? a_node, string a_step)
+		{
+			if (a_node is JsonArray list) {
+				foreach (var x in list.SelectMany(e => Walk(e, a_step))) {
+					yield return x;
+				}
+			} else if (a_node is JsonObject o) {
+				foreach (var (key, value) in o) {
+					if (!NameKeys.Contains(key)) {
+						foreach (var x in Walk(value, a_step)) {
+							yield return x;
+						}
+						continue;
+					}
+					foreach (var one in value is JsonArray many ? many.ToList() : [value]) {
+						if (one is JsonValue v && v.TryGetValue<string>(out var name) && name != "") {
+							yield return ($"{a_step}'s \"{key}\"", name);
+						}
+					}
+				}
+			}
+		}
+		return List(Root, "lodOutputs").Select(m => ("\"lodOutputs\"", m)).Concat(Steps.SelectMany(s => Walk(s.Settings, s.Key)));
+	}
+
+	// one plain folder (or file) name, as Windows takes one
+	public static bool PlainName(string a_name) =>
+		a_name.Trim() != "" && a_name is not "." and not ".." && !a_name.EndsWith('.') && !a_name.EndsWith(' ') &&
+		a_name.IndexOfAny(['\\', '/', ':', '*', '?', '"', '<', '>', '|']) < 0 && !a_name.Any(char.IsControl);
+
+	// A setup that came from somewhere else never runs a command on this PC: its own commands before and after a run are taken
+	// out (the sharing side takes them out too, but a file passed around need not have come through it). Returns how many went
+	public int TakeOutCommands()
+	{
+		var n = BeforeRun.Count + AfterRun.Count;
+		Root.Remove("beforeRun");
+		Root.Remove("afterRun");
+		return n;
 	}
 
 	// the folders the setup itself names (empty ones included): its backups, its scratch, each step's output (a_running: only the

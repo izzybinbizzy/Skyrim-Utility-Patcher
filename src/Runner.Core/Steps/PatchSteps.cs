@@ -333,6 +333,8 @@ public sealed class SynthesisStep : IStep
 		var espMod = Path.Combine(a_ctx.Mo2.ModDir(mod), "Synthesis.esp");
 		var espOw = Path.Combine(a_ctx.Mo2.OverwriteDir, "Synthesis.esp");
 		var t0 = DateTime.UtcNow;
+		// a Synthesis whose output is the mod itself rewrites the plugin where it stands
+		StepKit.KeepInPlace(a_ctx, mod, "Synthesis.esp");
 		Build(a_ctx, a_s, image, exePath);
 		using (new Toggle(a_ctx, StepKit.ToolMods(a_ctx, a_s), a_s.List("disable_during"), "Synthesis", a_ctx.Cancel)) {
 			try {
@@ -384,6 +386,7 @@ public sealed class SynthesisStep : IStep
 		} else if (!File.Exists(espMod) || File.GetLastWriteTimeUtc(espMod) < t0) {
 			throw new StepFailedException("Synthesis wrote no new Synthesis.esp");
 		}
+		StepKit.Settled(a_ctx, [espMod]);
 		a_ctx.SetAfter(mod);
 	}
 
@@ -580,6 +583,8 @@ public sealed class WryeBashStep : IStep
 		var image = a_s.Str("image") ?? "Wrye Bash.exe";
 		var patch = a_s.Str("patch") ?? "Bashed Patch, 0.esp";
 		var t0 = DateTime.UtcNow;
+		// every time after the first, Wrye Bash rewrites the patch where it stands in the output mod
+		StepKit.KeepInPlace(a_ctx, a_s.OutputMod!, patch);
 		using var toolMod = StepKit.ToolModOn(a_ctx, a_s);
 		try {
 			a_ctx.Control.RunExecutable(a_s.Req("executable"), image, null, a_ctx.Cancel).Dispose();
@@ -619,6 +624,8 @@ public sealed class WryeBashStep : IStep
 		} else if (!File.Exists(inMod) || File.GetLastWriteTimeUtc(inMod) <= a_t0) {
 			throw new StepFailedException($"Wrye Bash wrote no new {a_patch}");
 		}
+		// the new patch stands: its old bytes (kept before the tool started) are what an undo puts back
+		StepKit.Settled(a_ctx, [inMod]);
 	}
 }
 
@@ -647,6 +654,8 @@ public sealed class GuidedToolStep(string a_key, string a_tool, string a_ask, st
 	{
 		var image = a_s.Req("image");
 		var before = Runner.OverwriteFiles(a_ctx);
+		// a tool that rewrites its plugin where it stands in the output mod
+		StepKit.KeepInPlace(a_ctx, a_s.OutputMod!, a_s.Str("makes") ?? a_makes);
 		using (new Toggle(a_ctx, [.. a_s.List("enable_during"), .. StepKit.ToolMods(a_ctx, a_s)], a_s.List("disable_during"), a_tool, a_ctx.Cancel)) {
 			try {
 				a_ctx.Control.RunExecutable(a_s.Req("executable"), image, null, a_ctx.Cancel).Dispose();

@@ -394,6 +394,25 @@ public static partial class InGame
 		a_steps.Where(s => GameSteps.Contains(s.Key) && s.Started != null)
 			.Select(s => (s.Started!.Value.ToUniversalTime(), (s.Ended ?? (a_openEnd < s.Started.Value ? s.Started.Value : a_openEnd)).ToUniversalTime()));
 
+	// The place the player stood at before the clean save is on record in the run that MADE that save. A run that starts from an
+	// earlier run's clean save - "run again from the failed step" is a new run with a record of its own - takes the marker from
+	// that run: without it the save to play was made in the test cell, and the marker stayed in the save for good. The run is
+	// known by its clean-save step ending when the save was written.
+	public static string? MarkerOfCleanSave(RunContext a_ctx)
+	{
+		if (SaveTime(a_ctx.Profile, SaveClean) is not { } saved) {
+			return null;
+		}
+		try {
+			return Journal.All(Path.GetDirectoryName(a_ctx.Journal.Folder)!)
+				.Where(j => j.Id != a_ctx.Journal.Id && j.ReturnMarker != null && j.Profile.Equals(a_ctx.Profile.Name, StringComparison.OrdinalIgnoreCase))
+				.Where(j => j.Step("cleansave")?.Ended is { } ended && Math.Abs((ended.ToUniversalTime() - saved).TotalMinutes) < 5)
+				.OrderByDescending(j => j.Started).Select(j => j.ReturnMarker).FirstOrDefault();
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+			return null;
+		}
+	}
+
 	public static DateTime? SaveTime(Profile a_profile, string? a_name)
 	{
 		var f = a_name == null ? null : Path.Combine(SavesDir(a_profile), a_name + ".ess");
@@ -1242,6 +1261,12 @@ public static partial class InGame
 		var from = pick ?? throw new StepFailedException(why);
 		a_ctx.Log.Detail($"the save to play starts from \"{from}\" ({why})");
 		var marker = a_ctx.Journal.ReturnMarker;
+		if (marker == null && a_ctx.CleanSaveName == null && from == SaveClean && MarkerOfCleanSave(a_ctx) is { } kept) {
+			marker = kept;
+			a_ctx.Journal.ReturnMarker = kept;
+			a_ctx.Journal.Save();
+			a_ctx.Log.Detail("the place you stood at before the clean save is taken from the run that made that save");
+		}
 		a_ctx.Control.Close();
 		if (!Auto(a_ctx)) {
 			GuidedSave(a_ctx, "playsave", a_s, $"In the game: load \"{from}\" and wait a full minute. Go back to the place you noted at the start" +

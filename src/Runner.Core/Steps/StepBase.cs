@@ -186,6 +186,18 @@ public static class StepKit
 		return failed;
 	}
 
+	// A file a tool may rewrite IN PLACE inside its output mod (Mod Organizer lets a program write over a file that already stands
+	// there, so nothing new lands in overwrite): its old bytes are kept before the tool starts. A step that fails or is stopped
+	// gets them back; a step that finished calls Settled, and an undo then puts exactly that file back. Without it nothing of
+	// the old output was kept anywhere: an undo left the mod without its plugin, and a tool stopped half way left its
+	// half-written plugin as the only copy.
+	public static void KeepInPlace(RunContext a_ctx, string a_mod, params string?[] a_files)
+	{
+		foreach (var f in a_files.OfType<string>().Select(f => Path.Combine(a_ctx.Mo2.ModDir(a_mod), f)).Where(File.Exists)) {
+			KeepFile(a_ctx, f);
+		}
+	}
+
 	// files kept only while a step changed them in place: the change is complete, so they are never put back
 	public static void Settled(RunContext a_ctx, IReadOnlyCollection<string> a_paths)
 	{
@@ -232,16 +244,21 @@ public static class StepKit
 		a_ctx.Journal.Save();
 	}
 
-	// a tool's own output folder emptied (so the tool writes into an empty one); its old content to the backup
-	public static void ParkDir(RunContext a_ctx, string a_path, string a_label)
+	// A tool's own output folder emptied (so the tool writes into an empty one); its old content to the backup.
+	// a_comesBackFor: the step whose failure brings the old content back. For a folder the PLAYER uses - the shader cache and
+	// the grass cache in Mod Organizer's overwrite - a step that fails or is stopped puts it back like a mod's old output (the
+	// run used to say "the profile is back as it was" with the working cache left in the backup: every shader compiled again
+	// at the next start, and the old cache went for good when the backups were pruned). A tool's own scratch folder needs no way
+	// back and passes none.
+	public static void ParkDir(RunContext a_ctx, string a_path, string a_label, string? a_comesBackFor = null)
 	{
 		if (Directory.Exists(a_path) && Directory.EnumerateFileSystemEntries(a_path).Any()) {
 			var dst = FreeFolder(Path.Combine(a_ctx.BackupFolder, "outputs", a_label));
 			Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
 			// on record BEFORE the move, as ParkMod, so what a move that fails half way took comes back; until Moved, an undo takes what
-			// stands here for what that move left, never for the run's output. Replaced, because a step that fails has always kept
-			// this folder's own way back
-			var park = new ParkRecord { Mod = a_label, From = a_path, To = dst, Replaced = true, IsFolder = true };
+			// stands here for what that move left, never for the run's output. One that comes back stays "not replaced" until its
+			// step has finished (the run marks its step's records then)
+			var park = new ParkRecord { Step = a_comesBackFor ?? "", Mod = a_label, From = a_path, To = dst, Replaced = a_comesBackFor == null, IsFolder = true };
 			a_ctx.Journal.Parked.Add(park);
 			a_ctx.Journal.Save();
 			try {

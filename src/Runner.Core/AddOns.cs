@@ -216,6 +216,8 @@ public sealed class AddOnStep(string a_key) : IStep
 		var image = Path.GetFileName(addOn.ProgramPath);
 		var before = Runner.OverwriteFiles(a_ctx);
 		StepKit.EnsureOutput(a_ctx, output);
+		// a tool told to write into its output mod rewrites its file where it stands
+		StepKit.KeepInPlace(a_ctx, output, addOn.Makes);
 		try {
 			using var proc = a_ctx.Control.RunExecutable(addOn.ProgramPath, image, addOn.Arguments == "" ? null : addOn.Arguments, a_ctx.Cancel, null, true);
 			a_ctx.Activity(Key, addOn.Name + " is working");
@@ -242,6 +244,8 @@ public sealed class AddOnStep(string a_key) : IStep
 			// a tool told to write into the output mod itself: Mod Organizer's virtual folder passes that through
 			if (a_makes != null && a_ctx.Journal.Step(a_step)?.Started is { } since && Path.Combine(a_ctx.Mo2.ModDir(a_mod), a_makes) is var inMod && File.Exists(inMod) && File.GetLastWriteTime(inMod) >= since) {
 				a_ctx.Log.Detail($"{StepCatalog.Name(a_step)} wrote {a_makes} straight into {a_mod}");
+				// its old bytes (kept before the tool started) are what an undo puts back
+				StepKit.Settled(a_ctx, [inMod]);
 				return true;
 			}
 			if (a_nothingIsFine) {
@@ -262,6 +266,10 @@ public sealed class AddOnStep(string a_key) : IStep
 			Files.Move(f, dst, true);
 		}
 		a_ctx.Log.Detail($"{fresh.Count} file(s) moved from overwrite into {a_mod}");
+		// the whole old mod is in the backup now: a file kept on its own before the tool started is covered by that
+		if (a_makes != null) {
+			StepKit.Settled(a_ctx, [Path.Combine(a_ctx.Mo2.ModDir(a_mod), a_makes)]);
+		}
 		return true;
 	}
 }

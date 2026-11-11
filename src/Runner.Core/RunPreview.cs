@@ -16,6 +16,9 @@ public sealed class RunPreview
 	public bool ClosesMo2 { get; private init; }
 	// the ticked save steps a new game leaves out
 	public List<string> LeftOutForNewGame { get; } = [];
+	// the setup's own commands, as written: a setup file can come from anywhere, and what it runs on this PC is shown before it runs
+	public List<string> CommandsBefore { get; } = [];
+	public List<string> CommandsAfter { get; } = [];
 
 	public static RunPreview Build(Setup a_setup, Mo2Instance a_mo2, IReadOnlyList<Setup.StepEntry> a_todo)
 	{
@@ -24,6 +27,8 @@ public sealed class RunPreview
 		var st = profile.States();
 		var p = new RunPreview { ClosesMo2 = control.Running };
 		p.LeftOutForNewGame.AddRange(a_setup.Steps.Where(s => s.On && a_setup.LeftOutForNewGame(s.Key)).Select(s => StepCatalog.Name(s.Key)));
+		p.CommandsBefore.AddRange(a_setup.BeforeRun);
+		p.CommandsAfter.AddRange(a_setup.AfterRun);
 		foreach (var s in a_todo) {
 			var ss = new StepSettings(s.Settings);
 			p.Steps.Add(new StepLine(s.Key, StepCatalog.Name(s.Key), ss.OutputMod, ss.OutputMod is { } om && !st.ContainsKey(om)));
@@ -82,6 +87,12 @@ public sealed class RunPreview
 		if (ClosesMo2) {
 			l.Add("");
 			l.Add("Mod Organizer is open: the run closes it, and opens it again for each tool.");
+		}
+		if (CommandsBefore.Count + CommandsAfter.Count > 0) {
+			l.Add("");
+			l.Add("This setup runs its own commands on this PC (Settings > commands before and after a run):");
+			l.AddRange(CommandsBefore.Select(c => "  - before the first step: " + c));
+			l.AddRange(CommandsAfter.Select(c => "  - after the run: " + c));
 		}
 		l.Add("");
 		l.Add("Nothing has been changed yet.");

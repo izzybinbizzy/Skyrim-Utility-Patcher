@@ -771,7 +771,8 @@ public static class Runner
 					// never said as "put back", never ticked holding nothing (PutBack keeps it off), and never counted as still
 					// out either - that would keep every later put-back from ending
 					p.Lost = true;
-					var lost = $"{p.Mod}: its old output is no longer in this run's backup ({p.To}), so it could not be put back - the mod is left switched off";
+					var lost = p.IsFolder ? $"{p.Mod}: what stood there before the run is no longer in this run's backup ({p.To}), so it could not be put back"
+						: $"{p.Mod}: its old output is no longer in this run's backup ({p.To}), so it could not be put back - the mod is left switched off";
 					a_ctx.Journal.Notes.Add(lost);
 					a_ctx.Journal.TrySave();
 					a_ctx.Log.Error(lost);
@@ -794,8 +795,10 @@ public static class Runner
 	// an old output that was no longer in the backup is not "back as it was": named in the verdict ("" when there is none)
 	static string LostNote(Journal a_j)
 	{
-		var lost = a_j.Parked.Where(p => p.Lost).Select(p => p.Mod).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-		return lost.Count == 0 ? "" : $" - except {string.Join(", ", lost)}: the old output was no longer in the backup, so {(lost.Count == 1 ? "it is" : "they are")} switched off";
+		var lost = a_j.Parked.Where(p => p.Lost && !p.IsFolder).Select(p => p.Mod).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+		var folders = a_j.Parked.Where(p => p.Lost && p.IsFolder).Select(p => p.Mod).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+		return (lost.Count == 0 ? "" : $" - except {string.Join(", ", lost)}: the old output was no longer in the backup, so {(lost.Count == 1 ? "it is" : "they are")} switched off") +
+			(folders.Count == 0 ? "" : $" - what stood in {string.Join(", ", folders)} before the run was no longer in the backup");
 	}
 
 	// the order files back as they were before the run, then this run's outputs on, the replaced mods off, the plugins placed
@@ -943,7 +946,8 @@ public static class Runner
 		var st = a_ctx.Profile.States();
 		// replaced by this run for good, or its old output not back in it: still in the backup (off only while it is out), or
 		// lost from it (a mod never goes on holding nothing)
-		var retire = a_ctx.Journal.Retire.Concat(a_ctx.Journal.Parked.Where(p => !p.Replaced && !p.PutBack).Select(p => p.Mod))
+		// (a folder's record carries a label, which may read like some mod's name and is never taken for one)
+		var retire = a_ctx.Journal.Retire.Concat(a_ctx.Journal.Parked.Where(p => !p.Replaced && !p.PutBack && !p.IsFolder).Select(p => p.Mod))
 			.Distinct(StringComparer.OrdinalIgnoreCase).Where(st.ContainsKey).ToList();
 		if (retire.Count > 0) {
 			a_ctx.Log.Detail("kept off (replaced by this run, or its old output not back in it): " + string.Join(", ", retire));
@@ -952,7 +956,7 @@ public static class Runner
 		}
 		// a mod whose old output is not back in it is not switched on again a line later because an earlier step of this run had
 		// built it once
-		var stillOut = a_ctx.Journal.Parked.Where(p => !p.Replaced && !p.PutBack).Select(p => p.Mod).ToHashSet(StringComparer.OrdinalIgnoreCase);
+		var stillOut = a_ctx.Journal.Parked.Where(p => !p.Replaced && !p.PutBack && !p.IsFolder).Select(p => p.Mod).ToHashSet(StringComparer.OrdinalIgnoreCase);
 		a_ctx.PendingEnable.AddRange(a_ctx.Journal.Built.Where(m => st.ContainsKey(m) && !stillOut.Contains(m)));
 		// a Stop is often why this put-back runs: it never ends the wait for Mod Organizer here
 		ApplyAfter(a_ctx, CancellationToken.None);

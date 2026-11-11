@@ -6162,6 +6162,161 @@ public static class Program
 		Equal("-1073741819", GrassStep.WrapperExit("started\r\nworking\r\nexit code -1073741819 \r\n"), "the wrapper's own last line is, with its number");
 	}
 
+	// An output a tool rewrites where it stands in its mod (nothing new lands in overwrite): its old bytes are kept first. The
+	// run that finished keeps the new one, an undo puts the old one back with the rest of the mod left alone, and a step that
+	// fails half way gets the old one back
+	static void T_AnOutputRewrittenInPlaceIsKeptFirst()
+	{
+		using var f = new FakeMo2();
+		var patch = Path.Combine(f.Mods, "Output A", "Bashed Patch, 0.esp");
+		File.WriteAllText(patch, "the old patch");
+		StepRegistry.Replace(new FakeStep("wryebash", (ctx, s) => {
+			var t0 = DateTime.UtcNow.AddSeconds(-1);
+			StepKit.KeepInPlace(ctx, s.OutputMod!, "Bashed Patch, 0.esp");
+			File.WriteAllText(patch, "the new patch");
+			WryeBashStep.Collect(ctx, "wryebash", s.OutputMod!, "Bashed Patch, 0.esp", t0);
+			ctx.SetAfter(s.OutputMod!);
+		}));
+		var setup = f.WriteSetup(("wryebash", new JsonObject { ["output_mod"] = "Output A" }));
+		setup.Root["zipBackups"] = false;
+		setup.Save();
+		var r = Runner.Run(new RunRequest(f.SetupFile, f.Data));
+		Equal(RunState.Finished, r.State, "finished: " + r.Verdict);
+		Equal("the new patch", File.ReadAllText(patch), "the new patch stands after the run");
+		var undo = Runner.Undo(Journal.Load(r.Folder!));
+		Equal(RunState.Restored, undo.State, "undone: " + undo.Verdict);
+		Equal("the old patch", File.ReadAllText(patch), "an undo puts the old patch back");
+		Check(File.Exists(Path.Combine(f.Mods, "Output A", "OutA.esp")), "and the rest of the mod stays where it is");
+
+		StepRegistry.Replace(new FakeStep("wryebash", (ctx, s) => {
+			StepKit.KeepInPlace(ctx, s.OutputMod!, "Bashed Patch, 0.esp");
+			File.WriteAllText(patch, "half writ");
+			throw new StepFailedException("the tool was closed half way");
+		}));
+		Thread.Sleep(1100);
+		Equal(RunState.Failed, Runner.Run(new RunRequest(f.SetupFile, f.Data)).State, "the run whose tool stopped half way");
+		Equal("the old patch", File.ReadAllText(patch), "the half-written patch is replaced by the old one");
+	}
+
+	// The player's own cache in Mod Organizer's overwrite (the shader cache, the grass cache) comes back when the step that
+	// moved it out fails; it used to stay in the run's backup, and went for good when the backups were pruned
+	static void T_ThePlayersCacheInOverwriteComesBackWhenItsStepFails()
+	{
+		using var f = new FakeMo2();
+		var cache = Path.Combine(f.Overwrite, "ShaderCache");
+		Directory.CreateDirectory(cache);
+		File.WriteAllText(Path.Combine(cache, "old.bin"), "the working cache");
+		var fail = true;
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => {
+			StepKit.ParkDir(ctx, cache, "overwrite ShaderCache (before)", "landscapefixer");
+			Check(!File.Exists(Path.Combine(cache, "old.bin")), "(moved out for the step)");
+			File.WriteAllText(Path.Combine(cache, "new.bin"), "a new cache");
+			if (fail) {
+				throw new StepFailedException("the compile failed");
+			}
+		}));
+		var setup = f.WriteSetup(("landscapefixer", []));
+		setup.Root["zipBackups"] = false;
+		setup.Save();
+		var r = Runner.Run(new RunRequest(f.SetupFile, f.Data));
+		Equal(RunState.Failed, r.State, "failed");
+		Equal("the working cache", File.ReadAllText(Path.Combine(cache, "old.bin")), "the cache the player had is back in overwrite");
+		Check(!File.Exists(Path.Combine(cache, "new.bin")), "the half-built one is out of it");
+		Check(Directory.EnumerateFiles(f.Backups, "new.bin", SearchOption.AllDirectories).Any(), "and kept in the run's backup, never erased");
+		Check(!r.Verdict.Contains("except", StringComparison.Ordinal), "the run says the profile is back as it was: " + r.Verdict);
+		fail = false;
+		Thread.Sleep(1100);
+		var done = Runner.Run(new RunRequest(f.SetupFile, f.Data));
+		Equal(RunState.Finished, done.State, done.Verdict);
+		Check(File.Exists(Path.Combine(cache, "new.bin")) && !File.Exists(Path.Combine(cache, "old.bin")), "a step that finished keeps what it made");
+		Check(Journal.Load(done.Folder!).Parked.Single().Replaced, "and its record says the old cache was replaced");
+	}
+
+	// the learned settings of a step are never without a whole set: a new one replaces the old by two renames, and a Keep cut
+	// off between them is taken up by the next look
+	static void T_LearnedSettingsAreNeverWithoutAWholeSet()
+	{
+		using var f = new FakeMo2();
+		f.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A", ["executable"] = "SomeTool" }));
+		var setup = Setup.Load(f.SetupFile);
+		var live = Path.Combine(f.Root, "tool.ini");
+		File.WriteAllText(live, "first");
+		ToolSettings.Keep(setup, "landscapefixer", "SomeTool", [live]);
+		var dir = ToolSettings.Folder(setup, "landscapefixer");
+		Directory.Move(dir, dir + " new");
+		Check(ToolSettings.Load(setup, "landscapefixer") != null && Directory.Exists(dir) && !Directory.Exists(dir + " new"), "a whole new set left beside the step's folder is taken up");
+		Directory.Move(dir, dir + " old");
+		Check(ToolSettings.Load(setup, "landscapefixer") != null && Directory.Exists(dir), "with only the old one left, it stands again");
+		File.WriteAllText(live, "second");
+		ToolSettings.Keep(setup, "landscapefixer", "SomeTool", [live]);
+		Check(!Directory.Exists(dir + " old") && !Directory.Exists(dir + " new"), "a new set leaves no spare beside it");
+		Equal("second", File.ReadAllText(Path.Combine(dir, ToolSettings.Load(setup, "landscapefixer")!.Files[0].Stored)), "and holds the new settings");
+	}
+
+	// A setup file comes from anywhere: what it gives as a mod's name must be one plain folder name (a path there once had a
+	// folder of the player's emptied into the run's backup), an imported one brings no command to run, and a run's preview names
+	// the commands a setup runs
+	static void T_ASetupFromElsewhereCannotNameAFolderAsAMod()
+	{
+		using var f = new FakeMo2();
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => throw new InvalidOperationException("must not run")));
+		var bad = f.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = @"..\..\profiles\Test" }));
+		Check(bad.Problems().Any(p => p.Contains("not a mod's name", StringComparison.Ordinal)), "said as a problem of the setup: " + string.Join("; ", bad.Problems()));
+		var before = f.Text("modlist.txt");
+		var r = Runner.Run(new RunRequest(f.SetupFile, f.Data));
+		Check(r.State == RunState.Failed && r.Verdict.Contains("not a mod's name", StringComparison.Ordinal), "a run is refused: " + r.Verdict);
+		Equal(before, f.Text("modlist.txt"), "the mod list was not touched");
+		Check(!File.Exists(Path.Combine(f.ProfileDir, "meta.ini")), "and nothing was written into the folder it named");
+		foreach (var name in new[] { @"C:\Users\x\Documents", "a/b", "..", ".", "ends with a dot.", "ends with a space ", "a:b", "" }) {
+			Check(!Setup.PlainName(name), "not a mod's name: \"" + name + "\"");
+		}
+		foreach (var name in new[] { "Output A", "DynDOLOD Output - Bottled Shaders", "Größe (v1.2) ж", "PG_1" }) {
+			Check(Setup.PlainName(name), "a mod's name: " + name);
+		}
+		var nested = f.WriteSetup(
+			("shaders", new JsonObject { ["caches"] = new JsonArray(new JsonObject { ["shader_mod"] = "Shaders", ["output_mod"] = @"x\y" }) }),
+			("landscapefixer", new JsonObject { ["output_mod"] = "Output A", ["replaces"] = new JsonArray("fine", @"..\up") }));
+		Equal(2, nested.Problems().Count(p => p.Contains("not a mod's name", StringComparison.Ordinal)), "a cache's mod and a list's entry are checked too: " + string.Join("; ", nested.Problems()));
+
+		var own = f.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A" }));
+		own.Root["beforeRun"] = new JsonArray("claim take");
+		own.Root["afterRun"] = new JsonArray("claim give", "tidy up");
+		var lines = RunPreview.Build(own, Mo2Instance.Load(f.Exe, f.Instance), Runner.Plan(own, null, null, null)).Lines(_ => null);
+		Check(lines.Any(l => l.Contains("before the first step: claim take", StringComparison.Ordinal)) && lines.Any(l => l.Contains("after the run: tidy up", StringComparison.Ordinal)),
+			"the preview names the setup's own commands: " + string.Join(" | ", lines));
+		Equal(3, own.TakeOutCommands(), "a setup brought in from elsewhere has its commands taken out");
+		Check(own.BeforeRun.Count == 0 && own.AfterRun.Count == 0, "none is left");
+	}
+
+	// "run again from the failed step" is a new run: the place the player stood at before the clean save is taken from the run
+	// that made that save (without it the save to play was made in the test cell)
+	static void T_ARetryFindsThePlaceTheCleanSaveCameFrom()
+	{
+		using var f = new FakeMo2();
+		f.WriteSetup(("landscapefixer", []));
+		var p = ProfileOf(f);
+		File.WriteAllText(Path.Combine(p.Dir, "settings.ini"), "[General]\r\nLocalSaves=true\r\n");
+		var saves = InGame.SavesDir(p);
+		Directory.CreateDirectory(saves);
+		var save = Path.Combine(saves, InGame.SaveClean + ".ess");
+		File.WriteAllText(save, "");
+		var written = DateTime.Now.AddHours(-2);
+		File.SetLastWriteTime(save, written);
+		var made = new Journal { Id = "made", Folder = Path.Combine(Runner.RunsDir(f.Data), "2026-01-01 the run that made it"), Profile = "Test", State = RunState.Failed,
+			Started = written.AddMinutes(-10), ReturnMarker = "FF000801",
+			Steps = [new StepRecord { Key = "cleansave", State = StepState.Done, Started = written.AddMinutes(-8), Ended = written.AddSeconds(40) }] };
+		Directory.CreateDirectory(made.Folder);
+		made.Save();
+		var ctx = StepContext(f, "landscapefixer");
+		try {
+			Equal<string?>("FF000801", InGame.MarkerOfCleanSave(ctx), "the place on record in the run whose clean save it is");
+			File.SetLastWriteTime(save, written.AddHours(1));
+			Equal<string?>(null, InGame.MarkerOfCleanSave(ctx), "never the place of a run that made another clean save");
+		} finally {
+			ctx.Log.Dispose();
+		}
+	}
+
 	// The guard for "pressing stop now still doesn't stop it" (his finds of 2026-11-04, 11-06 and 11-10): no wait of the engine
 	// longer than a moment may be a plain sleep - a step waits with RunContext.Pause / Waits.Pause, which a Stop ends at once.
 	static void T_NoStepWaitIsBlindToStop() => NoBlindSleeps(SourceDir());
