@@ -198,6 +198,14 @@ public static class StepKit
 		}
 	}
 
+	// a file that was kept and then never changed after all (it could not be written): nothing of it is put back
+	public static void Forget(RunContext a_ctx, string a_path)
+	{
+		if (a_ctx.Journal.Kept.RemoveAll(k => !k.Done && string.Equals(k.Path, a_path, StringComparison.OrdinalIgnoreCase)) > 0) {
+			a_ctx.Journal.Save();
+		}
+	}
+
 	// files kept only while a step changed them in place: the change is complete, so they are never put back
 	public static void Settled(RunContext a_ctx, IReadOnlyCollection<string> a_paths)
 	{

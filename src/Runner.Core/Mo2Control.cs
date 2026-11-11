@@ -332,8 +332,10 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 		return theirs;
 	}
 
-	// true while the run waits for the player's own Mod Organizer to close (the window shows it)
-	public bool WaitingForPlayer { get; private set; }
+	// Told what the run waits on the player for while it waits for their own Mod Organizer to close, and "" once it goes on:
+	// the run puts it in its record, where the window (another process) reads it and shows its waiting-for-you band. It used
+	// to be a flag here that nothing could read
+	public Action<string>? WaitingForPlayer { get; set; }
 
 	void WaitForTheirs(CancellationToken a_ct)
 	{
@@ -345,7 +347,7 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 			$"Close it when you are done and the run goes on by itself (it waits up to {UserWait.TotalMinutes:0} minutes; Stop ends the run safely)");
 		// the simple log (the window's default view) says it too - the wait can be long
 		_log.Simple($"Waiting for you: close the Mod Organizer you opened and the run goes on (up to {UserWait.TotalMinutes:0} minutes).");
-		WaitingForPlayer = true;
+		WaitingForPlayer?.Invoke("close the Mod Organizer you opened and the run goes on by itself");
 		try {
 			var w = Stopwatch.StartNew();
 			while (TheirMo2().Count > 0) {
@@ -356,7 +358,7 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 				a_ct.WaitHandle.WaitOne(Poll);
 			}
 		} finally {
-			WaitingForPlayer = false;
+			WaitingForPlayer?.Invoke("");
 		}
 		_log.Detail("the Mod Organizer you opened is closed - the run goes on");
 	}
@@ -552,7 +554,11 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 			Thread.Sleep(700);
 		}
 		if (IsRunning()) {
-			throw new StepFailedException($"Mod Organizer did not close within {limit.TotalSeconds:0} s");
+			// said with its cause: the box it shows that this run does not answer (the player's own work in it) holds it open
+			var limitSaid = limit.TotalMinutes >= 1 ? $"{limit.TotalMinutes:0.#} minutes" : $"{limit.TotalSeconds:0} seconds";
+			var open = RunningProbe == null ? Uia.Boxes(Pids()).Select(b => b.Text).FirstOrDefault(_leftAlone.Contains) : null;
+			throw new StepFailedException($"Mod Organizer did not close within {limitSaid} - " +
+				(open != null ? "it shows a box only you can answer: " + Trim(open) : "it shows no box this program knows; close it yourself, then start again"));
 		}
 		_log.Detail($"Mod Organizer closed after {sw.Elapsed.TotalSeconds:0} s");
 		Thread.Sleep(800);
@@ -737,7 +743,19 @@ public sealed class Mo2Control(Mo2Instance a_mo2, string a_profile, RunLog a_log
 			WhatMo2Said(a_title, a_image, logAt) + KeepEvidence(a_title, logAt, asked, started));
 		_log.Detail($"{a_image} started (process {pid})");
 		Ours(pid);
-		return Process.GetProcessById(pid);
+		return Open(pid, a_image);
+	}
+
+	// A process just seen starting, held for the step. One that ended in the moment between (a missing DLL, a console tool that
+	// prints how to use it and ends) is said in words - it used to reach the player as .NET's own "Process with an Id of 4412 is
+	// not running"
+	public static Process Open(int a_pid, string a_what)
+	{
+		try {
+			return Process.GetProcessById(a_pid);
+		} catch (ArgumentException) {
+			throw new StepFailedException($"{a_what} started and ended at once - start it yourself once to see what it says");
+		}
 	}
 
 	// his checklist 479: the tools at a lower priority (the setup's "lowerPriority") - the PC stays smooth while they work; the

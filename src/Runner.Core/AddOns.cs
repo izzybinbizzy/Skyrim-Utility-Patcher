@@ -8,7 +8,7 @@ namespace ToolRunner;
 
 // His checklist 433-435: a modder adds their patcher with one file in their own mod, <mod>\Tool Runner\<anything>.json, saying what it is, how to
 // start it, what it makes and where it goes in the order. No code of theirs is loaded into this program. The player sees exactly what it will start
-// and says yes once; a file that changes later is asked about again (a setting turns the question off). What the tool writes lands in overwrite, and goes
+// and says yes once; a file - or the program it starts - that changes later is asked about again (a setting turns the question off). What the tool writes lands in overwrite, and goes
 // into the add-on's own output mod, never another mod.
 public sealed record AddOn(string File, string ModDir, string Name, string Author, string Page, string Program, string Arguments, string Output, int Minutes,
 	string? Makes, string? Before, string? After, string Hash)
@@ -16,8 +16,21 @@ public sealed record AddOn(string File, string ModDir, string Name, string Autho
 	public string Key => AddOns.KeyPrefix + Name;
 	public string ProgramPath => Path.GetFullPath(Path.Combine(ModDir, Program));
 
+	// the program as it stands now, for the question: what is allowed is this very file (its size and day help a player tell)
+	string ProgramSaid
+	{
+		get {
+			try {
+				var f = new FileInfo(ProgramPath);
+				return f.Exists ? $"  ({(f.Length / 1024.0).ToString("#,0", InvariantCulture)} KB, last changed {f.LastWriteTime.ToString("yyyy-MM-dd", InvariantCulture)})" : "";
+			} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+				return "";
+			}
+		}
+	}
+
 	// what the question to the player says
-	public string Says => $"{Name}, by {Author}.\n\nIt starts:  {ProgramPath}" + (Arguments == "" ? "" : $"\nWith:  {Arguments}") +
+	public string Says => $"{Name}, by {Author}.\n\nIt starts:  {ProgramPath}{ProgramSaid}" + (Arguments == "" ? "" : $"\nWith:  {Arguments}") +
 		$"\n\nWhat it writes goes into its own output mod, {Output}. It runs as any program does: this program cannot stop one that writes somewhere else, so allow only an add-on you trust." +
 		(Page == "" ? "" : $"\n\nIts page: {Page}");
 }
@@ -36,7 +49,23 @@ public static class AddOns
 
 	static string? Text(JsonObject a_o, string a_key) => a_o[a_key] is JsonValue v && v.TryGetValue<string>(out var s) ? s.Trim() : null;
 
-	static string Hash(byte[] a_bytes) => Convert.ToHexString(SHA256.HashData(a_bytes));
+	// What the player allows is the add-on file AND the program it starts: one fingerprint over both. Over the file alone, a
+	// mod update (or anything else that writes in that mod) could put another program under an unchanged file, and it ran at the
+	// next Start with no question. A program that is not there adds nothing (the file's own problems say so).
+	static string Hash(byte[] a_bytes, string? a_program = null)
+	{
+		using var sha = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+		sha.AppendData(a_bytes);
+		if (a_program != null && File.Exists(a_program)) {
+			using var fs = new FileStream(a_program, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete, 1 << 16, FileOptions.SequentialScan);
+			var block = new byte[1 << 16];
+			int n;
+			while ((n = fs.Read(block, 0, block.Length)) > 0) {
+				sha.AppendData(block, 0, n);
+			}
+		}
+		return Convert.ToHexString(sha.GetHashAndReset());
+	}
 
 	static bool RelativeInside(string a_path) =>
 		!Path.IsPathRooted(a_path) && !a_path.Replace('\\', '/').Split('/').Contains("..");
@@ -103,7 +132,8 @@ public static class AddOns
 		}
 		var o = (JsonObject)JsonNode.Parse(text, null, new JsonDocumentOptions { AllowTrailingCommas = true, CommentHandling = JsonCommentHandling.Skip })!;
 		return new AddOn(a_file, a_modDir, Text(o, "name")!, Text(o, "author")!, Text(o, "page") ?? "", Text(o, "program")!, Text(o, "arguments") ?? "", Text(o, "output")!,
-			o["minutes"]?.GetValue<int>() ?? DefaultMinutes, Text(o, "makes"), Text(o, "before"), Text(o, "after"), Hash(bytes));
+			o["minutes"]?.GetValue<int>() ?? DefaultMinutes, Text(o, "makes"), Text(o, "before"), Text(o, "after"),
+			Hash(bytes, Path.GetFullPath(Path.Combine(a_modDir, Text(o, "program")!))));
 	}
 
 	public sealed record Found(string File, string Mod, AddOn? AddOn, IReadOnlyList<string> Problems);
@@ -194,7 +224,7 @@ public sealed class AddOnStep(string a_key) : IStep
 		}
 		var addOn = AddOns.Read(file, modDir)!;
 		if (addOn.Hash != a_s.Str("sha") && Setup.Bool(a_c.Setup.Root, AddOns.NoAskSetting) != true) {
-			yield return new Issue(Key, true, "its add-on file changed since you allowed it: look at it again in Settings > ADD-ONS");
+			yield return new Issue(Key, true, "its add-on file or the program it starts changed since you allowed it: look at it again in Settings > ADD-ONS");
 		}
 		if (a_c.States.TryGetValue(Path.GetFileName(modDir), out var state) && state != '+') {
 			yield return new Issue(Key, true, $"the mod that holds it, {Path.GetFileName(modDir)}, is switched off in this profile");
@@ -210,7 +240,7 @@ public sealed class AddOnStep(string a_key) : IStep
 		var addOn = AddOns.Read(file, ModDirOf(file)) ?? throw new StepFailedException("its add-on file has problems - Settings > ADD-ONS names them");
 		// the file as it stands now is what starts: changed since the pre-check, it is not what the player allowed
 		if (addOn.Hash != a_s.Str("sha") && Setup.Bool(a_ctx.Setup.Root, AddOns.NoAskSetting) != true) {
-			throw new StepFailedException("its add-on file changed since you allowed it: look at it again in Settings > ADD-ONS");
+			throw new StepFailedException("its add-on file or the program it starts changed since you allowed it: look at it again in Settings > ADD-ONS");
 		}
 		var output = a_s.OutputMod ?? throw new StepFailedException("no output mod is set");
 		var image = Path.GetFileName(addOn.ProgramPath);

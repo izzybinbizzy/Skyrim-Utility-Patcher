@@ -83,8 +83,14 @@ public sealed partial class MainViewModel : Observable
 	public bool ProgressKnown { get; set { if (Set(ref field, value)) { OnPropertyChanged(nameof(ProgressBusy)); OnPropertyChanged(nameof(WindowTitle)); } } }
 	// the title bar and the taskbar button say what runs (read out on Alt+Tab, seen with the window behind the game)
 	public string WindowTitle => !IsRunning ? Brand.Name :
-		Waiting != "" ? $"Your turn in the game - {Brand.Name}" :
+		Waiting != "" ? $"{WaitingTitle} - {Brand.Name}" :
 		$"{NowTitle}{(ProgressKnown ? $" {Progress * 100:0}%" : "")} - {Brand.Name}";
+
+	// What the run waits on the player for is either a guided part in the game (they do it, then press Done) or something
+	// only they can end outside it - their own Mod Organizer left open - which the run notices by itself: no Done to press
+	public bool WaitingInGame { get; set { if (Set(ref field, value)) { OnPropertyChanged(nameof(WaitingOutside)); OnPropertyChanged(nameof(WaitingTitle)); OnPropertyChanged(nameof(WindowTitle)); } } } = true;
+	public bool WaitingOutside => !WaitingInGame;
+	public string WaitingTitle => WaitingInGame ? "Your turn in the game" : "The run waits for you";
 
 	// a new theme: every color a converter picked is picked again from the new one
 	public void Repaint()
@@ -482,9 +488,12 @@ public sealed partial class MainViewModel : Observable
 			RunState.Restored => "Put back",
 			_ => "Stopped by a problem",
 		};
-		// between and after the steps the run itself says what it is at (a setup's command, packing the old outputs)
-		var act = cur?.Activity ?? (IsRunning ? _run.Doing : "");
-		Waiting = act.StartsWith("WAITING FOR YOU: ", StringComparison.Ordinal) ? act["WAITING FOR YOU: ".Length..] : "";
+		// between and after the steps the run itself says what it is at (a setup's command, packing the old outputs); and what it
+		// waits on the player for - their own Mod Organizer to close - whatever step is going
+		var outside = IsRunning && _run.Doing.StartsWith(Runner.WaitingPrefix, StringComparison.Ordinal);
+		var act = outside ? _run.Doing : cur?.Activity ?? (IsRunning ? _run.Doing : "");
+		WaitingInGame = !outside;
+		Waiting = act.StartsWith(Runner.WaitingPrefix, StringComparison.Ordinal) ? act[Runner.WaitingPrefix.Length..] : "";
 		NowActivity = Waiting != "" ? "" : act;
 		ProgressKnown = cur?.Progress != null;
 		Progress = cur?.Progress ?? 0;
@@ -529,11 +538,11 @@ public sealed partial class MainViewModel : Observable
 			_ = LoadLastRuns();
 		}
 		if (Waiting != "" && Waiting != _lastWaiting) {
-			Alert?.Invoke("Your turn in the game", Waiting);
+			Alert?.Invoke(WaitingTitle, Waiting);
 			_remindedAt = DateTime.Now;
 		} else if (Waiting != "" && ReminderDue(ReminderMinutes(_run), _remindedAt, DateTime.Now)) {
 			// his checklist 463: the same step still waits - said again, every so many minutes as the setup asks
-			Alert?.Invoke("Still your turn in the game", Waiting);
+			Alert?.Invoke(WaitingInGame ? "Still your turn in the game" : "The run still waits for you", Waiting);
 			_remindedAt = DateTime.Now;
 		}
 		_lastWaiting = Waiting;

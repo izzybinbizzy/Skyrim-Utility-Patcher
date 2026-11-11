@@ -92,6 +92,10 @@ public static class Runner
 
 	static RunOutcome Refuse(string a_why) => new(RunState.Failed, "not started: " + a_why, null);
 
+	// how a step's activity (and the run's own "doing") begins while the run waits for the player: the window shows what follows
+	// in its waiting-for-you band
+	public const string WaitingPrefix = "WAITING FOR YOU: ";
+
 	// a run folder's log opened; null with why (a_why) when the folder cannot be written - said in words by the caller, never a crash
 	static RunLog? OpenLog(string a_folder, out string a_why)
 	{
@@ -191,6 +195,11 @@ public static class Runner
 		control.CompanionGaveUp = () => {
 			journal.Mo2KeptOpen = false;
 			journal.Save();
+		};
+		// what the run waits on the player for goes into the record, where the window reads it
+		control.WaitingForPlayer = a_what => {
+			journal.Doing = a_what == "" ? "" : WaitingPrefix + a_what;
+			journal.TrySave();
 		};
 		var ctx = new RunContext {
 			Setup = setup, Mo2 = mo2, Profile = profile, Control = control, Log = log, Journal = journal, Cancel = cts.Token,
@@ -669,6 +678,11 @@ public static class Runner
 				StepKit.PutFilesBack(a_ctx, live);
 			}
 			QuietGame.PutBack(a_ctx);
+			// Every file the step changed only for its own run goes back now (a tool's settings pointed at this run, DynDOLOD's
+			// preset): left to the run's end, a player who opened the tool hours into a run found it still set for the run. What
+			// a step changed for good is settled by the step itself and stays. A file that will not go back yet is tried again at
+			// the put-back, and said there
+			StepKit.PutFilesBack(a_ctx);
 		} catch (Exception e) {
 			var stopped = e is OperationCanceledException;
 			r.State = stopped ? StepState.Stopped : StepState.Failed;

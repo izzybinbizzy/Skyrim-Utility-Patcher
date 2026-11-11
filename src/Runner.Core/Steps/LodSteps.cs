@@ -33,7 +33,9 @@ public sealed class XLodGenStep : IStep
 				using var proc = a_ctx.Control.RunExecutable(a_s.Req("executable"), image, args, a_ctx.Cancel);
 				var main = StepKit.WaitWindow(a_ctx, image, t => t.Contains("LODGen", StringComparison.Ordinal), TimeSpan.FromMinutes(10), "xLODGen's window");
 				a_ctx.Activity(Key, "xLODGen is reading the load order");
-				var opts = Find(a_ctx, main, e => Uia.Name(e) == "LODGen Options" && Uia.Type(e) == ControlType.Window, TimeSpan.FromMinutes(15), "xLODGen's options");
+				var loadingHwnd = (nint)main.Current.NativeWindowHandle;
+				var opts = Find(a_ctx, main, e => Uia.Name(e) == "LODGen Options" && Uia.Type(e) == ControlType.Window, TimeSpan.FromMinutes(15), "xLODGen's options",
+					proc, () => LogText(loadingHwnd));
 				var list = WorldspaceList(a_ctx, opts, TimeSpan.FromSeconds(30));
 				var want = a_s.List("worldspaces");
 				CheckList.Set(a_ctx, list, n => want.Count == 0 || want.Contains("all", StringComparer.OrdinalIgnoreCase) || want.Contains(n.Split(' ')[0], StringComparer.OrdinalIgnoreCase));
@@ -147,19 +149,53 @@ public sealed class XLodGenStep : IStep
 		return best.n > 0 ? best.i : null;
 	}
 
-	internal static AutomationElement Find(RunContext a_ctx, AutomationElement a_root, Func<AutomationElement, bool> a_match, TimeSpan a_timeout, string a_what)
+	// A line of the tool's own log that says it stopped while loading (a plugin with a missing master, a file it cannot read):
+	// its loader's "Fatal: ..." wherever it stands in the line (the log puts a time and "Background Loader:" before it), or a
+	// line that begins "Error: ..."
+	public static string? LoadError(string a_log)
+	{
+		var tail = a_log.Length > 2000 ? a_log[^2000..] : a_log;
+		return Regex.Match(tail, @"^.*\bFatal: .*$|^\s*Error: .*$", RegexOptions.Multiline) is { Success: true } m ? m.Value.Trim() : null;
+	}
+
+	// A window of the tool that comes once it has read the load order. a_proc and a_says: the tool itself and what its log
+	// box says - a tool that closed, or whose log names an error while it loads, is said at once with its own words; the wait
+	// used to look for the window alone and end, a quarter of an hour later, with "did not appear"
+	internal static AutomationElement Find(RunContext a_ctx, AutomationElement a_root, Func<AutomationElement, bool> a_match, TimeSpan a_timeout, string a_what,
+		Process? a_proc = null, Func<string>? a_says = null)
 	{
 		var sw = Stopwatch.StartNew();
+		var read = TimeSpan.FromSeconds(-10);
+		var said = "";
 		while (sw.Elapsed < a_timeout) {
 			a_ctx.Cancel.ThrowIfCancellationRequested();
 			var hit = Uia.All(a_root).FirstOrDefault(a_match);
 			if (hit != null) {
 				return hit;
 			}
-			Thread.Sleep(1000);
+			// its log is read every few seconds, not every look (the whole text crosses from its process each time)
+			if (a_says != null && sw.Elapsed - read >= TimeSpan.FromSeconds(5)) {
+				read = sw.Elapsed;
+				said = a_says();
+				if (LoadError(said) is { } error) {
+					throw new StepFailedException($"{a_what} never came - the tool stopped while it was loading: {error}");
+				}
+			}
+			var gone = false;
+			try {
+				gone = a_proc?.HasExited == true;
+			} catch (InvalidOperationException) {
+				gone = true;
+			}
+			if (gone) {
+				throw new StepFailedException($"the tool closed before {a_what} appeared" + LastSaid(said));
+			}
+			a_ctx.Pause(TimeSpan.FromSeconds(1));
 		}
-		throw new StepFailedException($"{a_what} did not appear within {a_timeout.TotalMinutes:0.#} minutes");
+		throw new StepFailedException($"{a_what} did not appear within {a_timeout.TotalMinutes:0.#} minutes" + LastSaid(said));
 	}
+
+	static string LastSaid(string a_log) => LastLine(a_log) is { Length: > 0 } last ? $" - the last line of its log: {last}" : "";
 }
 
 public sealed class AcmosStep : IStep

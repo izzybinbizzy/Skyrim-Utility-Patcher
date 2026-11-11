@@ -3961,6 +3961,19 @@ public static class Program
 		Check(all.Remove.Any(p => Files.SamePath(p, f.Data)), "the data folder goes whole");
 		var keep = DataRemoval.Make(f.Data, true);
 		Check(keep.Kept.Any(p => Files.SamePath(p, setupsDir)) && !keep.Remove.Any(p => Files.SamePath(p, setupsDir) || Files.SamePath(p, f.Data)), "the setups kept, so the data folder itself stays");
+		// what would not fit the Recycle Bin is never handed to it (Windows would delete it for good): left in place and named
+		var room = DataRemoval.BinRoom;
+		try {
+			DataRemoval.BinRoom = _ => 1;
+			var sent = new List<string>();
+			var left = DataRemoval.Carry(keep, p => { sent.Add(p); return null; });
+			Check(left.Any(l => l.Contains("more than its drive's Recycle Bin takes", StringComparison.Ordinal)), "an entry bigger than the bin is left in place and named: " + string.Join(" | ", left));
+			Check(sent.All(p => (Directory.Exists(p) ? Files.SizeOf(p) : new FileInfo(p).Length) <= 1), "and only what fits is sent");
+			DataRemoval.BinRoom = _ => 0;
+			Check(DataRemoval.Carry(keep, _ => null).Any(l => l.Contains("keeps no Recycle Bin", StringComparison.Ordinal)), "on a drive with no bin it is left in place too");
+		} finally {
+			DataRemoval.BinRoom = room;
+		}
 		var binned = new List<string>();
 		Equal(0, DataRemoval.Carry(keep, p => { binned.Add(p); return null; }).Count, "all of it went");
 		Check(binned.Count == keep.Remove.Count(p => File.Exists(p) || Directory.Exists(p)), "each entry sent once");
@@ -4914,19 +4927,24 @@ public static class Program
 		Directory.CreateDirectory(Path.GetDirectoryName(tweakFile)!);
 		const string TweaksBefore = "[Render]\r\nFullscreen = true\r\n";
 		File.WriteAllText(tweakFile, TweaksBefore);
+		// the player's own file, which SSE Display Tweaks reads over the mod's
+		var customFile = Path.Combine(f.Overwrite, "SKSE", "Plugins", "SSEDisplayTweaks_Custom.ini");
+		Directory.CreateDirectory(Path.GetDirectoryName(customFile)!);
+		const string CustomBefore = "[Render]\r\nBorderless = true\r\nResolution = 2560x1440\r\n";
+		File.WriteAllText(customFile, CustomBefore);
 		var seen = "";
 		var fail = false;
 		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => {
 			QuietGame.Apply(ctx);
 			QuietGame.Apply(ctx);
-			seen = File.ReadAllText(prefs) + File.ReadAllText(tweakFile);
+			seen = File.ReadAllText(prefs) + File.ReadAllText(tweakFile) + File.ReadAllText(customFile);
 			if (fail) {
 				throw new StepFailedException("a failure");
 			}
 		}));
 		var setup = f.WriteSetup(("landscapefixer", new JsonObject()));
 		Equal(RunState.Finished, Runner.Run(new RunRequest(f.SetupFile, f.Data)).State, "off: the run finished");
-		Check(seen == Prefs + TweaksBefore, "off: nothing changes");
+		Check(seen == Prefs + TweaksBefore + CustomBefore, "off: nothing changes");
 		foreach (var on in new[] { "LocalSettings=true", "LocalSettings = true", "  localsettings=TRUE " }) {
 			Check(QuietGame.IsLocalSettings(on), "the setting however it is spaced: " + on);
 		}
@@ -4938,8 +4956,10 @@ public static class Program
 		setup.Save(f.SetupFile);
 		Equal(RunState.Finished, Runner.Run(new RunRequest(f.SetupFile, f.Data)).State, "on: the run finished");
 		Check(seen.Contains("iSize W=960", StringComparison.Ordinal) && seen.Contains("Fullscreen=false", StringComparison.Ordinal), "on: the step sees the small window");
+		Check(seen.Contains("Borderless=false\r\nResolution=960x540", StringComparison.Ordinal), "the player's own _Custom file, which wins over the mod's, is set too: " + seen);
 		Equal(Prefs, File.ReadAllText(prefs), "and the game's settings go back");
 		Equal(TweaksBefore, File.ReadAllText(tweakFile), "and the mod's");
+		Equal(CustomBefore, File.ReadAllText(customFile), "and the player's own");
 		fail = true;
 		Check(Runner.Run(new RunRequest(f.SetupFile, f.Data)).State != RunState.Finished, "a step that fails");
 		Check(seen.Contains("iSize W=960", StringComparison.Ordinal), "had them changed");
@@ -6315,6 +6335,36 @@ public static class Program
 		} finally {
 			ctx.Log.Dispose();
 		}
+	}
+
+	// what a tool or the game does is said in words: one that ends the moment it started, one that stops while it loads, an add-on
+	// whose program was swapped under an unchanged file, a small cache that is still whole
+	static void T_WhatAToolDidIsSaidInWords()
+	{
+		Throws<StepFailedException>(() => Mo2Control.Open(999999, "The tool").Dispose(), "a tool that ended at once");
+		try {
+			Mo2Control.Open(999999, "The tool").Dispose();
+		} catch (StepFailedException e) {
+			Check(e.Message.Contains("The tool started and ended at once", StringComparison.Ordinal), "in words, never .NET's own: " + e.Message);
+		}
+		Equal<string?>("[00:03] Background Loader: Fatal: <EOSError: System Error.  Code: 2.>", XLodGenStep.LoadError("[00:01] Background Loader: loading \"Skyrim.esm\"...\r\n[00:03] Background Loader: Fatal: <EOSError: System Error.  Code: 2.>\r\n"),
+			"the loader's own line when it stopped");
+		Equal<string?>(null, XLodGenStep.LoadError("[00:01] Background Loader: loading \"Skyrim.esm\"...\r\n[00:09] Background Loader: finished\r\nErrors were found in 0 records\r\n"), "none in a log of a load that went well");
+
+		using var f = new FakeMo2();
+		var modDir = Path.Combine(f.Mods, "Base Mod");
+		Directory.CreateDirectory(Path.Combine(modDir, "tools"));
+		Directory.CreateDirectory(Path.Combine(modDir, Brand.Name));
+		var program = Path.Combine(modDir, "tools", "MyPatcher.exe");
+		File.WriteAllText(program, "the program the player allowed");
+		var file = Path.Combine(modDir, Brand.Name, "my patcher.json");
+		File.WriteAllText(file, """{ "schema": 1, "name": "My Patcher", "author": "A Modder", "program": "tools/MyPatcher.exe", "output": "My Patcher Output" }""");
+		var allowed = AddOns.Read(file, modDir)!;
+		Check(allowed.Says.Contains("KB, last changed", StringComparison.Ordinal), "the question shows the program's size and day: " + allowed.Says);
+		File.WriteAllText(program, "another program under the same file");
+		Check(AddOns.Read(file, modDir)!.Hash != allowed.Hash, "a program swapped under an unchanged add-on file is not what was allowed");
+		File.WriteAllText(program, "the program the player allowed");
+		Equal(allowed.Hash, AddOns.Read(file, modDir)!.Hash, "the same file and the same program: the same fingerprint");
 	}
 
 	// The guard for "pressing stop now still doesn't stop it" (his finds of 2026-11-04, 11-06 and 11-10): no wait of the engine

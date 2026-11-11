@@ -316,8 +316,12 @@ public static class Waits
 						if (a_onIdle?.Invoke() == true) {
 							lastBusy = sw.Elapsed;
 						} else {
-							var boxes = Uia.Boxes(Procs.Tree(a_proc.Id));
+							var tree = Procs.Tree(a_proc.Id);
+							var boxes = Uia.Boxes(tree);
+							// a window of its own that is no message box (a Delphi form, a WPF dialog) is named by its title
+							var owned = boxes.Count > 0 ? [] : Uia.OwnedWindows(tree);
 							var said = boxes.Count > 0 ? " It shows: " + string.Join(" / ", boxes.Select(b => b.Text)) :
+								owned.Count > 0 ? " It has a window open: " + string.Join(" / ", owned) :
 								lastSeen is { Length: > 0 } s ? " Its window shows: " + (s.Length > 300 ? "..." + s[^300..] : s) : " It shows no question.";
 							throw new StepFailedException($"{StepCatalog.Name(a_step)} sat idle for {idleLimit.TotalMinutes:0} minutes without finishing.{said}");
 						}

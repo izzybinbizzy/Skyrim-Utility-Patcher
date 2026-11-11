@@ -120,7 +120,7 @@ public partial class MainWindow : Window
 			A11y.Say(this, "Now: " + _vm.NowTitle);
 			break;
 		case nameof(MainViewModel.Waiting) when _vm.Waiting != "":
-			A11y.Say(this, "Your turn in the game: " + _vm.Waiting, true);
+			A11y.Say(this, _vm.WaitingTitle + ": " + _vm.Waiting, true);
 			break;
 		case nameof(MainViewModel.Verdict) when _vm.Verdict != "":
 			A11y.Say(this, _vm.NowTitle + ": " + _vm.Verdict, true);

@@ -178,16 +178,15 @@ public sealed class GrassStep : IStep
 			try {
 				while (File.Exists(flag)) {
 					a_ctx.Cancel.ThrowIfCancellationRequested();
-					if (++launches > a_s.Int("max_launches", 40)) {
-						throw new StepFailedException($"the grass cache was still not finished after {launches - 1} starts");
-					}
+					// (how many starts are too many is one setting, max_restarts, judged after each start that crashed)
+					++launches;
 					var have = Files.CountFiles(ow);
 					a_ctx.Activity(Key, $"the game builds the grass cache - start {launches} ({have} files so far)");
 					InGame.NoGameRunning(a_ctx);
 					var sw = Stopwatch.StartNew();
 					a_ctx.GameLaunched = DateTime.Now;
 					QuietGame.Apply(a_ctx);
-					using var g = Process.GetProcessById(a_ctx.Control.LaunchGame(a_s.Str("launch_executable") ?? "SKSE", InGame.FreshGamePid(), a_ctx.Cancel));
+					using var g = Mo2Control.Open(a_ctx.Control.LaunchGame(a_s.Str("launch_executable") ?? "SKSE", InGame.FreshGamePid(), a_ctx.Cancel), "the game");
 					var lastN = -1;
 					var still = Stopwatch.StartNew();
 					while (!g.HasExited) {
@@ -385,11 +384,18 @@ public sealed class ShaderStep : IStep
 		IReadOnlyCollection<string>? a_layers = null)
 	{
 		var stamp = ReadStampFile(a_mo2, a_c);
-		if (!File.Exists(stamp) || Files.CountFiles(Path.Combine(a_mo2.ModDir(a_c.OutputMod), "ShaderCache")) < 50) {
+		if (!File.Exists(stamp)) {
 			return false;
 		}
 		try {
 			var o = JsonNode.Parse(Files.ReadSharedText(stamp)) as JsonObject;
+			// The cache must still hold what it held when it was stamped (nearly all of it), judged by its own count. Judged by a
+			// fixed 50 files, a small shader mod's cache that the step had accepted with fewer read as out of date at every run
+			// and was built again each time. A stamp from before the count was kept is held to the old 50
+			var stamped = o?["files"] is JsonValue fv && fv.TryGetValue<int>(out var count) ? count : 50;
+			if (Files.CountFiles(Path.Combine(a_mo2.ModDir(a_c.OutputMod), "ShaderCache")) < Math.Max(1, stamped * 9 / 10)) {
+				return false;
+			}
 			// a cache that ended by quiet (the log never said it was done) is built again
 			return o?["verified"]?.GetValue<bool>() != false && o?["fingerprint"]?.ToString() == Fingerprint(a_mo2, a_c, a_profile, a_otherCaches, a_layers);
 		} catch (System.Text.Json.JsonException) {
@@ -620,7 +626,7 @@ public sealed class ShaderStep : IStep
 					// shaders already in the cache came from an earlier start of this step: only new ones show THIS start works
 					var atLaunch = Files.CountFiles(owCache);
 					QuietGame.Apply(a_ctx);
-					g = Process.GetProcessById(a_ctx.Control.LaunchGame(a_s.Str("launch_executable") ?? "SKSE", InGame.FreshGamePid(), a_ctx.Cancel));
+					g = Mo2Control.Open(a_ctx.Control.LaunchGame(a_s.Str("launch_executable") ?? "SKSE", InGame.FreshGamePid(), a_ctx.Cancel), "the game");
 					a_ctx.Activity("shaders", $"{c.ShaderMod}: the game compiles the shader cache at its main menu");
 					var sane = false;
 					var lastN = -1;

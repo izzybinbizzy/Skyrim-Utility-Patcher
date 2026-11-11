@@ -209,13 +209,15 @@
             <ProgressBar Height="{DynamicResource ProgressBarHeight}" Margin="0,14,0,0" Maximum="1" Value="{Binding Progress}" Foreground="{DynamicResource AccentBar}" AutomationProperties.Name="Run progress"
                          IsIndeterminate="{Binding ProgressBusy}"
                          Visibility="{Binding ShowProgress, Converter={StaticResource Vis}}"/>
-            <!-- a guided in-game step waits for the player -->
+            <!-- the run waits for the player: a guided in-game step (Done when they did it), or their own Mod Organizer left open (the run goes on by itself once it is closed: no Done) -->
             <Border Margin="0,14,0,0" Padding="14" CornerRadius="{DynamicResource GuidedBoxCorner}" Background="{DynamicResource GuidedFill}" BorderBrush="{DynamicResource Accent}" BorderThickness="1"
                     Visibility="{Binding Waiting, Converter={StaticResource NotEmpty}}">
               <DockPanel>
-                <Button DockPanel.Dock="Right" Content="_Done" Style="{StaticResource Primary}" Command="{Binding ContinueCommand}" Margin="12,0,0,0"/>
+                <Button DockPanel.Dock="Right" Content="_Done" Style="{StaticResource Primary}" Command="{Binding ContinueCommand}" Margin="12,0,0,0"
+                        Visibility="{Binding WaitingInGame, Converter={StaticResource Vis}}"/>
                 <StackPanel>
-                  <TextBlock Text="YOUR TURN IN THE GAME" Style="{StaticResource H2}" Margin="0,0,0,4"/>
+                  <TextBlock Text="YOUR TURN IN THE GAME" Style="{StaticResource H2}" Margin="0,0,0,4" Visibility="{Binding WaitingInGame, Converter={StaticResource Vis}}"/>
+                  <TextBlock Text="THE RUN WAITS FOR YOU" Style="{StaticResource H2}" Margin="0,0,0,4" Visibility="{Binding WaitingOutside, Converter={StaticResource Vis}}"/>
                   <TextBlock Text="{Binding Waiting}" TextWrapping="Wrap"/>
                 </StackPanel>
               </DockPanel>

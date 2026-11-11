@@ -10,7 +10,10 @@ public static class QuietGame
 {
 	const string SettingName = "quietGame";
 	const int Width = 960, Height = 540;
-	const string TweaksFile = "SSEDisplayTweaks.ini";
+	// SSE Display Tweaks reads its _Custom file over its own (its way to keep a player's settings through its updates, and many
+	// lists ship one with the window mode and size in it): changed in the plain file alone, the game still started borderless
+	// over the whole screen
+	static readonly string[] TweaksFiles = ["SSEDisplayTweaks.ini", "SSEDisplayTweaks_Custom.ini"];
 
 	public static bool On(Setup a_setup) => Setup.Bool(a_setup.Root, SettingName) == true;
 
@@ -94,14 +97,22 @@ public static class QuietGame
 		}
 		var files = new List<(string Path, Func<string, string> Change)> { (prefs, GamePrefs) };
 		// overwrite outranks every mod. The game's own Data folder is never written
-		files.AddRange(a_ctx.Profile.States().Where(s => s.Value == '+')
-			.Select(s => Path.Combine(a_ctx.Mo2.ModDir(s.Key), "SKSE", "Plugins", TweaksFile))
-			.Append(Path.Combine(a_ctx.Mo2.OverwriteDir, "SKSE", "Plugins", TweaksFile)).Where(File.Exists)
+		files.AddRange(a_ctx.Profile.States().Where(s => s.Value == '+').Select(s => a_ctx.Mo2.ModDir(s.Key)).Append(a_ctx.Mo2.OverwriteDir)
+			.SelectMany(d => TweaksFiles.Select(n => Path.Combine(d, "SKSE", "Plugins", n))).Where(File.Exists)
 			.Select(f => (f, (Func<string, string>)DisplayTweaks)));
 		foreach (var (path, change) in files) {
 			StepKit.KeepFile(a_ctx, path);
-			a_ctx.QuietFiles.Add(path);
-			Files.WriteAtomic(path, change(Files.ReadSharedText(path)));
+			try {
+				// written back the way it was written (the game's own files are in the PC's code page: an accented value stays one)
+				var text = Files.DecodeText(Files.ReadShared(path), out var how);
+				Files.WriteAtomic(path, Files.EncodeText(change(text), how));
+				a_ctx.QuietFiles.Add(path);
+			} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+				// a file another program holds: left as it is and said - the game then starts with what could be set, never a
+				// failed step over an option
+				StepKit.Forget(a_ctx, path);
+				a_ctx.Log.Warn($"{Path.GetFileName(path)} could not be changed for the small window ({e.Message}) - the game may start as it usually does");
+			}
 		}
 		// the save to play runs after the run's record says finished: a crash there must still leave something to put back
 		if (a_ctx.Journal.InGameAfter) {

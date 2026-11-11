@@ -116,6 +116,48 @@ public static class DataRemoval
 		}
 	};
 
+	[System.Runtime.InteropServices.DllImport("kernel32.dll", EntryPoint = "GetVolumeNameForVolumeMountPointW", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+	[return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+	static extern bool GetVolumeNameForVolumeMountPoint(string a_root, [System.Runtime.InteropServices.Out] char[] a_name, uint a_length);
+
+	// How much the Recycle Bin of a path's drive takes at most, in bytes; 0 = that drive keeps no bin (a stick, a card, a bin
+	// switched off). Windows keeps the limit per drive (measured on a PC with two 900 GB drives: about 46 and 50 GB), and what is
+	// bigger than it is not recycled: asked without its own questions, as here, Windows deletes it for good. A drive Windows
+	// holds no limit for yet is judged by Windows' own starting rule (a tenth of the first 40 GB and a twentieth of the rest).
+	// The offline tests answer for it.
+	public static Func<string, long> BinRoom { get; set; } = a_path => {
+		var root = Path.GetPathRoot(Path.GetFullPath(a_path)) ?? "";
+		DriveInfo drive;
+		try {
+			drive = new DriveInfo(root);
+			if (drive.DriveType == DriveType.Removable) {
+				return 0;
+			}
+		} catch (Exception e) when (e is ArgumentException or IOException) {
+			return 0;
+		}
+		var name = new char[64];
+		if (GetVolumeNameForVolumeMountPoint(root, name, (uint)name.Length) && new string(name).TrimEnd('\0') is var volume &&
+		    Regex.Match(volume, @"\{[0-9a-fA-F-]+\}") is { Success: true } id) {
+			using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\BitBucket\Volume\" + id.Value);
+			if (key?.GetValue("NukeOnDelete") is int nuke && nuke != 0) {
+				return 0;
+			}
+			if (key?.GetValue("MaxCapacity") is int mb && mb > 0) {
+				return mb * 1048576L;
+			}
+		}
+		const long FortyGb = 40L << 30;
+		try {
+			var size = drive.TotalSize;
+			return Math.Min(size, FortyGb) / 10 + Math.Max(0, size - FortyGb) / 20;
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+			return 0;
+		}
+	};
+
+	static long SizeOf(string a_path) => Directory.Exists(a_path) ? Files.SizeOf(a_path) : File.Exists(a_path) ? new FileInfo(a_path).Length : 0;
+
 	// every entry of the plan to the Recycle Bin; returns what could not go, each with why (a_recycle is for the offline tests)
 	public static List<string> Carry(Plan a_plan, Func<string, string?>? a_recycle = null)
 	{
@@ -133,6 +175,18 @@ public static class DataRemoval
 		foreach (var p in a_plan.Remove.Where(p => File.Exists(p) || Directory.Exists(p))) {
 			if (OnNetwork(p)) {
 				failed.Add($"{p}: on a network drive, where Windows would delete it for good instead of recycling it - left in place");
+				continue;
+			}
+			// "to the Recycle Bin, never erased" holds only for what fits the bin: what does not is left where it is, and named
+			try {
+				var (size, room) = (SizeOf(p), BinRoom(p));
+				if (size > room) {
+					failed.Add(room == 0 ? $"{p}: its drive keeps no Recycle Bin, so Windows would delete it for good - left in place; delete it yourself when you are sure"
+						: $"{p}: {size / 1048576:#,0} MB is more than its drive's Recycle Bin takes ({room / 1048576:#,0} MB), so Windows would delete it for good - left in place; delete it yourself when you are sure");
+					continue;
+				}
+			} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+				failed.Add($"{p}: it could not be measured ({e.Message}) - left in place");
 				continue;
 			}
 			if (recycle(p) is { } why) {
