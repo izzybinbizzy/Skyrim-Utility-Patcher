@@ -163,6 +163,28 @@ public static partial class ToolSettings
 	}
 
 	// the tool's own window, opened through Mod Organizer for the player; once they close it, every settings file it wrote is kept
+	// the mod "Learn its settings" switched on for the tool's window, named until it is off again: a crash in between leaves this for the next look
+	public static string SwitchRecord(Setup a_setup) => a_setup.File + ".tool on";
+
+	// with Mod Organizer closed, before a run or a Learn reads the profile as the player's
+	public static void UndoLeftSwitch(Setup a_setup, Profile a_profile, RunLog a_log)
+	{
+		var record = SwitchRecord(a_setup);
+		try {
+			if (!File.Exists(record)) {
+				return;
+			}
+			var mod = Files.ReadSharedText(record).Trim();
+			if (a_profile.IsOn(mod)) {
+				a_profile.SetMods([], [mod], a_log);
+				a_log.Warn($"the mod \"{mod}\" was left on when learning a tool's settings was cut off - it is off again");
+			}
+			File.Delete(record);
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidOperationException or KeyNotFoundException) {
+			a_log.Warn($"a mod left on when learning a tool's settings was cut off could not be switched off ({e.Message}) - look for it in Mod Organizer");
+		}
+	}
+
 	public static Learned Learn(Setup a_setup, string a_step, RunLog a_log, CancellationToken a_ct)
 	{
 		using var hold = Runner.HoldIfFree() ?? throw new StepFailedException("a run is going - learn a tool's settings when it is done");
@@ -186,9 +208,11 @@ public static partial class ToolSettings
 		// holding a plugin is left to the player, as in a run). Only that mod is unticked after: what the player changed in Mod
 		// Organizer meanwhile stays
 		var profile = new Profile(mo2, a_setup.Profile, () => control.Running);
+		UndoLeftSwitch(a_setup, profile, a_log);
 		var toolMod = StepKit.ToolMod(mo2, profile, title);
 		if (toolMod != null) {
 			StepKit.NoPluginIn(mo2, toolMod, tool);
+			Files.WriteAtomic(SwitchRecord(a_setup), toolMod);
 			profile.SetMods([toolMod], [], a_log);
 		}
 		try {
@@ -210,6 +234,7 @@ public static partial class ToolSettings
 				try {
 					control.Close(null, CancellationToken.None);
 					profile.SetMods([], [toolMod], a_log);
+					File.Delete(SwitchRecord(a_setup));
 				} catch (Exception e) when (e is Mo2BusyException or IOException or UnauthorizedAccessException or InvalidOperationException or KeyNotFoundException) {
 					a_log.Warn($"the mod \"{toolMod}\" could not be switched off again ({e.Message}) - untick it in Mod Organizer");
 				}
