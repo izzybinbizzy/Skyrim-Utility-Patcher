@@ -215,7 +215,7 @@ public static partial class InGame
 		}
 		string[] tail;
 		try {
-			tail = Files.ReadSharedText(log).Split('\n').TakeLast(300).ToArray();
+			tail = Files.ReadSharedTailText(log, LogTailBytes).Split('\n').TakeLast(300).ToArray();
 		} catch (IOException) {
 			return false;
 		}
@@ -294,11 +294,14 @@ public static partial class InGame
 			return false;
 		}
 		try {
-			return BootPassOver(Files.ReadSharedText(log).Split('\n').TakeLast(300).ToList(), a_since);
+			return BootPassOver(Files.ReadSharedTailText(log, LogTailBytes).Split('\n').TakeLast(300).ToList(), a_since);
 		} catch (IOException) {
 			return false;
 		}
 	}
+
+	// how much of a shader log's end holds its last 300 lines, with room to spare (a line is a few hundred letters at most)
+	const int LogTailBytes = 512 * 1024;
 
 	public static bool CacheBusy(string a_overwrite, int a_quietSeconds = 120)
 	{
@@ -918,11 +921,43 @@ public static partial class InGame
 		throw new StepFailedException($"\"{a_save}\" did not finish loading in {limit.TotalMinutes:0} minutes");
 	}
 
+	// a Community Shaders-type plugin by its file name (Community Shaders itself, Open Shaders, Bottled Shaders)
+	public static bool IsShaderDll(string a_fileName) =>
+		a_fileName.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) && (a_fileName.Equals("CommunityShaders.dll", StringComparison.OrdinalIgnoreCase) ||
+			a_fileName.Contains("OpenShaders", StringComparison.OrdinalIgnoreCase) || a_fileName.Contains("BottledShaders", StringComparison.OrdinalIgnoreCase));
+
+	// Is there a shader mod in this game at all? One of the known plugins in a ticked mod, in overwrite or in the game's own
+	// folder; a cache the setup's own shader step names for a ticked shader mod; or a shader log this very start wrote (the
+	// shader mod writes it as the game starts, before the game answers). With none of them nothing compiles, and the watch is
+	// not sat out: a profile on ENB, or with no shader mod, waited five minutes at the main menu at each of its three game
+	// starts. Anything that cannot be looked at counts as "there is one": the watch then runs as before.
+	public static bool ShaderModHere(RunContext a_ctx, IReadOnlyList<string> a_logFolders, DateTime a_since)
+	{
+		try {
+			if (NewestShaderLog(a_logFolders) is { } log && File.GetLastWriteTimeUtc(log) >= a_since.ToUniversalTime().AddSeconds(-5)) {
+				return true;
+			}
+			var states = a_ctx.Profile.States();
+			if (a_ctx.Setup.StepSettings("shaders") is { } shaders && Steps.ShaderStep.Caches(new StepSettings(shaders)).Any(c => states.TryGetValue(c.ShaderMod, out var f) && f == '+')) {
+				return true;
+			}
+			return states.Where(s => s.Value == '+').Select(s => a_ctx.Mo2.ModDir(s.Key)).Append(a_ctx.Mo2.OverwriteDir).Append(Path.Combine(a_ctx.Mo2.GameDir, "Data"))
+				.Select(d => Path.Combine(d, "SKSE", "Plugins")).Where(Directory.Exists)
+				.Any(d => Directory.EnumerateFiles(d, "*.dll").Any(f => IsShaderDll(Path.GetFileName(f))));
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+			return true;
+		}
+	}
+
 	// "You can't load a save while shaders are compiling" (his word). A compile can begin a minute after the game answers and
 	// write its first line only when a shader finishes, so it is watched for `compile_watch_s` (300) before a load is sent.
 	public static bool WaitCompile(RunContext a_ctx, string a_step, StepSettings a_s, DateTime a_since)
 	{
 		var logs = LogFolders(a_ctx.Setup, a_ctx.Mo2);
+		if (!ShaderModHere(a_ctx, logs, a_since)) {
+			a_ctx.Log.Detail("no shader mod in this game (no Community Shaders-type plugin, no shader log from this start) - no compile to wait for");
+			return false;
+		}
 		var watch = TimeSpan.FromSeconds(a_s.Int("compile_watch_s", 300));
 		var max = TimeSpan.FromMinutes(a_s.Int("compile_max_min", 90));
 		var sw = Stopwatch.StartNew();

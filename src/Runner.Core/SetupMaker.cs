@@ -50,8 +50,7 @@ public static class SetupMaker
 		var plainTaken = false;
 		foreach (var (mod, flag) in states.Where(s => s.Value != '*')) {
 			var plugins = Path.Combine(mo2.ModDir(mod), "SKSE", "Plugins");
-			if (Directory.Exists(plugins) && Directory.GetFiles(plugins, "*.dll").Any(f => Path.GetFileName(f) is var n &&
-				    (n.Equals("CommunityShaders.dll", StringComparison.OrdinalIgnoreCase) || n.Contains("OpenShaders", StringComparison.OrdinalIgnoreCase) || n.Contains("BottledShaders", StringComparison.OrdinalIgnoreCase)))) {
+			if (Directory.Exists(plugins) && Directory.GetFiles(plugins, "*.dll").Any(f => InGame.IsShaderDll(Path.GetFileName(f)))) {
 				// one cache mod per shader mod: the first ticked one gets the plain name, every other its shader mod's name added
 				var plain = flag == '+' && !plainTaken;
 				plainTaken |= plain;

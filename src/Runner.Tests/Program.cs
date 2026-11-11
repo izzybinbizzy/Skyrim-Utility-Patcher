@@ -2887,8 +2887,14 @@ public static class Program
 		Check(SystemChecks.PluginLimit(new(10, 4097)).Single().Blocking, "4097 light plugins stop the run");
 		var unread = SystemChecks.PluginLimit(new(250 - 10, 10, 20)).Single();
 		Check(!unread.Blocking && unread.Text.Contains("could be over", StringComparison.Ordinal), "unreadable plugins are said, and what they could mean");
-		// a plugin held open with no sharing cannot be read: neither light nor full
+		// a plugin held open with no sharing cannot be read. One that has not changed since it was last read is still known (its
+		// flags are remembered with its time and size); one that changed since is neither light nor full
 		var locked = Path.Combine(f.Mods, "Lights", "LightFlag.esp");
+		using (new FileStream(locked, FileMode.Open, FileAccess.Read, FileShare.None)) {
+			Equal<bool?>(true, Plugins.LightOrNot(locked), "held but unchanged since it was read: still known");
+			Equal(0, SystemChecks.CountPlugins(ProfileOf(f)).Unreadable, "and counted as what it is");
+		}
+		File.SetLastWriteTimeUtc(locked, DateTime.UtcNow.AddSeconds(10));
 		using (new FileStream(locked, FileMode.Open, FileAccess.Read, FileShare.None)) {
 			Equal<bool?>(null, Plugins.LightOrNot(locked), "an unreadable plugin is neither kind");
 			Equal(1, SystemChecks.CountPlugins(ProfileOf(f)).Unreadable, "and counted apart");
@@ -6365,6 +6371,49 @@ public static class Program
 		Check(AddOns.Read(file, modDir)!.Hash != allowed.Hash, "a program swapped under an unchanged add-on file is not what was allowed");
 		File.WriteAllText(program, "the program the player allowed");
 		Equal(allowed.Hash, AddOns.Read(file, modDir)!.Hash, "the same file and the same program: the same fingerprint");
+	}
+
+	// A game with no shader mod has no shader compile to wait for (a profile on ENB sat five minutes at the main menu at each
+	// start); a plugin's flags are read from its file again only when the file changed; a log's last lines are read without the
+	// megabytes before them
+	static void T_NothingIsWaitedForOrReadThatIsNotThere()
+	{
+		using var f = new FakeMo2();
+		f.WriteSetup(("landscapefixer", []));
+		var ctx = StepContext(f, "landscapefixer");
+		var logs = Path.Combine(f.Root, "SKSE logs");
+		Directory.CreateDirectory(logs);
+		try {
+			var started = DateTime.Now;
+			Check(!InGame.ShaderModHere(ctx, [logs], started), "no shader plugin, no shader log: nothing to wait for");
+			var plugins = Path.Combine(f.Mods, "Base Mod", "SKSE", "Plugins");
+			Directory.CreateDirectory(plugins);
+			File.WriteAllText(Path.Combine(plugins, "CommunityShaders.dll"), "");
+			Check(InGame.ShaderModHere(ctx, [logs], started), "a ticked mod ships the shader plugin");
+			File.Delete(Path.Combine(plugins, "CommunityShaders.dll"));
+			File.WriteAllText(Path.Combine(plugins, "SomethingElse.dll"), "");
+			Check(!InGame.ShaderModHere(ctx, [logs], started), "another plugin is no shader mod");
+			File.WriteAllText(Path.Combine(logs, "OpenShaders.log"), "started");
+			Check(InGame.ShaderModHere(ctx, [logs], started), "a shader log this start wrote says there is one, whatever its plugin is called");
+			Check(!InGame.ShaderModHere(ctx, [logs], DateTime.Now.AddHours(1)), "a log from before this start says nothing");
+		} finally {
+			ctx.Log.Dispose();
+		}
+
+		var plugin = Path.Combine(f.Root, "Flagged.esp");
+		FakeMo2.Plugin(plugin, true);
+		Check(Plugins.IsMaster(plugin) && Plugins.IsMaster(plugin), "a master-flagged plugin, asked twice");
+		FakeMo2.Plugin(plugin, false);
+		File.SetLastWriteTimeUtc(plugin, DateTime.UtcNow.AddSeconds(5));
+		Check(!Plugins.IsMaster(plugin), "the file changed: its flag is read again, not remembered");
+
+		var log = Path.Combine(f.Root, "big.log");
+		File.WriteAllText(log, string.Concat(Enumerable.Range(0, 20000).Select(i => $"[12:00:00] line {i} of a long shader log\n")) + "the last line\n");
+		var tail = Files.ReadSharedTailText(log, 4096);
+		Check(tail.Length <= 4096 && tail.EndsWith("the last line\n", StringComparison.Ordinal) && tail.StartsWith("[12:00:00] line ", StringComparison.Ordinal), "the end of a long log, from a whole line: " + tail[..Math.Min(60, tail.Length)]);
+		var brief = Path.Combine(f.Root, "short.log");
+		File.WriteAllText(brief, "short\n");
+		Equal("short\n", Files.ReadSharedTailText(brief, 4096), "a short one is read whole");
 	}
 
 	// The guard for "pressing stop now still doesn't stop it" (his finds of 2026-11-04, 11-06 and 11-10): no wait of the engine

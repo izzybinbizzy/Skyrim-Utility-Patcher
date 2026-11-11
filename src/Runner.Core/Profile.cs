@@ -384,6 +384,9 @@ public sealed class Profile(Mo2Instance a_mo2, string a_name, Func<bool> a_mo2Ru
 		MustBeClosed("the plugin list");
 		var paths = PluginPaths();
 		var ruled = a_rules.Select(r => r.Plugin.ToLowerInvariant()).ToHashSet();
+		// which plugins are masters, looked up once for the whole call and only when a rule asks (every rule and both files
+		// used to ask each plugin's file again)
+		HashSet<string>? masters = null;
 		foreach (var fn in new[] { "plugins.txt", "loadorder.txt" }) {
 			var p = Path.Combine(Dir, fn);
 			if (!File.Exists(p)) {
@@ -404,12 +407,13 @@ public sealed class Profile(Mo2Instance a_mo2, string a_name, Func<bool> a_mo2Ru
 				}
 				int pos;
 				if (rule.Where == "last_master") {
+					masters ??= paths.Where(kv => Plugins.IsMaster(kv.Value)).Select(kv => kv.Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
 					var last = -1;
 					for (int i = 0; i < lines.Count; ++i) {
 						if (lines[i].StartsWith('#') || ruled.Contains(Bare(lines[i]))) {
 							continue;
 						}
-						if (paths.TryGetValue(Bare(lines[i]), out var q) && Plugins.IsMaster(q)) {
+						if (masters.Contains(Bare(lines[i]))) {
 							last = i;
 						}
 					}

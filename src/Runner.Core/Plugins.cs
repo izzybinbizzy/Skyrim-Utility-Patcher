@@ -117,13 +117,31 @@ public static class Plugins
 	public static bool? LightOrNot(string a_path) =>
 		a_path.EndsWith(".esl", StringComparison.OrdinalIgnoreCase) ? true : HeaderFlags(a_path) is { } f ? (f & 0x200) != 0 : null;
 
+	// A plugin's flags as last read, with the file's time and size then: read again only when the file changed. A run asks
+	// for the master flag of every plugin in the load order after each step (for each placement rule, in both order files) - on
+	// a list of 1,200 plugins that was thousands of files opened every time
+	static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DateTime Stamp, long Size, uint Flags)> s_flags = new(StringComparer.OrdinalIgnoreCase);
+
 	// the TES4 record's flags; 0 when the file is not a plugin; null when it cannot be read
 	static uint? HeaderFlags(string a_path)
 	{
 		try {
+			var info = new FileInfo(a_path);
+			if (!info.Exists) {
+				return null;
+			}
+			if (s_flags.TryGetValue(a_path, out var known) && known.Stamp == info.LastWriteTimeUtc && known.Size == info.Length) {
+				return known.Flags;
+			}
 			using var fs = new FileStream(a_path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
 			var h = new byte[12];
-			return fs.Read(h, 0, 12) == 12 && Encoding.ASCII.GetString(h, 0, 4) == "TES4" ? BitConverter.ToUInt32(h, 8) : 0;
+			var flags = fs.Read(h, 0, 12) == 12 && Encoding.ASCII.GetString(h, 0, 4) == "TES4" ? BitConverter.ToUInt32(h, 8) : 0;
+			// (never without end: a load order has a few thousand plugins at most)
+			if (s_flags.Count > 20000) {
+				s_flags.Clear();
+			}
+			s_flags[a_path] = (info.LastWriteTimeUtc, info.Length, flags);
+			return flags;
 		} catch (IOException) {
 			return null;
 		} catch (UnauthorizedAccessException) {

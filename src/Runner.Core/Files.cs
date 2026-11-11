@@ -89,6 +89,26 @@ public static partial class Files
 
 	public static string ReadSharedText(string a_path) => DecodeText(ReadShared(a_path));
 
+	// The end of a text file another program is writing: its last a_most bytes, from the first whole line in them. For a look
+	// that needs a log's last lines every few seconds - a shader log grows to megabytes, and reading all of it at each look, beside
+	// a game that uses every core, was most of what the look cost. A file in UTF-16 (its mark is at its start) is read whole.
+	public static string ReadSharedTailText(string a_path, int a_most)
+	{
+		using var fs = new FileStream(a_path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+		var mark = new byte[2];
+		var utf16 = fs.Length >= 2 && fs.ReadAtLeast(mark, 2, false) == 2 && ((mark[0] == 0xFF && mark[1] == 0xFE) || (mark[0] == 0xFE && mark[1] == 0xFF));
+		if (fs.Length <= a_most || utf16) {
+			fs.Position = 0;
+			var all = new byte[fs.Length];
+			return DecodeText(all[..fs.ReadAtLeast(all, all.Length, false)]);
+		}
+		fs.Seek(-a_most, SeekOrigin.End);
+		var tail = new byte[a_most];
+		var got = fs.ReadAtLeast(tail, a_most, false);
+		var line = Array.IndexOf(tail, (byte)'\n', 0, got);
+		return DecodeText(tail[(line < 0 ? 0 : line + 1)..got]);
+	}
+
 	static readonly UTF8Encoding StrictUtf8 = new(false, true);
 
 	// the PC's own code page (what the game and most tools write a file in when they do not say): 1252 in the west, 1251 for
