@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/icon.png" width="128" alt="The program's icon: a Dwemer gear assembly"></p>
+
 # Output Manager
 
 Runs the generators of a Mod Organizer 2 setup for Skyrim Special Edition / Anniversary Edition in the right order, unattended, and puts your profile back exactly as it was.
