@@ -237,11 +237,15 @@ public sealed class AcmosStep : IStep
 		var roadsOut = reads + " roads";
 		StepKit.ParkDir(a_ctx, roadsOut, "ACMOS roads");
 		var roads = a_s.Str("roads") ?? AcmosRoads(toolDir) ?? "Paths Only";
-		var cmd = $"{Mo2Control.Quote(exe)} -autorun -t:\"{roads}\" -l:\"{lod}\" -o:\"{roadsOut}\"";
+		var args = $"-autorun -t:\"{roads}\" -l:\"{lod}\" -o:\"{roadsOut}\"";
+		var cmd = $"{Mo2Control.Quote(exe)} {args}";
 		a_ctx.Activity(Key, "painting roads into the terrain LOD");
 		string body;
-		using (var desk = new HiddenDesktop()) {
-			using var proc = desk.Start(cmd, toolDir);
+		// Hidden unless the step's "hidden" is switched off (his rule: a setting lets players turn it off): on a PC where a hidden
+		// start does not work the tool then runs in the open like the others - started as any program, never brought to the front
+		using (var desk = a_s.Bool("hidden", true) ? new HiddenDesktop() : null) {
+			using var proc = desk?.Start(cmd, toolDir) ??
+				Process.Start(new ProcessStartInfo(exe, args) { UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = toolDir }) ?? throw new StepFailedException("could not start " + exe);
 			// the run's own, at the setup's priority like every other tool
 			a_ctx.Control.Ours(proc.Id);
 			try {
@@ -249,7 +253,7 @@ public sealed class AcmosStep : IStep
 			} finally {
 				StepKit.CloseTool(a_ctx, Path.GetFileName(exe));
 			}
-			if (desk.Leak != null) {
+			if (desk?.Leak != null) {
 				throw new StepFailedException("ACMOS: " + desk.Leak);
 			}
 			var fresh = Directory.Exists(logs) ? Directory.GetDirectories(logs).Where(d => !before.Contains(Path.GetFileName(d))).Order().LastOrDefault() : null;

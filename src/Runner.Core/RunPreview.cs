@@ -19,6 +19,8 @@ public sealed class RunPreview
 	// the setup's own commands, as written: a setup file can come from anywhere, and what it runs on this PC is shown before it runs
 	public List<string> CommandsBefore { get; } = [];
 	public List<string> CommandsAfter { get; } = [];
+	// the room the run takes on each disk (null: it could not be worked out - the check says why)
+	public DiskForecast? Forecast { get; private set; }
 
 	public static RunPreview Build(Setup a_setup, Mo2Instance a_mo2, IReadOnlyList<Setup.StepEntry> a_todo)
 	{
@@ -46,6 +48,11 @@ public sealed class RunPreview
 		}
 		p.ReplacedForGood.AddRange(a_todo.SelectMany(s => new StepSettings(s.Settings).List("replaces"))
 			.Where(m => st.TryGetValue(m, out var f) && f == '+').Distinct(StringComparer.OrdinalIgnoreCase));
+		try {
+			p.Forecast = DiskForecast.Build(a_setup, a_mo2, a_todo);
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException) {
+			// a disk that will not answer leaves the preview without its forecast, never without the rest
+		}
 		return p;
 	}
 
@@ -65,6 +72,10 @@ public sealed class RunPreview
 		}
 		if (total > TimeSpan.Zero) {
 			l.Add($"About {Minutes(total)} in all{(untimed > 0 ? $", plus {untimed} step(s) never timed yet" : "")}.");
+		}
+		if (Forecast?.Lines() is { Count: > 0 } room) {
+			l.Add("");
+			l.AddRange(room);
 		}
 		if (OffForTheRun.Count > 0) {
 			l.Add("");

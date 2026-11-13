@@ -34,6 +34,8 @@ public sealed class StepRecord
 	public double? Progress { get; set; }
 	// the mod this run's step builds into (null: a step with no output mod)
 	public string? Output { get; set; }
+	// how big that mod was once the step had finished (null: not measured) - the run's summary and the next run's forecast
+	public long? OutputBytes { get; set; }
 }
 
 // an output moved into the run's backup before a tool rewrote it; put back when its step did not finish

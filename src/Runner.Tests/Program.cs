@@ -39,6 +39,7 @@ public static class Program
 		SystemChecks.ProgramFolders = () => [];
 		SystemChecks.IsNetwork = _ => false;
 		InGame.FreeBytes = _ => 1L << 50;
+		DiskForecast.Real = DiskForecast.Real with { Free = _ => 1L << 50 };
 		SystemChecks.SteamRunning = () => false;
 		var tests = typeof(Program).GetMethods(System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)
 			.Where(m => m.Name.StartsWith("T_", StringComparison.Ordinal) && m.Name.Contains(filter, StringComparison.OrdinalIgnoreCase)).OrderBy(m => m.MetadataToken);
@@ -1928,6 +1929,21 @@ public static class Program
 			Equal("plain", File.ReadAllText(Path.Combine(tex, "a.dds")), "a texture already replaced is put back");
 			Equal("plain", File.ReadAllText(Path.Combine(tex, "c.dds")), "the one that could not be replaced stays plain");
 			ctx2.Log.Dispose();
+
+			// "hidden" switched off for the step (his rule: a setting lets players turn it off): the tool is started in the open - no
+			// hidden desktop, and so no guard that looks over the player's screen for it
+			var looks = 0;
+			HiddenDesktop.OnPlayersDesktop = _ => {
+				Interlocked.Increment(ref looks);
+				return [];
+			};
+			var open = (JsonObject)settings.DeepClone();
+			open["hidden"] = false;
+			var ctx3 = StepContext(f, "acmos");
+			new AcmosStep().Run(ctx3, new StepSettings(open));
+			Equal("painted", File.ReadAllText(Path.Combine(tex, "a.dds")), "painted with the tool in the open");
+			Equal(0, looks, "no hidden desktop was made for it");
+			ctx3.Log.Dispose();
 
 			// "reads" inside MO2's mods folder: refused before a run
 			var bad = new JsonObject { ["exe"] = standIn, ["output_mod"] = "Terrain LOD Mod", ["reads"] = Path.Combine(f.Mods, "Terrain LOD Mod") };
@@ -6418,6 +6434,663 @@ public static class Program
 
 	// The guard for "pressing stop now still doesn't stop it" (his finds of 2026-11-04, 11-06 and 11-10): no wait of the engine
 	// longer than a moment may be a plain sleep - a step waits with RunContext.Pause / Waits.Pause, which a Stop ends at once.
+	// ------------------------------------------------------------------ Tool Runner 1.0: rotation, the forecast, the catalog, the dry run, the summary, status, JSON
+	// a file the program only ever adds to (its crash notes) is kept to a size: the older lines move beside it, the one before that goes
+	static void T_AFileThatOnlyGrowsIsRolled()
+	{
+		using var f = new FakeMo2();
+		var notes = Path.Combine(f.Root, "crash.txt");
+		var older = Path.Combine(f.Root, "crash (older).txt");
+		Files.AppendCapped(notes, new string('a', 600) + "\n", 1000);
+		Check(!File.Exists(older), "under its size nothing moves");
+		Files.AppendCapped(notes, new string('b', 600) + "\n", 1000);
+		Check(File.Exists(older) && File.ReadAllText(older).StartsWith('a'), "past its size the old notes move beside it");
+		Check(File.ReadAllText(notes).StartsWith('b') && new FileInfo(notes).Length < 1000, "and the file starts again with the newest");
+		Files.AppendCapped(notes, new string('c', 600) + "\n", 1000);
+		Check(File.ReadAllText(older).StartsWith('b') && File.ReadAllText(notes).StartsWith('c'), "the one before goes: the two never hold more than twice the size");
+		// held by another program right now: added to as it is (never a lost note), rolled the next time
+		using (new FileStream(notes, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)) {
+			Files.AppendCapped(notes, new string('d', 600) + "\n", 1000);
+		}
+		Check(File.ReadAllText(notes).StartsWith('c') && File.ReadAllText(notes).Contains('d'), "a held file still takes the note");
+		Files.AppendCapped(notes, "e\n", 1000);
+		Check(File.ReadAllText(notes) == "e\n" && File.ReadAllText(older).Contains('d'), "and is rolled once it is free");
+		Equal(512L * 1024, ToolRunner.App.App.CrashNotesMost, "the crash notes are kept to half a megabyte");
+	}
+
+	// the bug reports a player made pile up in a folder they never open: only the newest few of the program's own stay
+	static void T_OnlyTheNewestBugReportsStay()
+	{
+		using var f = new FakeMo2();
+		var dir = Path.Combine(f.Root, "Bug reports");
+		Directory.CreateDirectory(dir);
+		for (var d = 1; d <= 12; ++d) {
+			var old = Path.Combine(dir, $"{(d % 2 == 0 ? Brand.Name : Brand.OldNames[0])} bug report 2026-01-{d:00} 00-00-00.zip");
+			File.WriteAllText(old, "x");
+			File.SetLastWriteTimeUtc(old, new DateTime(2026, 1, d, 0, 0, 0, DateTimeKind.Utc));
+		}
+		File.WriteAllText(Path.Combine(dir, "my own notes.zip"), "x");
+		var made = BugReport.Make(f.Data, null, dir, "1.0");
+		var left = Directory.GetFiles(dir).Select(p => Path.GetFileName(p)).ToList();
+		Equal(BugReport.Kept + 1, left.Count, "the newest of its own and the player's own file: " + string.Join(" | ", left));
+		Check(left.Contains(Path.GetFileName(made)) && left.Contains("my own notes.zip"), "the new one stays, and a file that is not the program's is never touched");
+		Check(!left.Any(n => n.Contains("2026-01-01", StringComparison.Ordinal) || n.Contains("2026-01-03", StringComparison.Ordinal)) && left.Any(n => n.Contains("2026-01-12", StringComparison.Ordinal)),
+			"the oldest went, under whichever of its names they were made");
+	}
+
+	// the room a run takes, added up per disk: the new output where its tool writes it, the old one in the backup, the extras apart
+	static void T_TheForecastAddsUpEachDisk()
+	{
+		using var f = new FakeMo2();
+		var scratch = Path.Combine(f.Root, "Scratch");
+		// Synthesis writes through Mod Organizer; xLODGen fills a folder ACMOS turns into a mod; DynDOLOD writes a folder of its own first
+		var setup = f.WriteSetup(
+			("synthesis", new JsonObject { ["output_mod"] = "Output A" }),
+			("xlodgen", new JsonObject { ["output_dir"] = Path.Combine(scratch, "lod") }),
+			("acmos", new JsonObject { ["output_mod"] = "Output B", ["reads"] = Path.Combine(scratch, "lod") }),
+			("dyndolod", new JsonObject { ["output_mod"] = "Needs B", ["output_dir"] = Path.Combine(scratch, "dyn") }),
+			("texgen", new JsonObject { ["output_mod"] = "Never Built", ["output_dir"] = Path.Combine(scratch, "tex") }));
+		var mo2 = Mo2Instance.Load(f.Exe, f.Instance);
+		const long gb = 1L << 30;
+		var sizes = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase) { [mo2.ModDir("Output A")] = 2 * gb, [mo2.ModDir("Output B")] = 10 * gb, [mo2.ModDir("Needs B")] = 20 * gb };
+		long Size(string a_dir) => sizes.GetValueOrDefault(a_dir);
+		static long Grown(long a_size) => a_size + a_size * 10 / 100;
+		var free = 100 * gb;
+		DiskForecast On(Func<string, string> a_volume, IReadOnlyList<Setup.StepEntry>? a_todo = null) =>
+			DiskForecast.Build(setup, mo2, a_todo ?? setup.EnabledSteps, new DiskForecast.Probes(a_volume, _ => free, Size));
+
+		// everything on one disk: one more copy of each output it remakes
+		var one = On(_ => "X");
+		Equal(1, one.Disks.Count, "one disk");
+		Equal(Grown(2 * gb) + Grown(10 * gb) + Grown(20 * gb), one.Disks[0].Needs, "the three outputs, each a tenth bigger than last time");
+		Equal(one.Disks[0].Needs + 32 * gb, one.Disks[0].Wants, "and the pack at the end wants the old ones' size once more");
+		Check(one.NotKnown.SequenceEqual(["Never Built"]), "an output never built is named, not guessed: " + string.Join(", ", one.NotKnown));
+		Check(!one.Issues().Any(), "100 GB free: nothing to say");
+		free = 40 * gb;
+		var tight = one = On(_ => "X");
+		Check(tight.Issues().Single() is { Blocking: false } note && note.Text.Contains("packing the old outputs", StringComparison.Ordinal), "room for the run but not its extras: told, never stopped");
+		free = 30 * gb;
+		var full = On(_ => "X").Issues().ToList();
+		Check(full.Single() is { Blocking: true } stop && stop.Text.Contains("not enough room on", StringComparison.Ordinal) && stop.Text.Contains(DiskForecast.Size(30 * gb) + " is free", StringComparison.Ordinal), "a run that will not fit is stopped, with the numbers");
+		Check(On(_ => "X").Issues(false).All(i => !i.Blocking), "a setup that asks to be told only is not stopped");
+		free = 36 * gb;
+		Check(On(_ => "X").Issues().Any(i => !i.Blocking && i.Text.Contains("nearly full", StringComparison.Ordinal)) || On(_ => "X").Issues().Any(i => i.Text.Contains("leaves out", StringComparison.Ordinal)),
+			"a disk that only just holds the run is told");
+		free = 100 * gb;
+
+		// the backup on a disk of its own: the old outputs are copied there, and the mods' disk needs room only where a tool writes
+		string Apart(string a_p) => Files.IsUnder(a_p, f.Backups) ? "B" : "M";
+		var two = On(Apart);
+		var b = two.Disks.Single(d => d.Key == "B");
+		var m = two.Disks.Single(d => d.Key == "M");
+		Equal(32 * gb, b.Needs, "the old outputs, kept in the backup");
+		Equal(64 * gb, b.Wants, "and the pack beside them");
+		Equal(Grown(10 * gb) + Grown(20 * gb), m.Needs, "the two tools that write a folder of their own first");
+		Equal(m.Needs + Grown(2 * gb), m.Wants, "a tool that writes through Mod Organizer may need its room for a moment: wanted, never what stops a start");
+
+		// the tools' folders on a third disk
+		string Three(string a_p) => Files.IsUnder(a_p, f.Backups) ? "B" : Files.IsUnder(a_p, scratch) ? "S" : "M";
+		var three = On(Three);
+		Equal(Grown(10 * gb) + Grown(20 * gb), three.Disks.Single(d => d.Key == "S").Needs, "what the tools write");
+		Equal(0L, three.Disks.Single(d => d.Key == "M").Needs, "the mods' disk only swaps old for new");
+
+		// the tools' folders apart, the backup beside the mods: the new output lands beside the old one
+		string Two(string a_p) => Files.IsUnder(a_p, scratch) ? "S" : "M";
+		var beside = On(Two);
+		Equal(Grown(2 * gb) + Grown(10 * gb) + Grown(20 * gb), beside.Disks.Single(d => d.Key == "M").Needs, "every new output beside its old one");
+
+		// xLODGen run alone still counts the terrain LOD it writes (the mod is the road painter's)
+		var alone = On(Three, setup.EnabledSteps.Where(s => s.Key == "xlodgen").ToList());
+		Equal(Grown(10 * gb), alone.Disks.Single(d => d.Key == "S").Needs, "its folder fills with a terrain LOD the size of the last one");
+
+		var lines = one.Lines();
+		Check(lines[0].StartsWith("Room on disk", StringComparison.Ordinal) && lines.Any(l => l.Contains("not known yet for Never Built", StringComparison.Ordinal)), "in words: " + string.Join(" | ", lines));
+	}
+
+	// the check before a run stops one that will not fit - unless the setup asks to be told only
+	static void T_ARunThatWillNotFitIsNotStarted()
+	{
+		using var f = new FakeMo2();
+		var ran = false;
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => {
+			ran = true;
+			WriteOutput(ctx, "landscapefixer", "Output A", "OutA.esp");
+		}));
+		var setup = f.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A" }));
+		var keep = DiskForecast.Real;
+		try {
+			// the output was 8 GB the last time, and its disk has 5 GB
+			DiskForecast.Real = keep with { SizeOf = _ => 8L << 30, Free = _ => 5L << 30 };
+			var r = Runner.Run(new RunRequest(f.SetupFile, f.Data));
+			Check(r.Folder == null && !ran && r.Verdict.Contains("not enough room on", StringComparison.Ordinal), "refused before anything ran: " + r.Verdict);
+			Equal("TR-205", Explain.For("", r.Verdict)?.Code, "and the catalog says what to do");
+			setup.Root["diskForecastStops"] = false;
+			setup.Save();
+			r = Runner.Run(new RunRequest(f.SetupFile, f.Data));
+			Check(r.State == RunState.Finished && ran, "told only: the run goes ahead: " + r.Verdict);
+		} finally {
+			DiskForecast.Real = keep;
+		}
+	}
+
+	// what a step built is measured once it is done: on its record, and kept beside the setup for the next forecast
+	static void T_AnOutputsSizeIsRememberedForTheNextForecast()
+	{
+		using var f = new FakeMo2();
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => {
+			WriteOutput(ctx, "landscapefixer", "Output A", "OutA.esp");
+			File.WriteAllBytes(Path.Combine(ctx.Mo2.ModDir("Output A"), "big.bin"), new byte[300_000]);
+		}));
+		f.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A" }));
+		var r = Runner.Run(new RunRequest(f.SetupFile, f.Data));
+		Equal(RunState.Finished, r.State, r.Verdict);
+		Check(Journal.Load(r.Folder!).Step("landscapefixer")!.OutputBytes >= 300_000, "the step's record carries its output's size");
+		var setup = Setup.Load(f.SetupFile);
+		var asked = 0;
+		var next = DiskForecast.Build(setup, Mo2Instance.Load(f.Exe, f.Instance), setup.EnabledSteps, DiskForecast.Real with { SizeOf = _ => {
+			++asked;
+			return 0;
+		} });
+		Equal(0, asked, "the next forecast reads the number: the folder is not walked again");
+		Check(next.Disks.Sum(d => d.Needs) >= 300_000 && next.NotKnown.Count == 0, "and it is what the forecast counts");
+	}
+
+	// ---- the catalog of the runner's own refusals and failures
+	// every piece of text in C# source from a_at (the first character of a call's arguments) to the bracket that closes the call:
+	// the call's arguments as written (strings left out), and each string in it with a gap where a value is put in
+	static (string Args, List<string> Strings, int End) ReadCall(string a_src, int a_at)
+	{
+		var args = new StringBuilder();
+		var strings = new List<string>();
+		var depth = 1;
+		var i = a_at;
+		// one string, from its opening quote on; a_hole: braces hold code
+		string Str(bool a_hole, bool a_verbatim)
+		{
+			var s = new StringBuilder();
+			for (++i; i < a_src.Length; ++i) {
+				var c = a_src[i];
+				if (a_verbatim && c == '"' && i + 1 < a_src.Length && a_src[i + 1] == '"') {
+					s.Append('"');
+					++i;
+				} else if (!a_verbatim && c == '\\') {
+					s.Append(a_src[++i] == '"' ? '"' : ' ');
+				} else if (c == '"') {
+					break;
+				} else if (a_hole && c == '{' && a_src[i + 1] == '{') {
+					s.Append('{');
+					++i;
+				} else if (a_hole && c == '{') {
+					s.Append(" ... ");
+					for (var open = 1; open > 0;) {
+						c = a_src[++i];
+						if (c == '"') {
+							for (++i; a_src[i] != '"'; ++i) {
+								if (a_src[i] == '\\') {
+									++i;
+								}
+							}
+						} else if (c == '{') {
+							++open;
+						} else if (c == '}') {
+							--open;
+						}
+					}
+				} else {
+					s.Append(c);
+				}
+			}
+			return s.ToString();
+		}
+		for (; i < a_src.Length && depth > 0; ++i) {
+			var c = a_src[i];
+			if (c == '/' && a_src[i + 1] == '/') {
+				var end = a_src.IndexOf('\n', i);
+				i = end < 0 ? a_src.Length : end;
+			} else if (c == '\'') {
+				i += a_src[i + 1] == '\\' ? 3 : 2;
+			} else if (c == '"' && a_src.AsSpan(i).StartsWith("\"\"\"")) {
+				i = a_src.IndexOf("\"\"\"", i + 3, StringComparison.Ordinal) + 2;
+			} else if (c is '$' or '@' && (a_src[i + 1] == '"' || (a_src[i + 1] is '$' or '@' && a_src[i + 2] == '"'))) {
+				var mark = a_src[i + 1] == '"' ? a_src.Substring(i, 1) : a_src.Substring(i, 2);
+				// on to the string's opening quote
+				i += mark.Length;
+				strings.Add(Str(mark.Contains('$'), mark.Contains('@')));
+			} else if (c == '"') {
+				strings.Add(Str(false, false));
+			} else {
+				depth += c == '(' ? 1 : c == ')' ? -1 : 0;
+				if (depth > 0) {
+					args.Append(c);
+				}
+			}
+		}
+		return (args.ToString(), strings, i);
+	}
+
+	// every refusal of a start and every stopping finding of the check in a_core's source that the catalog has no entry for
+	static List<string> RefusalsNotInTheCatalog(string a_core, out int a_seen)
+	{
+		var missing = new List<string>();
+		a_seen = 0;
+		foreach (var file in Directory.EnumerateFiles(a_core, "*.cs", SearchOption.AllDirectories).Where(p => !p.Contains(@"\obj\", StringComparison.Ordinal) && !p.Contains(@"\bin\", StringComparison.Ordinal))) {
+			var src = File.ReadAllText(file);
+			foreach (System.Text.RegularExpressions.Match call in System.Text.RegularExpressions.Regex.Matches(src, @"\bnew (?:Steps\.)?Issue\(|\bRefuse\(|\.No\(")) {
+				// a call named in a comment is no call
+				var line = src.LastIndexOf('\n', call.Index) + 1;
+				if (src.AsSpan(line, call.Index - line).Contains("//", StringComparison.Ordinal)) {
+					continue;
+				}
+				var (args, strings, _) = ReadCall(src, call.Index + call.Length);
+				if (call.Value.EndsWith("Issue(", StringComparison.Ordinal)) {
+					// only what stops a run: its second argument says so
+					var second = args.Split(',').Skip(1).FirstOrDefault()?.Trim();
+					if (second is not ("true" or "a_stops" or "a_blocking")) {
+						continue;
+					}
+				}
+				// the declaration itself and a call that only hands a text on (an error's own message) hold no words of their own
+				var text = string.Join(" ", strings.Where(s => s.Trim().Length > 0)).Trim();
+				if (text.Length < 8) {
+					continue;
+				}
+				++a_seen;
+				if (RunnerErrors.Find(text) == null) {
+					missing.Add($"{Path.GetFileName(file)}: {text}");
+				}
+			}
+		}
+		return missing;
+	}
+
+	static void T_EveryRefusalIsInTheCatalog()
+	{
+		Equal(RunnerErrors.All.Count, RunnerErrors.All.Select(e => e.Code).Distinct().Count(), "one code per entry");
+		Check(RunnerErrors.All.All(e => System.Text.RegularExpressions.Regex.IsMatch(e.Code, @"^TR-\d{3}$") && e.What.Length > 20 && e.Todo.Length > 20 && e.Any.All(a => a.Trim().Length >= 6)),
+			"each entry has its code, says what it means and what to do, and is found by real words");
+		// what the engine words elsewhere and hands on as a refusal: the plan, Mod Organizer, the setup's own problems, the last run's record
+		using var f = new FakeMo2();
+		var setup = f.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A" }), ("cleansave", []), ("dyndolod", new JsonObject { ["output_mod"] = "Output B" }));
+		var said = new List<string>();
+		void Thrown(Action a_act)
+		{
+			try {
+				a_act();
+			} catch (Exception e) when (e is ArgumentException or IOException) {
+				said.Add(e.Message);
+			}
+		}
+		Thrown(() => Runner.Plan(setup, "nosuchstep", null, null));
+		Thrown(() => Runner.Plan(setup, null, "dyndolod", "landscapefixer"));
+		setup.Root["newGame"] = true;
+		Thrown(() => Runner.Plan(setup, "cleansave", null, null));
+		Thrown(() => Mo2Instance.Load(Path.Combine(f.Root, "nowhere", "ModOrganizer.exe"), null));
+		Equal(4, said.Count, "the four were refused: " + string.Join(" | ", said));
+		said.AddRange(Setup.FromJson(new JsonObject()).Problems());
+		said.AddRange(Setup.FromJson(new JsonObject { ["mo2"] = new JsonObject { ["exe"] = "x", ["profile"] = "p" }, ["backups"] = "relative folder", ["newGame"] = true,
+			["steps"] = new JsonArray(new JsonObject { ["step"] = "cleansave" }, new JsonObject { ["step"] = "cleansave" }, new JsonObject { ["step"] = "snowfixer" },
+				new JsonObject { ["step"] = "nosuchstep", ["settings"] = new JsonObject { ["output_mod"] = @"..\outside" } }) }).Problems());
+		said.AddRange(Setup.FromJson(new JsonObject { ["steps"] = new JsonArray(new JsonObject { ["step"] = "synthesis", ["on"] = false }) }).Problems());
+		Check(said.Count >= 14, "the setup's own problems were all met: " + string.Join(" | ", said));
+		// a blocked start, as a run says it
+		var notes = Path.Combine(Runner.RunsDir(f.Data), "2026-01-01 00-00-00 Test");
+		Directory.CreateDirectory(notes);
+		File.WriteAllText(Path.Combine(notes, "journal.json"), "{ not a record");
+		said.Add(Runner.CheckStart(new RunRequest(f.SetupFile, f.Data)).Why);
+		Check(said[^1].Contains("is damaged", StringComparison.Ordinal), "a damaged record of the last run refuses a start: " + said[^1]);
+		var none = said.Where(s => RunnerErrors.Find(s) == null).ToList();
+		Check(none.Count == 0, "no catalog entry for: " + string.Join(" | ", none));
+
+		var core = SourceDir();
+		if (!Directory.Exists(core)) {
+			Console.WriteLine($"  (the source scan skipped: the source is not at {core})");
+			return;
+		}
+		var missing = RefusalsNotInTheCatalog(core, out var seen);
+		Check(seen >= 60, $"the scan found the engine's refusals ({seen})");
+		Check(missing.Count == 0, $"{missing.Count} refusal(s) with no catalog entry (RunnerErrors.cs) - " + string.Join(" || ", missing.Take(6)));
+	}
+
+	// ... and that guard is a real one: a planted refusal nobody put in the catalog is caught, a note and a known one are not
+	static void T_ARefusalWithoutAnEntryIsCaught()
+	{
+		var dir = Path.Combine(Path.GetTempPath(), "mo2 tool runner tests", "refusals " + Guid.NewGuid().ToString("N")[..8]);
+		Directory.CreateDirectory(dir);
+		try {
+			File.WriteAllText(Path.Combine(dir, "Planted.cs"), """
+				class Planted
+				{
+					IEnumerable<Issue> Check(string a_x, bool a_soft)
+					{
+						yield return new Issue(Key, true, $"the moon is in the wrong phase ({a_x}) - wait a week");
+						yield return new Issue(Key, false, "the tide is out, which only slows things");
+						yield return new Issue("", true, "the game is running (" + string.Join(", ", a_x) + ") - close it first");
+						yield return new Issue(Key, a_soft, "decided elsewhere whether this one stops");
+					}
+					// return Refuse("a comment is no refusal");
+					RunOutcome Go() => Refuse($"the stars said no: {1 + (2)} \"quoted\" (and bracketed)");
+				}
+				""");
+			var missing = RefusalsNotInTheCatalog(dir, out var seen);
+			Equal(3, seen, "the two stopping findings and the refusal were read, the note, the undecided one and the comment were not");
+			Equal(2, missing.Count, "the two nobody put in the catalog: " + string.Join(" | ", missing));
+			Check(missing.Any(x => x.Contains("the moon is in the wrong phase ( ... ) - wait a week", StringComparison.Ordinal)), "a finding, with a gap where its value goes: " + missing[0]);
+			Check(missing.Any(x => x.Contains("the stars said no:  ...  \"quoted\" (and bracketed)", StringComparison.Ordinal)), "a refusal read to the bracket that closes it: " + string.Join(" | ", missing));
+		} finally {
+			Directory.Delete(dir, true);
+		}
+	}
+
+	// the runner's own problems and the tools' documented errors answer through one door
+	static void T_AProblemComesWithWhatToDo()
+	{
+		var game = Explain.For("", "the game is running (SkyrimSE.exe) - close it first");
+		Check(game is { Code: "TR-203", Help: null } && game.Todo.Contains("Close the game", StringComparison.Ordinal), "the runner's own");
+		var memory = Explain.For("dyndolod", "DynDOLOD's log ended with: Out of memory");
+		Check(memory is { Code: null } && memory.Help == "https://dyndolod.info/FAQ" && memory.Todo.Contains("page file", StringComparison.Ordinal), "a tool's own, from its documentation");
+		Check(Explain.For("pandora", "something nobody has seen before") == null, "nothing is made up for what nobody knows");
+		// the nearer entry wins where two share words
+		Equal("TR-407", RunnerErrors.Find("Steam did not start within 3 minutes - start it, then start the run again")?.Code, "Steam's own, not the tool start's");
+		Equal("TR-406", RunnerErrors.Find("DynDOLOD did not start within 3 minutes")?.Code, "a tool that did not come up");
+		Equal("TR-116", RunnerErrors.Find("could not start: claim.cmd")?.Code, "a setup's own command");
+		Equal("TR-111", RunnerErrors.Find("Mod Organizer's program is not set")?.Code, "the setup's folder, not a step's setting");
+		Equal("TR-410", RunnerErrors.Find("the step's setting \"executable\" is not set")?.Code, "a step's setting");
+		var lines = Explain.Lines("", "another Mod Organizer is open (C:\\Other\\ModOrganizer.exe) - close it first");
+		Check(lines.Count == 2 && lines[1].StartsWith("  What to do: ", StringComparison.Ordinal) && lines[1].EndsWith("[TR-211]", StringComparison.Ordinal), "as lines for a person: " + string.Join(" | ", lines));
+	}
+
+	// a step whose own check stops a run
+	sealed class BlockedStep(string a_key, string a_why) : IStep
+	{
+		public string Key => a_key;
+		public void Run(RunContext a_ctx, StepSettings a_s) => throw new InvalidOperationException("must not run");
+		public IEnumerable<Issue> Check(CheckContext a_c, StepSettings a_s) => [new Issue(a_key, true, a_why), new Issue(a_key, false, "a note beside it")];
+	}
+
+	// a dry run goes through the very gate a start does, says what the start would, and writes nothing anywhere
+	static void T_ADryRunSaysWhatAStartWouldAndChangesNothing()
+	{
+		using var f = new FakeMo2();
+		var ran = false;
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => ran = true));
+		f.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A" }));
+		static Dictionary<string, (long, DateTime)> Tree(string a_dir) =>
+			Directory.EnumerateFiles(a_dir, "*", SearchOption.AllDirectories).ToDictionary(p => p, p => (new FileInfo(p).Length, File.GetLastWriteTimeUtc(p)));
+		var req = new RunRequest(f.SetupFile, f.Data);
+		var before = Tree(f.Root);
+		var dry = DryRun.Make(req);
+		Check(dry.Starts && dry.Preview != null && !ran, "it would start, and nothing ran: " + string.Join("; ", dry.Refusals.Select(x => x.Text)));
+		var lines = dry.Lines(_ => null);
+		Check(lines[0].Contains("would go ahead", StringComparison.Ordinal) && lines.Any(l => l.Contains("Landscape Fixer", StringComparison.Ordinal)) && lines[^1] == "Nothing has been changed yet.",
+			"in words: " + string.Join(" | ", lines));
+		var after = Tree(f.Root);
+		Check(before.Count == after.Count && before.All(p => after.TryGetValue(p.Key, out var a) && a == p.Value), "not one file made, changed or removed");
+		using (var free = Runner.HoldIfFree()) {
+			Check(free != null, "the run lock is let go");
+		}
+
+		// every refusal reads as the start's own would
+		void Same(string a_what)
+		{
+			var d = DryRun.Make(req);
+			var r = Runner.Run(req);
+			Check(!d.Starts && r.Folder == null, a_what + ": both refuse");
+			Equal(r.Verdict, "not started: " + string.Join("; ", d.Refusals.Select(x => x.Step == "" ? x.Text : $"{StepCatalog.Name(x.Step)}: {x.Text}")), a_what);
+		}
+		StepRegistry.Replace(new BlockedStep("landscapefixer", "its tool is nowhere to be found"));
+		Same("a step's own check");
+		var blocked = DryRun.Make(req);
+		Check(blocked.Refusals.Single().Step == "landscapefixer" && blocked.Notes.Any(n => n.Text == "a note beside it") && blocked.Preview != null,
+			"the step is named, its note kept apart, and what the run would do is still shown");
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => ran = true));
+		Preflight.GameCheck = () => ["SkyrimSE.exe"];
+		try {
+			Same("the game running");
+			Check(DryRun.Make(req).Lines(_ => null).Any(l => l.Contains("What to do: Close the game", StringComparison.Ordinal)), "each reason with what to do");
+		} finally {
+			Preflight.GameCheck = () => [];
+		}
+		// while another run goes, that is the one answer
+		using (var holding = new ManualResetEventSlim())
+		using (var done = new ManualResetEventSlim()) {
+			var other = new Thread(() => {
+				using var h = Runner.HoldIfFree();
+				holding.Set();
+				done.Wait();
+			});
+			other.Start();
+			holding.Wait();
+			var busy = DryRun.Make(req);
+			done.Set();
+			other.Join();
+			Check(!busy.Starts && busy.Refusals.Single().Text.Contains("another run is going", StringComparison.Ordinal) && busy.Preview == null, "another run going is said, and nothing else");
+		}
+		var cut = new Journal { Id = "2026-01-01 00-00-00 Test", Folder = Path.Combine(Runner.RunsDir(f.Data), "2026-01-01 00-00-00 Test"), SetupFile = f.SetupFile, SetupName = "Test",
+			Profile = "Test", State = RunState.Running, Started = DateTime.Now.AddHours(-1) };
+		Directory.CreateDirectory(cut.Folder);
+		cut.Save();
+		Same("an earlier run that was cut off");
+		Directory.Delete(cut.Folder, true);
+		File.WriteAllText(f.SetupFile, "{ not a setup");
+		Same("a setup that does not read");
+		Check(!ran, "and through all of it nothing ran");
+	}
+
+	// a run that ended is summed up: for the window's card, the end of the simple log and the command line
+	static void T_ARunThatEndedIsSummedUp()
+	{
+		using var f = new FakeMo2();
+		var realDyndolod = StepRegistry.For("dyndolod")!;
+		var realPandora = StepRegistry.For("pandora")!;
+		try {
+			StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => WriteOutput(ctx, "landscapefixer", "Output A", "OutA.esp")));
+			StepRegistry.Replace(new FakeStep("dyndolod", (ctx, s) => throw new StepFailedException("DynDOLOD's log ended with: Out of memory")));
+			StepRegistry.Replace(new FakeStep("pandora", (ctx, s) => { }));
+			f.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A" }), ("dyndolod", new JsonObject { ["output_mod"] = "Output B" }), ("pandora", []));
+			var r = Runner.Run(new RunRequest(f.SetupFile, f.Data));
+			Equal(RunState.Failed, r.State, r.Verdict);
+			var j = Journal.Load(r.Folder!);
+			var s = RunSummary.Of(j);
+			string Row(string a_label) => string.Join(" | ", s.Rows.Where(x => x.Label == a_label).Select(x => x.Text));
+			Check(s.Kind == "bad" && s.Title.StartsWith("Stopped by a problem after ", StringComparison.Ordinal), s.Title);
+			Check(Row("Steps") == "1 of 3 finished; DynDOLOD did not finish; not reached: Pandora Behaviour Engine+", Row("Steps"));
+			Check(Row("Why").Contains("Out of memory", StringComparison.Ordinal) && Row("What to do").Contains("page file", StringComparison.Ordinal), "why, and the tool's own advice: " + Row("What to do"));
+			Check(Row("New output").StartsWith("Output A (", StringComparison.Ordinal), "what it built, with its size: " + Row("New output"));
+			Check(Row("Next").Contains("Run again from DynDOLOD", StringComparison.Ordinal), Row("Next"));
+			var simple = File.ReadAllText(Path.Combine(r.Folder!, RunLog.SimpleName));
+			Check(simple.Contains(s.Title, StringComparison.Ordinal) && simple.Contains("  Next: ", StringComparison.Ordinal), "the simple log ends with the same summary");
+
+			StepRegistry.Replace(new FakeStep("dyndolod", (ctx, s) => WriteOutput(ctx, "dyndolod", "Output B", "OutB.esp")));
+			r = Runner.Run(new RunRequest(f.SetupFile, f.Data));
+			Equal(RunState.Finished, r.State, r.Verdict);
+			j = Journal.Load(r.Folder!);
+			s = RunSummary.Of(j);
+			Check(s.Kind == "good" && s.Title.StartsWith("Finished in ", StringComparison.Ordinal) && Row("Steps") == "3 of 3 finished", s.Title + " / " + Row("Steps"));
+			Check(Row("New outputs").Contains("Output A", StringComparison.Ordinal) && Row("New outputs").Contains("Output B", StringComparison.Ordinal), Row("New outputs"));
+			Check(Row("Next").StartsWith("Nothing left to do", StringComparison.Ordinal) && Row("Old outputs").Contains(j.BackupDir, StringComparison.Ordinal), Row("Next") + " / " + Row("Old outputs"));
+			Check(Row("Why") == "" && Row("What to do") == "", "nothing to explain after a run that finished");
+			// a run that was cut off says what to press
+			j.State = RunState.Running;
+			Check(RunSummary.Of(j) is { Kind: "bad", Title: "Did not finish" } cutOff && cutOff.Rows.Any(x => x.Label == "Next" && x.Text.Contains("Put my profile back", StringComparison.Ordinal)), "a run that was cut off");
+		} finally {
+			StepRegistry.Replace(realDyndolod);
+			StepRegistry.Replace(realPandora);
+		}
+	}
+
+	// "status": what is going right now, read off the records - idle, a step working, the run waiting for the player, a run cut off
+	static void T_StatusSaysWhatIsGoing()
+	{
+		using var f = new FakeMo2();
+		var idle = RunStatus.Take(f.Data);
+		Check(idle is { State: "idle", SafeToClose: true, Run: null, Last: null }, "nothing has run");
+		RunStatus.Snapshot? working = null, waiting = null;
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => {
+			ctx.Journal.Step("landscapefixer")!.Activity = "building";
+			ctx.Journal.Step("landscapefixer")!.Progress = 0.5;
+			ctx.Journal.Save();
+			working = RunStatus.Take(f.Data);
+			ctx.Journal.Step("landscapefixer")!.Activity = Runner.WaitingPrefix + "press Done in the window";
+			ctx.Journal.Save();
+			waiting = RunStatus.Take(f.Data);
+			ctx.Journal.Step("landscapefixer")!.Activity = "";
+			WriteOutput(ctx, "landscapefixer", "Output A", "OutA.esp");
+		}));
+		f.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A" }));
+		var r = Runner.Run(new RunRequest(f.SetupFile, f.Data));
+		Equal(RunState.Finished, r.State, r.Verdict);
+		Check(working is { State: "running", SafeToClose: false, Waiting: "" } && working.Step?.Key == "landscapefixer", "a step working: " + working?.State);
+		Check(RunStatus.Lines(working!).Any(l => l.Contains("now: Landscape Fixer 50 % - building", StringComparison.Ordinal)), string.Join(" | ", RunStatus.Lines(working!)));
+		Check(waiting is { State: "waiting", Waiting: "press Done in the window" }, "the run waiting for the player: " + waiting?.State);
+		var after = RunStatus.Take(f.Data, f.SetupFile);
+		Check(after is { State: "idle", SafeToClose: true } && after.Last?.State == RunState.Finished, "idle again, with the last run");
+		Check(RunStatus.Lines(after).Any(l => l.Contains("last run: Test", StringComparison.Ordinal)) && RunStatus.Lines(after)[^1].Contains("safe to close", StringComparison.Ordinal), string.Join(" | ", RunStatus.Lines(after)));
+		var json = JsonNode.Parse(Reports.Text(Reports.Status(working!, "1.0")))!;
+		Check(json["state"]!.ToString() == "running" && json["currentStep"]!.ToString() == "landscapefixer" && json["safeToClose"]!.GetValue<bool>() == false &&
+			json["run"]!["steps"]![0]!["progress"]!.GetValue<double>() == 0.5 && json["version"]!.ToString() == "1.0", "the same as JSON");
+		// a run that was cut off (its record still says running, its program is gone)
+		var cut = new Journal { Id = "2099-01-01 00-00-00 Test", Folder = Path.Combine(Runner.RunsDir(f.Data), "2099-01-01 00-00-00 Test"), SetupFile = f.SetupFile, SetupName = "Test",
+			Profile = "Test", State = RunState.Running, Started = DateTime.Now.AddHours(-1) };
+		Directory.CreateDirectory(cut.Folder);
+		cut.Save();
+		var interrupted = RunStatus.Take(f.Data);
+		Check(interrupted is { State: "interrupted", Run: null } && interrupted.Interrupted != null && RunStatus.Lines(interrupted)[0].Contains("restore", StringComparison.Ordinal), "a run that was cut off");
+	}
+
+	// the command line's --json: the names a script reads stay, and a stopping finding carries its code and what to do
+	static void T_JsonOutputKeepsItsNames()
+	{
+		using var f = new FakeMo2();
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => { }));
+		var setup = f.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A" }));
+		var mo2 = Mo2Instance.Load(f.Exe, f.Instance);
+		static void Has(JsonNode a_o, params string[] a_names)
+		{
+			foreach (var n in a_names) {
+				Check(a_o.AsObject().ContainsKey(n), $"the name \"{n}\" is there: {string.Join(", ", a_o.AsObject().Select(p => p.Key))}");
+			}
+		}
+		Preflight.GameCheck = () => ["SkyrimSE.exe"];
+		try {
+			var check = JsonNode.Parse(Reports.Text(Reports.Check(setup, Preflight.Run(setup, mo2, ["landscapefixer"]))))!;
+			Has(check, "schema", "program", "command", "setup", "ready", "issues");
+			Check(check["schema"]!.GetValue<int>() == Reports.Schema && check["command"]!.ToString() == "check" && check["program"]!.ToString() == Brand.Name && !check["ready"]!.GetValue<bool>(), "the head");
+			var game = check["issues"]!.AsArray().Single(i => i!["text"]!.ToString().Contains("the game is running", StringComparison.Ordinal))!;
+			Has(game, "step", "stepName", "blocks", "text", "code", "means", "todo", "help");
+			Check(game["blocks"]!.GetValue<bool>() && game["code"]!.ToString() == "TR-203" && game["todo"]!.ToString().Length > 10, "a stopping finding carries its code and what to do");
+			var dry = JsonNode.Parse(Reports.Text(Reports.DryRun(DryRun.Make(new RunRequest(f.SetupFile, f.Data)), _ => TimeSpan.FromMinutes(3))))!;
+			Has(dry, "wouldStart", "refusals", "notes", "preview");
+			Check(!dry["wouldStart"]!.GetValue<bool>() && dry["refusals"]!.AsArray().Count == 1 && dry["preview"]!["steps"]![0]!["key"]!.ToString() == "landscapefixer" &&
+				dry["preview"]!["steps"]![0]!["usualSeconds"]!.GetValue<double>() == 180, "a dry run: refused, with what it would do");
+		} finally {
+			Preflight.GameCheck = () => [];
+		}
+		var preview = JsonNode.Parse(Reports.Text(Reports.Preview(setup, RunPreview.Build(setup, mo2, setup.EnabledSteps), _ => null)))!;
+		Has(preview, "steps", "offForTheRun", "replacedForGood", "startsTheGame", "closesMo2", "leftOutForNewGame", "commandsBefore", "commandsAfter", "disk", "sizeNotKnown");
+		Check(preview["steps"]![0]!["usualSeconds"] == null && preview["offForTheRun"]!.AsArray().Any(m => m!["mod"]!.ToString() == "Output A"), "a preview");
+		var tools = Reports.Tools([new ToolFinder.Row(new ToolFinder.Tool("dyndolod", "DynDOLOD", ["DynDOLODx64.exe"], "", "https://dyndolod.info", "its own folder"), ToolFinder.Found.Missing, null)], null);
+		Check(tools["tools"]![0]!["state"]!.ToString() == "notFound" && tools["added"] == null, "tools");
+		var updates = Reports.Updates(setup, [new ToolUpdates.Result("dyndolod", "DynDOLOD", "3.0", "3.1", true, "https://dyndolod.info", null)]);
+		Check(updates["anyNewer"]!.GetValue<bool>() && updates["tools"]![0]!["newest"]!.ToString() == "3.1", "updates");
+		var when = new DateTime(2026, 1, 2, 3, 4, 5);
+		var changes = Reports.Changes(setup, when, 2, [new Mo2Changes.Change(when, "outside the runner", "A Mod", "ticked", ["Test"])]);
+		Check(changes["watchedSince"]!.ToString() == "2026-01-02T03:04:05" && changes["newChanges"]!.GetValue<int>() == 2 && changes["changes"]![0]!["profiles"]![0]!.ToString() == "Test", "changes");
+		var refused = Reports.Outcome(new RunOutcome(RunState.Failed, "not started: the game is running (SkyrimSE.exe) - close it first", null), null);
+		Check(!refused["started"]!.GetValue<bool>() && refused["code"]!.ToString() == "TR-203" && refused["run"] == null, "a start that was refused");
+		var ended = Runner.Run(new RunRequest(f.SetupFile, f.Data));
+		var outcome = JsonNode.Parse(Reports.Text(Reports.Outcome(ended, Journal.Load(ended.Folder!))))!;
+		Has(outcome, "state", "started", "verdict", "run", "summary");
+		Check(outcome["state"]!.ToString() == "finished" && outcome["run"]!["steps"]![0]!["state"]!.ToString() == "done" && outcome["summary"]!.AsArray().Any(x => x!["label"]!.ToString() == "Next"), "a run's end");
+	}
+
+	// the real program, started the way a script starts it: one JSON object on its output and an exit code - no window, nothing else
+	static void T_TheProgramAnswersAScriptInJson()
+	{
+		Check(File.Exists(Path.Combine(AppContext.BaseDirectory, Brand.Name + ".exe")), "the program sits beside the tests");
+		// a copy with a data folder of its own beside it (never under the temp folder: there its data would be elsewhere - AppPaths)
+		var scratch = Path.Combine(Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(AppContext.BaseDirectory))!, "SUP json " + Guid.NewGuid().ToString("N"));
+		try {
+			foreach (var file in Directory.GetFiles(AppContext.BaseDirectory, "*", SearchOption.AllDirectories)) {
+				var rel = Path.GetRelativePath(AppContext.BaseDirectory, file);
+				if (!rel.StartsWith(Brand.Name + " Data", StringComparison.OrdinalIgnoreCase) && !rel.StartsWith("logs", StringComparison.OrdinalIgnoreCase)) {
+					Directory.CreateDirectory(Path.GetDirectoryName(Path.Combine(scratch, rel))!);
+					File.Copy(file, Path.Combine(scratch, rel));
+				}
+			}
+			(int Exit, string Out) Ask(params string[] a_args)
+			{
+				var psi = new ProcessStartInfo(Path.Combine(scratch, Brand.Name + ".exe")) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, WorkingDirectory = scratch };
+				foreach (var a in a_args) {
+					psi.ArgumentList.Add(a);
+				}
+				using var p = Process.Start(psi)!;
+				var text = p.StandardOutput.ReadToEnd();
+				if (!p.WaitForExit(90_000)) {
+					p.Kill(true);
+					throw new InvalidOperationException("it was still running after 90 s: " + string.Join(" ", a_args));
+				}
+				return (p.ExitCode, text);
+			}
+			var (exit, text) = Ask("status", "--json");
+			var o = JsonNode.Parse(text)!;
+			Check(exit == 0 && o["command"]!.ToString() == "status" && o["state"]!.ToString() == "idle" && o["safeToClose"]!.GetValue<bool>(), $"status as JSON (exit {exit}): {text}");
+			(exit, text) = Ask("status");
+			Check(exit == 0 && text.Contains("idle: no run is going", StringComparison.Ordinal) && text.Contains("safe to close", StringComparison.Ordinal), $"status in words (exit {exit}): {text}");
+			// a command that cannot be carried out still answers a script in JSON
+			(exit, text) = Ask("dryrun", "--setup", Path.Combine(scratch, "no such setup.json"), "--json");
+			var refused = JsonNode.Parse(text)!;
+			Check(exit == 1 && !refused["wouldStart"]!.GetValue<bool>() && refused["refusals"]![0]!["code"]!.ToString() == "TR-102", $"a dry run of a setup that is not there (exit {exit}): {text}");
+			(exit, text) = Ask("preview", "--json");
+			Check(exit == 3 && JsonNode.Parse(text)!["error"]!.ToString().Contains("--setup", StringComparison.Ordinal), $"a command with an argument missing (exit {exit}): {text}");
+		} finally {
+			for (var i = 0; i < 20 && Directory.Exists(scratch); i++) {
+				try {
+					Directory.Delete(scratch, true);
+				} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+					Thread.Sleep(250);
+				}
+			}
+		}
+	}
+
+	// the window's answer to "may I close this now?", and its own work it is never closed in the middle of
+	static void T_TheWindowSaysWhenItIsSafeToClose()
+	{
+		Equal(("good", "Safe to close"), ToolRunner.App.MainViewModel.CloseState(false, false, ""), "nothing going");
+		var run = ToolRunner.App.MainViewModel.CloseState(true, false, "");
+		Check(run.Kind == "warn" && run.Text == "Closing stops the run", "a run going: closing stops it cleanly");
+		Check(ToolRunner.App.MainViewModel.CloseState(false, true, "").Text.Contains("starting", StringComparison.Ordinal), "a run starting");
+		Equal(("bad", "Do not close yet: your profile is being put back"), ToolRunner.App.MainViewModel.CloseState(true, true, "your profile is being put back"), "the window's own work comes first");
+		var work = new ToolRunner.App.WorkInHand();
+		int changed = 0, freed = 0;
+		work.Changed += () => ++changed;
+		work.Freed += () => ++freed;
+		Equal("", work.Now, "nothing in hand");
+		var putBack = work.Begin("your profile is being put back");
+		var learn = work.Begin("DynDOLOD is open to learn its settings");
+		Equal("DynDOLOD is open to learn its settings", work.Now, "the newest is named");
+		learn.Dispose();
+		learn.Dispose();
+		Check(work.Now == "your profile is being put back" && freed == 0, "one ended (let go twice changes nothing): the other is still in hand");
+		putBack.Dispose();
+		Check(work.Now == "" && freed == 1 && changed == 4, $"the last one ended: free, said once ({freed}, {changed})");
+	}
+
+	// the first start, step by step: what is done, what comes next
+	static void T_TheFirstStartIsGuidedStepByStep()
+	{
+		var done = ToolRunner.App.Theme.Glyph("Done");
+		var none = ToolRunner.App.MainViewModel.FirstSteps(false, false, false);
+		Check(none.Count == 4 && none.Select(r => r.Mark).SequenceEqual(["1", "2", "3", "4"]) && none[0].Kind == "" && none.Skip(1).All(r => r.Kind == "muted"), "no setup yet: the first step is next");
+		Check(none[0].Text.Contains("New setup", StringComparison.Ordinal) && none[2].Text.Contains("Nothing is started", StringComparison.Ordinal), "each says what to press and what it does");
+		var made = ToolRunner.App.MainViewModel.FirstSteps(true, false, false);
+		Check(made[0].Kind == "good" && made[0].Mark == done && made[1].Kind == "" && made[2].Kind == "muted", "a setup made: the check is next");
+		var checkedClean = ToolRunner.App.MainViewModel.FirstSteps(true, true, false);
+		Check(checkedClean[1].Mark == done && checkedClean[2].Kind == "" && checkedClean[3].Kind == "muted", "checked: the dry run is next");
+		var dried = ToolRunner.App.MainViewModel.FirstSteps(true, true, true);
+		Check(dried.Take(3).All(r => r.Kind == "good") && dried[3].Kind == "" && dried[3].Mark == "4", "all but the start done");
+	}
+
 	static void T_NoStepWaitIsBlindToStop() => NoBlindSleeps(SourceDir());
 
 	static string SourceDir([System.Runtime.CompilerServices.CallerFilePath] string a_here = "") => Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(a_here)!)!, "Runner.Core");

@@ -42,6 +42,7 @@ public static class SettingsPanel
 		["tool_dir"] = "The tool's folder",
 		["tool_writes"] = "The folder the tool writes into",
 		["min_files"] = "Fewest files that counts as a result",
+		["hidden"] = "Hidden (the tool runs where it never shows on your screen)",
 		["caches"] = "Shader caches (each: its shader mod, its cache mod)",
 		["settle_s"] = "Wait before closing (seconds)",
 		["quiet_min"] = "Done when quiet for (minutes), when the game's processor use cannot be read",
@@ -67,6 +68,7 @@ public static class SettingsPanel
 		["pgpatcher"] = [("pglite_check", JsonValueKind.False, "off")],
 		["dyndolod"] = [("no_terrain_underside", JsonValueKind.False, "off"), ("preset", JsonValueKind.String, "none")],
 		["landscapefixer"] = [("min_files", JsonValueKind.Number, "3")],
+		["acmos"] = [("hidden", JsonValueKind.True, "on")],
 		["synthesis"] = [("build_min", JsonValueKind.Number, "15")],
 	};
 
@@ -171,6 +173,7 @@ public static class SettingsPanel
 				return;
 			}
 			tidy.IsEnabled = false;
+			using var hand = a_w.Working("old backups are being removed");
 			try {
 				var removed = await Task.Run(() => {
 					// one at a time with runs and put-backs (the run lock, taken and given back on this thread)
@@ -297,6 +300,9 @@ public static class SettingsPanel
 			"Characters with saves here, most recently played first: " + string.Join(", ", t.Result.Take(12))), TaskScheduler.Default);
 		Field(stack, apply, "A tool idle this long is looked at (minutes)", work, "idleMinutes", JsonValueKind.Number);
 		Field(stack, apply, "Free space a run needs (GB)", work, "minFreeGb", JsonValueKind.Number);
+		// the forecast of the room a run takes: on, a run that will not fit is not started; off, it is only told
+		work["diskForecastStops"] ??= true;
+		Field(stack, apply, "Stop a run that will not fit on its disks (off: only told before it starts)", work, "diskForecastStops", JsonValueKind.True);
 		Choice(stack, apply, "Rebuild the shader caches", work, "shaderRebuild", [("whenChanged", "only when the shader mod changed"), ("always", "every run"), ("never", "never")]);
 		Field(stack, apply, "Allow writing into the game folder (NGIO's grass route)", work, "gameFolderWrites", JsonValueKind.True);
 		var alerts = work["alerts"] as JsonObject ?? (JsonObject)(work["alerts"] = new JsonObject { ["notification"] = true, ["sound"] = true, ["flash"] = false });
@@ -590,6 +596,7 @@ public static class SettingsPanel
 			}
 			testTools.IsEnabled = false;
 			testRows.Children.Clear();
+			using var hand = a_w.Working("your tools are being tested");
 			try {
 				var results = await Task.Run(() => ToolProof.TestAll(testSetup, RunLog.Null, CancellationToken.None));
 				foreach (var r in results) {
@@ -674,6 +681,7 @@ public static class SettingsPanel
 					}
 					learn.IsEnabled = false;
 					status.Text = $"{name} is open - set it up, save, and close it ...";
+					using var hand = a_w.Working($"{name} is open to learn its settings");
 					try {
 						var l = await Task.Run(() => ToolSettings.Learn(setupNow, stepKey, RunLog.Null, CancellationToken.None));
 						status.Text = $"Learned: {l.Files.Count} settings file(s) ({string.Join(", ", l.Files.Select(f => Path.GetFileName(f.Live)))}) - every run uses them.";
@@ -896,6 +904,7 @@ public static class SettingsPanel
 			return;
 		}
 		List<string> failed;
+		using var hand = a_w.Working("the program's data is being removed");
 		try {
 			failed = await Task.Run(() => DataRemoval.Carry(plan));
 		} catch (InvalidOperationException e) {
@@ -925,7 +934,8 @@ public static class SettingsPanel
 		var cur = a_obj[a_key];
 		var kind = cur?.GetValueKind() ?? a_kind;
 		if (kind is JsonValueKind.True or JsonValueKind.False) {
-			var box = new CheckBox { IsChecked = cur?.GetValue<bool>() ?? false, VerticalAlignment = VerticalAlignment.Center };
+			// a switch the setup does not hold yet shows its default (a_kind True: on unless set) - saved as shown, it stays what it was
+			var box = new CheckBox { IsChecked = cur?.GetValue<bool>() ?? a_kind == JsonValueKind.True, VerticalAlignment = VerticalAlignment.Center };
 			box.Click += (_, _) => Changed();
 			a_apply.Add(() => {
 				a_obj[a_key] = box.IsChecked == true;

@@ -34,7 +34,22 @@ public partial class MainWindow : Window
 		FitTheScreen();
 		DataContext = _vm;
 		_vm.Alert += Notify;
-		_vm.ConfirmRun = a_text => Ask.Show(this, "What this run will do", a_text, "Start the run", "Not now");
+		// a start that would be refused is only told (one button); one that would go ahead is asked
+		_vm.ConfirmRun = (a_title, a_text, a_yes) => {
+			if (a_yes != null) {
+				return Ask.Show(this, a_title, a_text, a_yes, "Not now");
+			}
+			Ask.Tell(this, a_title, a_text, "Close");
+			return false;
+		};
+		// the header drops the word "Setup" where the window is narrow
+		SizeChanged += (_, e) => _vm.Roomy = e.NewSize.Width >= 1100;
+		_vm.Freed += () => {
+			if (_closeWhenFree) {
+				_closeWhenFree = false;
+				Close();
+			}
+		};
 		_vm.LogChanged += OnLog;
 		_timer.Tick += async (_, _) => await Look();
 		_timer.Start();
@@ -48,7 +63,7 @@ public partial class MainWindow : Window
 		if (!App.Headless) {
 			_watch = new RunsWatch(AppPaths.Runs, Wake);
 		}
-		Footer.Text = $"Ctrl+Enter start  ·  F5 check  ·  Ctrl+H history  ·  Ctrl+M MO2 changes  ·  Ctrl+T themes  ·  Ctrl+, settings  ·  Alt+Up / Down move a step   ·   version {AppVersion}";
+		Footer.Text = $"Ctrl+Enter start  ·  F5 check  ·  Ctrl+D dry run  ·  Ctrl+H history  ·  Ctrl+M MO2 changes  ·  Ctrl+T themes  ·  Ctrl+, settings   ·   version {AppVersion}";
 		Footer.ToolTip = "Data folder: " + AppPaths.Data;
 		PreviewKeyDown += OnKeys;
 		// a mod ticked in Mod Organizer while the window was in the background: each step's last run is worked out again
@@ -73,6 +88,9 @@ public partial class MainWindow : Window
 	}
 
 	public void Say(string a_text) => _vm.Say(a_text, "warn");
+
+	// work the window carries itself (Settings' own buttons): it is not closed in the middle of it
+	public IDisposable Working(string a_what) => _vm.Working(a_what);
 
 	// one look, and the pace of the next ones set by what it found
 	async Task Look()
@@ -355,6 +373,25 @@ public partial class MainWindow : Window
 	{
 		StopLooking();
 		_vm.Demo(a_waiting, a_frame);
+	}
+
+	// the off-screen pictures only: the made-up run ended (its summary), and the window as a first start shows it
+	public void DemoEnded(bool a_failed)
+	{
+		StopLooking();
+		_vm.DemoEnded(a_failed);
+	}
+
+	public void DemoFirstStart()
+	{
+		StopLooking();
+		_vm.DemoFirstStart();
+	}
+
+	public void DemoWaitsOutside()
+	{
+		StopLooking();
+		_vm.DemoWaitsOutside();
 	}
 
 	// the page's pictures only: the dashboard with nothing running, and past runs of the made-up setup
@@ -673,6 +710,7 @@ public partial class MainWindow : Window
 
 	bool _stopping;
 	bool _closeNow;
+	bool _closeWhenFree;
 
 	// the window goes once the run has stopped and put the profile back; a run that does not stop in 10 minutes keeps the window
 	// a run going, a start not yet answered (the engine still checking, no run record yet), or a queue between two setups
@@ -705,6 +743,12 @@ public partial class MainWindow : Window
 	protected override void OnClosing(System.ComponentModel.CancelEventArgs a_e)
 	{
 		if (!LeaveSettings()) {
+			a_e.Cancel = true;
+		} else if (_vm.InHand != "") {
+			// a put-back, an undo, a tool opened from Settings: this window's own work, cut off half way by closing it. The window
+			// stays until it is done and then closes by itself
+			_vm.Say($"Not closed yet: {_vm.InHand}. The window closes by itself when that is done.", "warn");
+			_closeWhenFree = true;
 			a_e.Cancel = true;
 		} else if (!_closeNow && StillGoing()) {
 			// a run never goes on unseen behind a closed window (it closed his Mod Organizer a minute after the window went), not

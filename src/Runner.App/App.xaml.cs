@@ -33,11 +33,14 @@ public partial class App : Application
 		};
 	}
 
+	// the crash notes never grow without end: past this many bytes the older ones move to "crash (older).txt"
+	public const long CrashNotesMost = 512 * 1024;
+
 	// anything unexpected: written to the data folder's "crash.txt" and said in a message, never Windows' crash box
 	public static void LogCrash(Exception a_e)
 	{
 		try {
-			File.AppendAllText(Path.Combine(AppPaths.Data, "crash.txt"), $"{DateTime.Now:yyyy-MM-dd HH:mm:ss}  {a_e}\r\n\r\n");
+			Files.AppendCapped(Path.Combine(AppPaths.Data, "crash.txt"), $"{DateTime.Now:yyyy-MM-dd HH:mm:ss}  {a_e}\r\n\r\n", CrashNotesMost);
 		} catch (IOException) {
 		} catch (UnauthorizedAccessException) {
 		}
@@ -296,7 +299,7 @@ public partial class App : Application
 		Pump(w, 600);
 		Save("3 settings");
 		// the settings further down: the run options, tool updates
-		foreach (var (y, name) in new[] { (420.0, "3b settings, run options"), (900.0, "3c settings, tool updates") }) {
+		foreach (var (y, name) in new[] { (420.0, "3b settings, run options"), (900.0, "3c settings, tool updates"), (1500.0, "3c2 settings, further down"), (99999.0, "3c3 settings, the end") }) {
 			w.ScrollDrawer(y);
 			Pump(w, 400);
 			Save(name);
@@ -336,6 +339,45 @@ public partial class App : Application
 		w.Demo(true);
 		Pump(w, 600);
 		Save("6 a guided step");
+		// the run waits on the player's own Mod Organizer: its band without a Done button
+		w.DemoWaitsOutside();
+		Pump(w, 600);
+		Save("6b the run waits for you");
+		// a run that ended, with its summary: finished, and stopped by a problem (that one in the smallest window too)
+		w.DemoEnded(false);
+		Pump(w, 600);
+		Save("9 a run finished");
+		w.DemoEnded(true);
+		Pump(w, 600);
+		Save("9b a run stopped by a problem");
+		w.Width = w.MinWidth;
+		w.Height = w.MinHeight;
+		Pump(w, 600);
+		Save("9d a run stopped, smallest window");
+		// the first start, step by step, in the smallest window and at its usual size
+		w.DemoFirstStart();
+		Pump(w, 600);
+		Save("9e first start, smallest window");
+		w.Width = 1240;
+		w.Height = 800;
+		Pump(w, 600);
+		Save("9c first start");
+		// a dry run that would be refused: each reason with what to do
+		var dry = new DryRunReport { SetupFile = "", SetupName = "My Profile", Preview = demo };
+		dry.Refusals.Add(("", "the game is running (SkyrimSE.exe) - close it first"));
+		dry.Refusals.Add(("dyndolod", "DynDOLOD is not in Expert mode (its settings file, Expert=1) - the runner needs its Expert window to start it"));
+		dry.Notes.Add(("", "Mod Organizer is open - the run will close it"));
+		var dryBox = Ask.Make(w, "Dry run - nothing is started", string.Join("\n", dry.Lines(k => k == "dyndolod" ? TimeSpan.FromMinutes(24) : null)), "Close", null, _ => { });
+		dryBox.ShowActivated = false;
+		dryBox.WindowStartupLocation = WindowStartupLocation.Manual;
+		dryBox.Left = -30000;
+		dryBox.Top = -30000;
+		dryBox.Show();
+		Pump(dryBox, 600);
+		Save("7b a dry run that would be refused", dryBox);
+		dryBox.Close();
+		w.Demo(true);
+		Pump(w, 400);
 		// the same run in some of the shipped themes, a dark and a light one among them: what a theme reaches
 		foreach (var theme in new[] { Theme.BlackAndGold, "Midnight", "Paper", Theme.ColorBlind }) {
 			var themeProblems = Theme.Apply(theme, false);

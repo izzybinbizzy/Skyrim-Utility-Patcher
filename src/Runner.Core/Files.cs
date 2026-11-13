@@ -297,6 +297,55 @@ public static partial class Files
 	// null = not known
 	public static bool? SameVolume(string a_dirA, string a_dirB) => VolumeOf(a_dirA) is { } a && VolumeOf(a_dirB) is { } b ? a == b : null;
 
+	// the nearest folder at or above a_path that is there (a backup folder a run has yet to make is asked about through its parent)
+	static string? Standing(string a_path)
+	{
+		for (var d = Path.GetFullPath(a_path); !string.IsNullOrEmpty(d); d = Path.GetDirectoryName(d)) {
+			if (Directory.Exists(d)) {
+				return d;
+			}
+		}
+		return null;
+	}
+
+	// One name per disk a path really stands on, for adding up what a run needs on each: the volume Windows names for it (a mods
+	// folder kept on another disk through a junction counts on that disk), else the path's own root
+	public static string VolumeKey(string a_path)
+	{
+		var root = Path.GetPathRoot(Path.GetFullPath(a_path)) ?? "";
+		return Standing(a_path) is { } d && VolumeOf(d) is { } serial ? serial.ToString("X8", InvariantCulture) : root.ToUpperInvariant();
+	}
+
+	[LibraryImport("kernel32.dll", EntryPoint = "GetDiskFreeSpaceExW", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
+	[return: MarshalAs(UnmanagedType.Bool)]
+	private static partial bool GetDiskFreeSpaceEx(string a_dir, out ulong a_freeToCaller, out ulong a_total, out ulong a_free);
+
+	// the room this user may still write on the disk a path stands on (a junction followed, a quota counted); null when Windows
+	// will not say (a drive that is not there, a share that does not answer)
+	public static long? FreeOn(string a_path) =>
+		Standing(a_path) is { } d && GetDiskFreeSpaceEx(d, out var free, out _, out _) ? (long)Math.Min(free, long.MaxValue) : null;
+
+	// A text file the program only ever adds to (its crash notes, a log appended to at each use) is kept to a size: once it would
+	// pass a_most bytes, what it holds moves to "<name> (older)<ext>" beside it - the one before that goes - and the file starts
+	// again. The two together never hold more than twice a_most, and the newest lines are always in the file itself. A file another
+	// program holds right now is left to grow a little longer: the next call rolls it
+	public static void RollIfOver(string a_path, long a_most, long a_adding = 0)
+	{
+		try {
+			var f = new FileInfo(a_path);
+			if (f.Exists && f.Length + a_adding > a_most) {
+				Move(a_path, Path.Combine(f.DirectoryName ?? "", Path.GetFileNameWithoutExtension(a_path) + " (older)" + f.Extension), true);
+			}
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+		}
+	}
+
+	public static void AppendCapped(string a_path, string a_text, long a_most)
+	{
+		RollIfOver(a_path, a_most, a_text.Length);
+		File.AppendAllText(a_path, a_text);
+	}
+
 	public static bool IsUnder(string a_path, string a_root)
 	{
 		var p = Path.GetFullPath(a_path).TrimEnd('\\') + "\\";

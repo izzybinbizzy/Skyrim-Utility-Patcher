@@ -108,53 +108,85 @@ public static class Runner
 		}
 	}
 
-	static RunOutcome RunLocked(RunRequest a_req, Func<Journal, IGuide>? a_guide)
+	// Everything a start goes through before anything is touched, in the order a run meets it: the setup, an earlier run that did
+	// not finish, the steps asked for, Mod Organizer, the check. A run and a dry run both go through this one place, so a dry
+	// run says exactly what Start would. Refusals empty = it starts; every refusal carries the step it is about ("" = the run).
+	public sealed class StartCheck
 	{
+		public Setup? Setup { get; set; }
+		public Mo2Instance? Mo2 { get; set; }
+		public List<Setup.StepEntry> Todo { get; set; } = [];
+		// everything the check found, the stopping ones and the notes
+		public List<Issue> Check { get; set; } = [];
+		public List<(string Step, string Text)> Refusals { get; } = [];
+		public bool Starts => Refusals.Count == 0;
+		// the refusals as one line, as a refused start says them
+		public string Why => string.Join("; ", Refusals.Select(r => r.Step == "" ? r.Text : $"{StepCatalog.Name(r.Step)}: {r.Text}"));
+
+		public StartCheck No(string a_why, string a_step = "")
+		{
+			Refusals.Add((a_step, a_why));
+			return this;
+		}
+	}
+
+	public static StartCheck CheckStart(RunRequest a_req)
+	{
+		var c = new StartCheck();
 		Setup setup;
 		try {
-			setup = Setup.Load(a_req.SetupFile);
-		} catch (Exception e) when (e is IOException or System.Text.Json.JsonException or InvalidDataException) {
-			return Refuse("the setup does not read: " + e.Message);
+			setup = c.Setup = Setup.Load(a_req.SetupFile);
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Text.Json.JsonException or InvalidDataException) {
+			return c.No("the setup does not read: " + e.Message);
 		}
 		var problems = setup.Problems();
 		if (problems.Count > 0) {
-			return Refuse(string.Join("; ", problems));
+			problems.ForEach(p => c.No(p));
+			return c;
 		}
 		var runs = RunsDir(a_req.DataDir);
 		// the newest run's record must read before "no run was interrupted" can be believed
 		if (Journal.NewestUnreadable(runs) is { } dim) {
-			return Refuse(dim.Why is System.Text.Json.JsonException or InvalidDataException
+			return c.No(dim.Why is System.Text.Json.JsonException or InvalidDataException
 				? $"the record of the last run ({Path.GetFileName(dim.Folder)}) is damaged, so it cannot be told whether that run finished - look at your profile in Mod Organizer, then move that run's folder out of {runs} to go on"
 				: $"the record of the last run ({Path.GetFileName(dim.Folder)}) cannot be read right now ({dim.Why.Message}) - try again in a moment");
 		}
 		// any setup's interrupted run (two setups can share a profile, and the window refuses the same way)
 		if (Journal.Interrupted(runs) is { } open) {
-			return Refuse($"the run of {open.Started.ToString("MMM d HH:mm", InvariantCulture)} ({open.SetupName}) did not finish - put the profile back first (Restore)");
+			return c.No($"the run of {open.Started.ToString("MMM d HH:mm", InvariantCulture)} ({open.SetupName}) did not finish - put the profile back first (Restore)");
 		}
-		List<Setup.StepEntry> todo;
 		try {
-			todo = Plan(setup, a_req.Only, a_req.From, a_req.Until);
+			c.Todo = Plan(setup, a_req.Only, a_req.From, a_req.Until);
 		} catch (ArgumentException e) {
-			return Refuse(e.Message);
+			return c.No(e.Message);
 		}
 		Mo2Instance mo2;
 		try {
-			mo2 = Mo2Instance.Load(setup.Mo2Exe, setup.Mo2Instance);
+			mo2 = c.Mo2 = Mo2Instance.Load(setup.Mo2Exe, setup.Mo2Instance);
 		} catch (Exception e) when (e is IOException) {
-			return Refuse(e.Message);
+			return c.No(e.Message);
 		}
-		List<Issue> check;
 		try {
-			check = Preflight.Run(setup, mo2, todo.Select(s => s.Key).ToList());
+			c.Check = Preflight.Run(setup, mo2, c.Todo.Select(s => s.Key).ToList());
 		} catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or InvalidDataException or InvalidOperationException) {
 			// a check that cannot look (a drive that is not there, a folder it may not read) refuses the run in words - nothing has
 			// been touched, and it never ends as a crash
-			return Refuse("the check before the run could not finish: " + e.Message);
+			return c.No("the check before the run could not finish: " + e.Message);
 		}
-		var blocking = check.Where(i => i.Blocking).ToList();
-		if (blocking.Count > 0) {
-			return Refuse(string.Join("; ", blocking.Select(i => $"{StepCatalog.Name(i.Step)}: {i.Text}")));
+		foreach (var i in c.Check.Where(i => i.Blocking)) {
+			c.No(i.Text, i.Step);
 		}
+		return c;
+	}
+
+	static RunOutcome RunLocked(RunRequest a_req, Func<Journal, IGuide>? a_guide)
+	{
+		var gate = CheckStart(a_req);
+		if (!gate.Starts) {
+			return Refuse(gate.Why);
+		}
+		var (setup, mo2, todo, check) = (gate.Setup!, gate.Mo2!, gate.Todo, gate.Check);
+		var runs = RunsDir(a_req.DataDir);
 
 		var id = DateTime.Now.ToString("yyyy-MM-dd HH-mm-ss", InvariantCulture) + " " + setup.Name;
 		var journal = new Journal {
@@ -321,6 +353,7 @@ public static class Runner
 					control.Close();
 					journal.State = RunState.Failed;
 					journal.Verdict = $"every tool finished; the save to play was not made: {journal.Step("playsave")?.Note}";
+					SaySummary(ctx);
 					log.Simple("Done, except the save to play: " + journal.Verdict);
 					SaySaves(ctx);
 					journal.Ended = DateTime.Now;
@@ -365,6 +398,7 @@ public static class Runner
 			journal.Verdict = $"finished: {todo.Count} step(s) in {total.Elapsed.TotalMinutes.ToString("0", InvariantCulture)} min";
 			journal.Ended = DateTime.Now;
 			journal.TrySave();
+			SaySummary(ctx);
 			log.Say("ALL DONE: " + journal.Verdict);
 			log.Simple("ALL DONE: " + journal.Verdict);
 			// his checklist 454: the old outputs packed into one zip, as the very last thing and only after a run that finished -
@@ -730,10 +764,39 @@ public static class Runner
 		r.Activity = "";
 		r.Progress = null;
 		a_ctx.Journal.Save();
+		Measure(a_ctx, r);
 		a_ctx.Log.Say($"=== {StepCatalog.Name(a_s.Key)} done in {sw.Elapsed.TotalMinutes:0.0} min ===");
 		a_ctx.Log.Simple($"{StepCatalog.Name(a_s.Key)} finished in {sw.Elapsed.TotalMinutes:0.0} min");
 		ApplyAfter(a_ctx, a_ctx.Cancel);
 		return true;
+	}
+
+	// How big the step's output came out, for the run's summary and for the next run's forecast of the room it needs. A note for
+	// later, never what decides a step that has finished: a folder that will not list is simply not measured
+	static void Measure(RunContext a_ctx, StepRecord a_r)
+	{
+		if (a_r.Output is not { } mod || a_ctx.OutputUntouched) {
+			return;
+		}
+		try {
+			var dir = a_ctx.Mo2.ModDir(mod);
+			a_r.OutputBytes = Files.SizeOf(dir);
+			OutputSizes.Remember(a_ctx.Setup, dir, a_r.OutputBytes.Value);
+			a_ctx.Journal.TrySave();
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException) {
+			a_ctx.Log.Detail($"{mod} was not measured ({e.Message})");
+		}
+	}
+
+	// the run's summary at the end of its simple log, above the verdict (which stays its last line): what a player reads when
+	// they come back to a run that ended
+	static void SaySummary(RunContext a_ctx)
+	{
+		a_ctx.Log.Simple("");
+		foreach (var line in RunSummary.Of(a_ctx.Journal).Lines()) {
+			a_ctx.Log.Simple(line);
+		}
+		a_ctx.Log.Simple("");
 	}
 
 	// a_ct: what may end the wait for Mod Organizer to close - a step's Stop; nothing at the put-back, which a Stop has often
@@ -882,6 +945,7 @@ public static class Runner
 		if (a_state != RunState.Finished) {
 			SaySaves(a_ctx);
 			j.Ended = DateTime.Now;
+			SaySummary(a_ctx);
 			a_ctx.Log.Say(j.Verdict);
 			a_ctx.Log.Simple((a_state == RunState.Stopped ? "Stopped: " : "Failed: ") + j.Verdict);
 			// a failed or stopped run's backups are pruned too (they piled up until the next finished run - the fourth review, L7);

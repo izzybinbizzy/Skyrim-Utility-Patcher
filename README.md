@@ -7,7 +7,7 @@ Runs the generators of a Mod Organizer 2 setup for Skyrim Special Edition / Anni
 Shader caches, DynDOLOD's clean save, Wrye Bash (guided), Synthesis, SnowFixer, AutoBlend, PGPatcher, xLODGen with ACMOS roads, the grass cache, TreeLODGen, TexGen, DynDOLOD or AnvilLOD, Pandora, and a save to play at the end.
 
 - **Download:** the Nexus page (the zip holds the program, its readme, its changelog and the licence).
-- **The full guide:** [the wiki](https://github.com/izzybinbizzy/Skyrim-Utility-Patcher/wiki).
+- **The full guide:** [the wiki](https://github.com/izzybinbizzy/Tool-Runner/wiki).
 
 ## What it does
 
