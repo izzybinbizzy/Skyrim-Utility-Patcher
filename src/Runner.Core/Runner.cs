@@ -188,7 +188,16 @@ public static class Runner
 		var (setup, mo2, todo, check) = (gate.Setup!, gate.Mo2!, gate.Todo, gate.Check);
 		var runs = RunsDir(a_req.DataDir);
 
-		var id = DateTime.Now.ToString("yyyy-MM-dd HH-mm-ss", InvariantCulture) + " " + setup.Name;
+		// A run is named by the second it began. A second run of the same setup begun within that second (a script that starts the
+		// next the moment one ends, a run that failed at once and is started again) would take the first one's folder and write
+		// over its record and its copy of the order files - the very files an undo of the first run puts back. It waits for the
+		// next second instead
+		string Named() => DateTime.Now.ToString("yyyy-MM-dd HH-mm-ss", InvariantCulture) + " " + setup.Name;
+		var id = Named();
+		for (var tries = 0; tries < 12 && Directory.Exists(Path.Combine(runs, id)); ++tries) {
+			Thread.Sleep(100);
+			id = Named();
+		}
 		var journal = new Journal {
 			Id = id, Folder = Path.Combine(runs, id), SetupFile = Path.GetFullPath(a_req.SetupFile), SetupName = setup.Name, Profile = setup.Profile,
 			Mo2Exe = setup.Mo2Exe, Mo2Instance = setup.Mo2Instance, BackupDir = Path.Combine(setup.BackupDir, id), Pid = Environment.ProcessId,
@@ -350,9 +359,16 @@ public static class Runner
 					journal.Save();
 				}
 				if (!made) {
-					control.Close();
+					// failed on record BEFORE Mod Organizer is asked to close: a close that throws (a box only the player can
+					// answer, a download still going) never leaves this run reading "finished"
 					journal.State = RunState.Failed;
 					journal.Verdict = $"every tool finished; the save to play was not made: {journal.Step("playsave")?.Note}";
+					journal.TrySave();
+					try {
+						control.Close();
+					} catch (Exception e) when (e is not OperationCanceledException) {
+						log.Warn("Mod Organizer could not be closed after the save to play failed: " + Plain(e));
+					}
 					SaySummary(ctx);
 					log.Simple("Done, except the save to play: " + journal.Verdict);
 					SaySaves(ctx);
@@ -832,7 +848,9 @@ public static class Runner
 				if (gone && Path.GetPathRoot(Path.GetFullPath(p.To)) is { Length: > 0 } drive && !Directory.Exists(drive)) {
 					throw new IOException($"the backup's drive {drive} is not there");
 				}
-				if (Directory.Exists(p.From)) {
+				// a folder whose move into the backup failed half way: what still stands there is the player's own, never the
+				// step's half-written output - the part that moved simply joins it again
+				if (Directory.Exists(p.From) && (!p.IsFolder || p.Moved)) {
 					var half = Path.Combine(a_ctx.BackupFolder, "unfinished", p.Mod);
 					var moved = Directory.EnumerateFileSystemEntries(p.From).Any(e => !Path.GetFileName(e).Equals("meta.ini", StringComparison.OrdinalIgnoreCase));
 					if (moved) {
@@ -953,7 +971,9 @@ public static class Runner
 			Keep();
 			PruneBackups(a_ctx);
 		} else {
+			// finished and still at its last chores, in one write: the window never sees a finished run that has no verdict yet
 			j.State = RunState.Finished;
+			j.FinishingUp = true;
 		}
 		Keep();
 		return new RunOutcome(j.State, j.Verdict, j.Folder);

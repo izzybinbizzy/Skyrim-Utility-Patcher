@@ -125,7 +125,8 @@ public sealed class DiskForecast
 		var known = OutputSizes.Load(a_setup);
 		var backup = a_setup.BackupDir;
 		long oldOutputs = 0;
-		foreach (var b in OutputsOf(a_setup, a_todo)) {
+		// a mod two steps both name (terrain LOD: the tool that makes it and the one that paints it) is one output
+		foreach (var b in OutputsOf(a_setup, a_todo).DistinctBy(o => o.Mod, StringComparer.OrdinalIgnoreCase)) {
 			var dir = a_mo2.ModDir(b.Mod);
 			long size;
 			try {
@@ -141,25 +142,27 @@ public sealed class DiskForecast
 			}
 			var grown = size + size * GrowthPercent / 100;
 			var name = StepCatalog.Name(b.Step);
+			// most runs find the shader caches current and build none: their room is told, and never refuses a start
+			var surely = b.Step != "shaders" || a_setup.ShaderRebuild == ShaderRebuild.Always;
 			if (b is { FillsOnly: true, Scratch: { } fills }) {
-				Add(fills, new Part(b.Step, $"what {name} writes, about the size of {b.Mod}", grown, true));
+				Add(fills, new Part(b.Step, $"what {name} writes, about the size of {b.Mod}", grown, surely));
 				continue;
 			}
 			var apart = backup != "" && probes.Volume(backup) != probes.Volume(dir);
 			oldOutputs += size;
 			if (b.Scratch is { } scratch) {
-				Add(scratch, new Part(b.Step, $"the new {b.Mod}, as {name} writes it", grown, true));
+				Add(scratch, new Part(b.Step, $"the new {b.Mod}, as {name} writes it", grown, surely));
 				if (apart) {
-					Add(backup, new Part(b.Step, $"the old {b.Mod}, kept in the run's backup", size, true));
+					Add(backup, new Part(b.Step, $"the old {b.Mod}, kept in the run's backup", size, surely));
 				} else if (probes.Volume(scratch) != probes.Volume(dir)) {
-					Add(dir, new Part(b.Step, $"the new {b.Mod}, moved in beside the old one in the run's backup", grown, true));
+					Add(dir, new Part(b.Step, $"the new {b.Mod}, moved in beside the old one in the run's backup", grown, surely));
 				}
 			} else if (apart) {
-				Add(backup, new Part(b.Step, $"the old {b.Mod}, kept in the run's backup", size, true));
+				Add(backup, new Part(b.Step, $"the old {b.Mod}, kept in the run's backup", size, surely));
 				// whether the old one has left before the new one is written depends on the tool: wanted, never what stops a start
 				Add(dir, new Part(b.Step, $"the new {b.Mod}, for the moment before the old one has moved to the backup", grown, false));
 			} else {
-				Add(dir, new Part(b.Step, $"the new {b.Mod}, beside the old one in the run's backup", grown, true));
+				Add(dir, new Part(b.Step, $"the new {b.Mod}, beside the old one in the run's backup", grown, surely));
 			}
 		}
 		if (backup != "" && oldOutputs > 0 && Setup.Bool(a_setup.Root, "zipBackups") != false) {

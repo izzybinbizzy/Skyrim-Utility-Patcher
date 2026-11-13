@@ -701,7 +701,7 @@ public static class SettingsPanel
 			}
 			foreach (var (key, kind, def) in Known.GetValueOrDefault(stepKey, []).Append((Key: "deadline_min", Kind: JsonValueKind.Number, Default: "the step's own"))
 				         .Where(k => !o.ContainsKey(k.Key))) {
-				Field(stepHost, stepApply, $"{Label(key)} (default {def})", o, key, kind);
+				Field(stepHost, stepApply, $"{Label(key)} (default {def})", o, key, kind, def == "on");
 			}
 		};
 		stack.Children.Add(pick);
@@ -924,7 +924,8 @@ public static class SettingsPanel
 	static readonly JsonSerializerOptions Pretty = new() { WriteIndented = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
 
 	// one setting: its editor by its kind; the returned function writes it back (or says what is wrong)
-	static void Field(Panel a_host, List<Func<string?>> a_apply, string a_label, JsonObject a_obj, string a_key, JsonValueKind a_kind = JsonValueKind.String)
+	// a_onUnlessSet: a switch the setup does not hold yet shows on (its default), so saving the page keeps it what it was
+	static void Field(Panel a_host, List<Func<string?>> a_apply, string a_label, JsonObject a_obj, string a_key, JsonValueKind a_kind = JsonValueKind.String, bool a_onUnlessSet = false)
 	{
 		var row = new Grid { Margin = new Thickness(0, 0, 0, 10) };
 		row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(230) });
@@ -935,8 +936,7 @@ public static class SettingsPanel
 		var cur = a_obj[a_key];
 		var kind = cur?.GetValueKind() ?? a_kind;
 		if (kind is JsonValueKind.True or JsonValueKind.False) {
-			// a switch the setup does not hold yet shows its default (a_kind True: on unless set) - saved as shown, it stays what it was
-			var box = new CheckBox { IsChecked = cur?.GetValue<bool>() ?? a_kind == JsonValueKind.True, VerticalAlignment = VerticalAlignment.Center };
+			var box = new CheckBox { IsChecked = cur?.GetValue<bool>() ?? a_onUnlessSet, VerticalAlignment = VerticalAlignment.Center };
 			box.Click += (_, _) => Changed();
 			a_apply.Add(() => {
 				a_obj[a_key] = box.IsChecked == true;

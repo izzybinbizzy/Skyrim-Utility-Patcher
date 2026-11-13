@@ -93,6 +93,12 @@ public sealed class Setup
 	static readonly JsonDocumentOptions ReadOptions = new() { CommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true };
 	static readonly JsonSerializerOptions WriteOptions = new() { WriteIndented = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
 
+	// what the program keeps beside the setups (the tools' versions, the outputs' sizes): files of its own in that folder, never
+	// setups - a list of setups leaves them out
+	public static readonly IReadOnlyList<string> StoreNames = ["tool versions.json", "output sizes.json"];
+
+	public static bool IsStore(string a_file) => StoreNames.Contains(Path.GetFileName(a_file), StringComparer.OrdinalIgnoreCase);
+
 	public static Setup Load(string a_file) => FromText(Files.ReadSharedText(a_file), a_file);
 
 	// the setup as these bytes say (the preview reads the file once and shows exactly what then runs)
@@ -124,7 +130,7 @@ public sealed class Setup
 				p.Add($"{what} must be a whole path on this PC (like D:\\Modding\\...): {dir}");
 			}
 		}
-		if (Steps.Count == 0) p.Add("no steps");
+		if (Steps.Count == 0) p.Add("the setup has no steps");
 		if (EnabledSteps.Count == 0) p.Add(Steps.Any(s => s.On) ? "only the save steps are switched on, and they are left out for a new game" : "every step is switched off");
 		var dup = Steps.GroupBy(s => s.Key).Where(g => g.Count() > 1).Select(g => g.Key).ToList();
 		if (dup.Count > 0) p.Add("a step is listed twice: " + string.Join(", ", dup));

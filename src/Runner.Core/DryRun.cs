@@ -50,13 +50,15 @@ public static class DryRun
 {
 	public static DryRunReport Make(RunRequest a_req)
 	{
-		// the run lock as a start would take it: looked at, and let go when this ends. While another run goes, that is the one
-		// answer - the rest of the check would only describe that run's own Mod Organizer and tools
-		using var hold = Runner.HoldIfFree();
-		if (hold == null) {
-			var busy = new DryRunReport { SetupFile = a_req.SetupFile };
-			busy.Refusals.Add(("", "another run is going - wait for it, or stop it in the window"));
-			return busy;
+		// The run lock as a start would take it: looked at and let go at once - a dry run changes nothing, so it needs no lock for
+		// its own sake, and a start made while it checks must not be refused because of it. While another run goes, that is the
+		// one answer - the rest of the check would only describe that run's own Mod Organizer and tools
+		using (var hold = Runner.HoldIfFree()) {
+			if (hold == null) {
+				var busy = new DryRunReport { SetupFile = a_req.SetupFile };
+				busy.Refusals.Add(("", "another run is going - wait for it, or stop it in the window"));
+				return busy;
+			}
 		}
 		var gate = Runner.CheckStart(a_req);
 		RunPreview? preview = null;

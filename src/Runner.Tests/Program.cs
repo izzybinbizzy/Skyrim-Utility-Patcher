@@ -7016,6 +7016,102 @@ public static class Program
 		Check(lines.Count == 2 && lines[1].StartsWith("  What to do: ", StringComparison.Ordinal) && lines[1].EndsWith("[TR-211]", StringComparison.Ordinal), "as lines for a person: " + string.Join(" | ", lines));
 	}
 
+	// what the review before 1.0 found: the program's own small files beside the setups are no setups; an output two steps name is
+	// counted once; a shader cache (most runs build none) never refuses a start; a tool's own words are never taken for the runner's
+	static void T_TheReviewBeforeOnePointZero()
+	{
+		Check(Setup.IsStore(@"C:\x\Setups\tool versions.json") && Setup.IsStore(@"C:\x\Setups\Output Sizes.json") && !Setup.IsStore(@"C:\x\Setups\My Profile.json"),
+			"the tools' versions and the outputs' sizes are the program's own files, a setup is not");
+		using var f = new FakeMo2();
+		var lod = Path.Combine(f.Root, "lod");
+		var setup = f.WriteSetup(
+			("shaders", new JsonObject { ["caches"] = new JsonArray(new JsonObject { ["shader_mod"] = "Base Mod", ["output_mod"] = "Output A" }) }),
+			("xlodgen", new JsonObject { ["output_mod"] = "Output B", ["output_dir"] = lod }),
+			("acmos", new JsonObject { ["then_move_to_mod"] = "Output B", ["reads"] = lod }));
+		var mo2 = Mo2Instance.Load(f.Exe, f.Instance);
+		const long gb = 1L << 30;
+		var probes = new DiskForecast.Probes(_ => "X", _ => 100 * gb, _ => 10 * gb);
+		var parts = DiskForecast.Build(setup, mo2, setup.EnabledSteps, probes).Disks.Single().Parts;
+		Equal(1, parts.Count(p => p.Needed && p.What.Contains("Output B", StringComparison.Ordinal)), "the terrain LOD two steps name is one output");
+		Check(parts.Any(p => p.What.Contains("Output A", StringComparison.Ordinal)) && parts.Where(p => p.What.Contains("Output A", StringComparison.Ordinal)).All(p => !p.Needed),
+			"a shader cache's room is told, and never refuses a start");
+		setup.Root["shaderRebuild"] = "always";
+		Check(DiskForecast.Build(setup, mo2, setup.EnabledSteps, probes).Disks.Single().Parts.Any(p => p.Needed && p.What.Contains("Output A", StringComparison.Ordinal)),
+			"unless the setup rebuilds the caches every run");
+		Check(RunnerErrors.Find("DynDOLOD: the output path is not set in this preset, and there are no steps left") == null, "a tool's own words are not taken for the runner's");
+		Equal("TR-112", RunnerErrors.Find("the setup has no steps")?.Code, "the setup's own are");
+	}
+
+	// what the review of the engine's fixes found, each held here: a kept file whose backup is on a drive that is not there is asked
+	// again; a folder half moved into the backup gets its part back beside what stayed; the cache that stood in overwrite never
+	// comes back over a new cache; the grass wrapper's exit line stands alone; the window says a run ended only once it is over
+	static void T_TheReviewOfTheEngineFixes()
+	{
+		using var f = new FakeMo2();
+		f.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A" }));
+		var ctx = StepContext(f, "landscapefixer");
+		var ini = Path.Combine(f.Root, "tool.ini");
+		File.WriteAllText(ini, "set for the run");
+		if (Enumerable.Range('D', 23).Select(c => (char)c + @":\").FirstOrDefault(d => !Directory.Exists(d)) is { } noDrive) {
+			ctx.Journal.Kept.Add(new KeptFile { Path = ini, Backup = Path.Combine(noDrive, "backup", "1 tool.ini") });
+			Equal(1, StepKit.PutFilesBack(ctx).Count, "a backup on a drive that is not there: not put back");
+			Check(!ctx.Journal.Kept[0].Done, "and asked again when the drive is back");
+			ctx.Journal.Kept.Clear();
+		}
+		ctx.Journal.Kept.Add(new KeptFile { Path = ini, Backup = Path.Combine(f.Backups, "cleared away", "1 tool.ini") });
+		Equal(0, StepKit.PutFilesBack(ctx).Count, "a backup that was cleared away holds no later put-back up");
+		Check(ctx.Journal.Kept[0].Done && File.ReadAllText(ini) == "set for the run", "the file is left as it is");
+
+		var grass = Path.Combine(f.Overwrite, "grass");
+		var parked = Path.Combine(ctx.BackupFolder, "outputs", "overwrite grass (before)");
+		Directory.CreateDirectory(grass);
+		Directory.CreateDirectory(parked);
+		File.WriteAllText(Path.Combine(grass, "stayed.cgid"), "the player's, never moved");
+		File.WriteAllText(Path.Combine(parked, "moved.cgid"), "the player's, moved before the copy failed");
+		ctx.Journal.Parked.Add(new ParkRecord { Step = "grass", Mod = "overwrite grass (before)", From = grass, To = parked, IsFolder = true });
+		Equal(0, Runner.PutBackParked(ctx, "grass").Count, "a folder half moved into the backup is put back");
+		Check(File.Exists(Path.Combine(grass, "stayed.cgid")) && File.Exists(Path.Combine(grass, "moved.cgid")), "both parts stand in overwrite again");
+		Check(!Directory.Exists(Path.Combine(ctx.BackupFolder, "unfinished")), "nothing of the player's is taken for a half-written output");
+
+		var owCache = Path.Combine(f.Overwrite, "ShaderCache");
+		var oldCache = Path.Combine(ctx.BackupFolder, "outputs", "overwrite ShaderCache (before)");
+		Directory.CreateDirectory(oldCache);
+		File.WriteAllText(Path.Combine(oldCache, "old.bin"), "the cache from before the run");
+		ctx.Journal.Parked.Add(new ParkRecord { Step = "shaders", Mod = "overwrite ShaderCache (before)", From = owCache, To = oldCache, IsFolder = true, Moved = true });
+		var cache = new ShaderStep.Cache("Base Mod", "Output A", null);
+		ShaderStep.Keep(ctx, [cache], cache, ctx.Profile.States());
+		Equal(0, Runner.PutBackParked(ctx, "shaders").Count, "a later failure in the shaders step");
+		Check(!File.Exists(Path.Combine(owCache, "old.bin")), "never brings the old cache back over the one just built");
+
+		var wrapper = GrassStep.WrapperText(@"C:\x\FasterNGIO.exe", "--world all", @"C:\x\output.txt");
+		Check(wrapper.Contains("set TRCODE=%ERRORLEVEL%\r\necho.>>", StringComparison.Ordinal) && wrapper.Contains("echo exit code %TRCODE% >>", StringComparison.Ordinal),
+			"the wrapper writes a line break before its exit line: " + wrapper);
+		Equal("0", GrassStep.WrapperExit("started\r\nGenerating 100%\r\nexit code 0 \r\n"), "which is then read as the end");
+
+		Check(!ToolRunner.App.MainViewModel.RunEnded(true, true, RunState.Finished), "finished and still at its last chores: not said yet");
+		Check(ToolRunner.App.MainViewModel.RunEnded(true, false, RunState.Finished), "over, with its verdict written: said");
+		Check(ToolRunner.App.MainViewModel.RunEnded(true, false, RunState.Failed), "a run that failed is said too");
+		Check(!ToolRunner.App.MainViewModel.RunEnded(false, false, RunState.Finished), "a run that was over at the first look is not news");
+		Check(!ToolRunner.App.MainViewModel.RunEnded(true, false, RunState.Running), "an engine that died is the interrupted run's band, not this notice");
+	}
+
+	// a run is named by the second it began: one begun within the same second never takes the earlier one's folder (its record and
+	// its copy of the order files - what an undo of the earlier run puts back)
+	static void T_TwoRunsInOneSecondKeepTheirOwnRecords()
+	{
+		using var f = new FakeMo2();
+		StepRegistry.Replace(new FakeStep("landscapefixer", (ctx, s) => WriteOutput(ctx, "landscapefixer", "Output A", "OutA.esp")));
+		f.WriteSetup(("landscapefixer", new JsonObject { ["output_mod"] = "Output A" }));
+		var runs = new List<RunOutcome>();
+		for (var i = 0; i < 3; ++i) {
+			runs.Add(Runner.Run(new RunRequest(f.SetupFile, f.Data)));
+			Equal(RunState.Finished, runs[^1].State, runs[^1].Verdict);
+		}
+		Equal(3, runs.Select(r => r.Folder).Distinct(StringComparer.OrdinalIgnoreCase).Count(), "three runs, three record folders");
+		Equal(3, Journal.All(Runner.RunsDir(f.Data)).Count(), "and three records");
+		Check(runs.All(r => Directory.Exists(Path.Combine(r.Folder!, "profile before"))), "each with its own copy of the order files");
+	}
+
 	// a step whose own check stops a run
 	sealed class BlockedStep(string a_key, string a_why) : IStep
 	{

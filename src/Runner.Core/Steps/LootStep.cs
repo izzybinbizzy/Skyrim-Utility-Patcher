@@ -49,8 +49,8 @@ public sealed class LootStep : IStep
 		// its exit code says nothing (it ends 0 when the masterlist could not be fetched): the list is the verdict, and never one an earlier try left
 		bool Sort(bool a_skipUpdate)
 		{
-			File.Delete(sorted);
-			File.Delete(report);
+			Files.Delete(sorted);
+			Files.Delete(report);
 			a_start(sorted, report, a_skipUpdate);
 			return ReadSorted(sorted).Count > 0;
 		}

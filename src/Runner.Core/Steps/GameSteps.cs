@@ -69,8 +69,11 @@ public sealed class GrassStep : IStep
 	// FasterNGIO's wrapper, written as UTF-8: its second line makes cmd read the rest that way, so a path with an accent or a
 	// non-Latin letter reaches FasterNGIO as it is (written as plain ASCII such a letter became "?", cmd found no program and
 	// the step failed with "exit code 1" and no cause)
+	// The exit code is kept first and a line break written before it: FasterNGIO's last line may end without one (a progress
+	// line), and the wrapper's own line glued to it would never be read as the end
 	public static string WrapperText(string a_exe, string a_args, string a_outFile) =>
-		$"@echo off\r\nchcp 65001 >nul\r\necho started %DATE% %TIME% > \"{a_outFile}\"\r\n\"{a_exe.Replace("%", "%%", StringComparison.Ordinal)}\" {a_args} >> \"{a_outFile}\" 2>&1\r\necho exit code %ERRORLEVEL% >> \"{a_outFile}\"\r\n";
+		$"@echo off\r\nchcp 65001 >nul\r\necho started %DATE% %TIME% > \"{a_outFile}\"\r\n\"{a_exe.Replace("%", "%%", StringComparison.Ordinal)}\" {a_args} >> \"{a_outFile}\" 2>&1\r\n" +
+		$"set TRCODE=%ERRORLEVEL%\r\necho.>> \"{a_outFile}\"\r\necho exit code %TRCODE% >> \"{a_outFile}\"\r\n";
 
 	// the exit code the wrapper wrote as its own LAST line (null: it has not ended). The words "exit code" in a line of
 	// FasterNGIO's own - it reports its child processes - are not the end: read as the end, they closed a FasterNGIO still at work
@@ -494,8 +497,13 @@ public sealed class ShaderStep : IStep
 	// the cache the profile runs stays on from here whatever comes later in the step (a finished part is never lost to a later
 	// failure), and the cache mod of every other shader mod of the setup goes off: two cache mods ticked at once hand the game
 	// one cache's files for the other's shader mod, and it throws the cache away
-	static void Keep(RunContext a_ctx, List<Cache> a_all, Cache a_c, Dictionary<string, char> a_states)
+	public static void Keep(RunContext a_ctx, List<Cache> a_all, Cache a_c, Dictionary<string, char> a_states)
 	{
+		// the cache that stood in overwrite before the run is replaced with it: brought back by a later failure in this step, it
+		// would win over the new cache's mod and the game would read the old one
+		foreach (var p in a_ctx.Journal.Parked.Where(p => p.Step == "shaders" && p.IsFolder && !p.PutBack)) {
+			p.Replaced = true;
+		}
 		a_ctx.Finished(a_c.OutputMod);
 		var others = a_all.Where(o => o != a_c && !o.OutputMod.Equals(a_c.OutputMod, StringComparison.OrdinalIgnoreCase) && a_states.TryGetValue(o.OutputMod, out var f) && f == '+')
 			.Select(o => o.OutputMod).Distinct(StringComparer.OrdinalIgnoreCase).ToList();

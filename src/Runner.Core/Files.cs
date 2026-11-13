@@ -245,7 +245,10 @@ public static partial class Files
 	{
 		var parent = Path.GetDirectoryName(Path.GetFullPath(a_dst)) ?? throw new ArgumentException("no folder: " + a_dst);
 		Directory.CreateDirectory(parent);
-		if (SameVolume(a_src, parent) != false) {
+		// .NET refuses a rename between two paths whose roots read differently before Windows is even asked (one volume reached
+		// under two names: a junction on another drive, SUBST) - copied, like another volume
+		var oneRoot = string.Equals(Path.GetPathRoot(Path.GetFullPath(a_src)), Path.GetPathRoot(parent), StringComparison.OrdinalIgnoreCase);
+		if (oneRoot && SameVolume(a_src, parent) != false) {
 			try {
 				// Windows refuses to rename a folder with "access denied" while a file in it is open somewhere: tried again too
 				Retry(() => Directory.Move(a_src, a_dst), true);

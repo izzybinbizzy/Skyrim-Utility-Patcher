@@ -218,7 +218,14 @@ public sealed partial class MainViewModel : Observable
 		return steps.Select((s, i) => new GuideRow(i < next ? Theme.Glyph("Done") : (i + 1).ToString(InvariantCulture), s.Title, s.Text, i < next ? "good" : i == next ? "" : "muted")).ToList();
 	}
 
-	void ShowGuide() => Guide = Setups.Count > 0 && (_everRan || IsRunning) ? [] : FirstSteps(Setup != null, _checkedClean, _dried);
+	void ShowGuide()
+	{
+		IReadOnlyList<GuideRow> now = Setups.Count > 0 && (_everRan || IsRunning) ? [] : FirstSteps(Setup != null, _checkedClean, _dried);
+		// a look every second or three: the card is laid out again only when a step of it changed
+		if (!now.SequenceEqual(Guide)) {
+			Guide = now;
+		}
+	}
 
 	// the window's own work (WorkInHand): while any is in hand the window says so and stays open
 	readonly WorkInHand _work = new();
@@ -289,6 +296,11 @@ public sealed partial class MainViewModel : Observable
 
 	Journal? _run;
 	RunState? _lastState;
+	bool _wasGoing;
+
+	// The run ended, for the notice: it was going at the last look and is over now, its last chores too - only then is its verdict
+	// written. A run whose engine died (still "running" on record) is told by the interrupted-run band, not here
+	public static bool RunEnded(bool a_wasGoing, bool a_going, RunState a_state) => a_wasGoing && !a_going && a_state != RunState.Running;
 	string _lastWaiting = "";
 	readonly LogTail _logTail = new();
 	Dictionary<string, TimeSpan> _usual = [];
@@ -305,7 +317,7 @@ public sealed partial class MainViewModel : Observable
 		Directory.CreateDirectory(AppPaths.Setups);
 		var keep = a_select ?? SelectedSetup?.File;
 		Setups.Clear();
-		foreach (var f in Directory.GetFiles(AppPaths.Setups, "*.json").Order(StringComparer.OrdinalIgnoreCase)) {
+		foreach (var f in Directory.GetFiles(AppPaths.Setups, "*.json").Where(f => !ToolRunner.Setup.IsStore(f)).Order(StringComparer.OrdinalIgnoreCase)) {
 			Setups.Add(new SetupItem(Path.GetFileNameWithoutExtension(f), f));
 		}
 		SelectedSetup = Setups.FirstOrDefault(s => string.Equals(s.File, keep, StringComparison.OrdinalIgnoreCase)) ?? Setups.FirstOrDefault();
@@ -659,7 +671,7 @@ public sealed partial class MainViewModel : Observable
 		}
 		TailLog();
 		// alerts once per change: the run ended, or it waits for the player
-		if (_lastState == RunState.Running && _run.State != RunState.Running) {
+		if (RunEnded(_wasGoing, IsRunning, _run.State)) {
 			Alert?.Invoke(NowTitle, _run.Verdict);
 			LoadHistory();
 			_ = LoadLastRuns();
@@ -674,6 +686,7 @@ public sealed partial class MainViewModel : Observable
 		}
 		_lastWaiting = Waiting;
 		_lastState = _run.State;
+		_wasGoing = IsRunning;
 	}
 
 	static TimeSpan Max(TimeSpan a, TimeSpan b) => a > b ? a : b;
@@ -825,7 +838,8 @@ public sealed partial class MainViewModel : Observable
 			var text = string.Join("\n", report.Lines(k => usual.TryGetValue(k, out var t) ? t : null));
 			var title = a_dryOnly ? "Dry run - nothing is started" : report.Starts ? "What this run will do" : "This run would be refused";
 			if (!ConfirmRun(title, text, report.Starts ? "Start the run" : null)) {
-				Say(report.Starts ? "Not started - nothing was changed." : "Not started: " + WithTodo(string.Join("; ", report.Refusals.Select(r => r.Text))), report.Starts ? "" : "bad");
+				var refusals = WithTodo(string.Join("; ", report.Refusals.Select(r => r.Text)));
+				Say(report.Starts ? "Not started - nothing was changed." : a_dryOnly ? "Dry run: a start now would be refused - " + refusals : "Not started: " + refusals, report.Starts ? "" : "bad");
 				return;
 			}
 			// a mod ticked or a download installed in Mod Organizer while the box was open changes what goes off - looked at
@@ -856,6 +870,9 @@ public sealed partial class MainViewModel : Observable
 			}
 			// the very file previewed, never whatever is selected by now
 			StartNow(file, a_only, a_from, a_until);
+			return;
+		}
+		if (a_dryOnly) {
 			return;
 		}
 		StartNow(SelectedSetup!.File, a_only, a_from, a_until);

@@ -165,8 +165,12 @@ public static class StepKit
 						Files.Delete(k.Path);
 					}
 				} else if (!File.Exists(k.Backup)) {
-					// its old copy is gone from the backup (a backup folder cleared by hand, a drive that is not there): nothing can
-					// bring it back, and counting it as "could not be put back" would keep every later put-back from ever finishing
+					// On a drive that is not there its old copy may come back with the drive: not put back, and asked again (as an
+					// old output is). In a backup that is there it was cleared away: nothing can bring it back, and counting it as
+					// "could not be put back" would keep every later put-back from ever finishing
+					if (Path.GetPathRoot(Path.GetFullPath(k.Backup)) is { Length: > 0 } drive && !Directory.Exists(drive)) {
+						throw new IOException($"the backup's drive {drive} is not there");
+					}
 					k.Done = true;
 					a_ctx.Log.Warn($"{k.Path} is left as it is: its old copy is no longer in the backup ({k.Backup})");
 					continue;
@@ -182,7 +186,8 @@ public static class StepKit
 				a_ctx.Log.Error($"{k.Path} could NOT be put back ({e.Message}) - its old copy: {k.Backup ?? "(it did not exist)"}");
 			}
 		}
-		a_ctx.Journal.Save();
+		// the files are back: a record the disk will not take right now is never what stops the put-back that follows
+		a_ctx.Journal.TrySave();
 		return failed;
 	}
 
