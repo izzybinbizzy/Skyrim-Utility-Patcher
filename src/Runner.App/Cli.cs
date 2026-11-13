@@ -8,6 +8,7 @@ namespace ToolRunner.App;
 //   "Tool Runner.exe" preview --setup <file> [--only | --from | --until <step>]              what a run would do (nothing changed)
 //   "Tool Runner.exe" dryrun --setup <file> [--only | --from | --until <step>]               everything a start would meet and then do: nothing started, nothing written
 //   "Tool Runner.exe" status [--setup <file>]                                               what is going right now
+//   "Tool Runner.exe" catalog                                                               every refusal and failure of its own: its code, what it means, what to do
 //   "Tool Runner.exe" lod --setup <file> --step <step>                                      the mods a LOD step builds from, with their pages
 //   "Tool Runner.exe" restore [--setup <file>]                                              put back an interrupted run
 //   "Tool Runner.exe" stop | stop-after                                                     ask the running run to stop
@@ -23,7 +24,7 @@ namespace ToolRunner.App;
 //      4 = (updates) a tool has a newer version, 5 = (status) a run is going
 public static class Cli
 {
-	public static bool Handles(string[] a_args) => a_args.Length > 0 && a_args[0] is "tools" or "addon-check" or "test-tools" or "run" or "retry" or "queue" or "check" or "preview" or "dryrun" or "status" or "lod" or "restore" or "stop" or "stop-after" or "import" or "updates" or "changes" or "bugreport" or "share" or "undo" or "--help" or "-h" or "/?";
+	public static bool Handles(string[] a_args) => a_args.Length > 0 && a_args[0] is "tools" or "addon-check" or "test-tools" or "run" or "retry" or "queue" or "check" or "preview" or "dryrun" or "status" or "catalog" or "lod" or "restore" or "stop" or "stop-after" or "import" or "updates" or "changes" or "bugreport" or "share" or "undo" or "--help" or "-h" or "/?";
 
 	// one JSON object on the output and nothing else: no line of words before or after it
 	static bool Json(string[] a_args) => a_args.Contains("--json");
@@ -47,7 +48,7 @@ public static class Cli
 		// opens the window), before the command itself
 		// (never before a stop: Windows' task list can take half a minute, and a run is waiting on it)
 		try {
-			if (a_args[0] is not ("stop" or "stop-after" or "status")) {
+			if (a_args[0] is not ("stop" or "stop-after" or "status" or "catalog")) {
 				foreach (var left in Schedule.RemoveLeftoversOnce(AppPaths.Data)) {
 					if (!Json(a_args)) {
 						Console.WriteLine("an old timed run's task could not be removed - delete it in Windows' Task Scheduler: " + left);
@@ -65,6 +66,7 @@ public static class Cli
 				"preview" => Preview(a_args),
 				"dryrun" => DryRunCmd(a_args),
 				"status" => StatusCmd(a_args),
+				"catalog" => CatalogCmd(a_args),
 				"lod" => Lod(a_args),
 				"restore" => RestoreCmd(a_args),
 				"undo" => UndoCmd(a_args),
@@ -102,8 +104,8 @@ public static class Cli
 
 	static int Help()
 	{
-		Console.WriteLine("Tool Runner - run | retry | queue | check | preview | dryrun | status | lod | restore | undo | stop | stop-after | updates | changes | import | bugreport | share | tools | test-tools | addon-check");
-		Console.WriteLine("  --json after run, retry, check, preview, dryrun, status, updates, changes or tools prints one JSON object (see the readme)");
+		Console.WriteLine("Tool Runner - run | retry | queue | check | preview | dryrun | status | catalog | lod | restore | undo | stop | stop-after | updates | changes | import | bugreport | share | tools | test-tools | addon-check");
+		Console.WriteLine("  --json after run, retry, check, preview, dryrun, status, catalog, updates, changes or tools prints one JSON object (see the readme)");
 		return 0;
 	}
 
@@ -310,6 +312,19 @@ public static class Cli
 			Console.WriteLine(l);
 		}
 		return report.Starts ? 0 : 1;
+	}
+
+	// every refusal and failure the program knows as its own, by its code (the guide's list is made from this)
+	static int CatalogCmd(string[] a_args)
+	{
+		if (Json(a_args)) {
+			return Print(Reports.Catalog(), 0);
+		}
+		foreach (var e in RunnerErrors.All.OrderBy(e => e.Code, StringComparer.Ordinal)) {
+			Console.WriteLine($"{e.Code}  {e.What}");
+			Console.WriteLine($"        {e.Todo}");
+		}
+		return 0;
 	}
 
 	// what is going right now: exit 0 = nothing, 5 = a run is going, 1 = a run was cut off and its profile is not back

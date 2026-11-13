@@ -210,8 +210,8 @@
             <DockPanel>
               <StackPanel DockPanel.Dock="Right" HorizontalAlignment="Right">
                 <TextBlock Text="{Binding Clock}" FontFamily="{DynamicResource HeadFont}" FontSize="{DynamicResource SizeClock}" Foreground="{DynamicResource AccentLight}" HorizontalAlignment="Right"/>
-                <TextBlock Text="{Binding Left}" Style="{StaticResource MutedText}" HorizontalAlignment="Right"/>
-                <TextBlock Text="{Binding StepOf}" Style="{StaticResource MutedText}" HorizontalAlignment="Right"/>
+                <TextBlock Text="{Binding Left}" Style="{StaticResource MutedText}" HorizontalAlignment="Right" Visibility="{Binding Left, Converter={StaticResource NotEmpty}}"/>
+                <TextBlock Text="{Binding StepOf}" Style="{StaticResource MutedText}" HorizontalAlignment="Right" Visibility="{Binding StepOf, Converter={StaticResource NotEmpty}}"/>
               </StackPanel>
               <StackPanel>
                 <TextBlock Text="{Binding HeadTitle}" FontFamily="{DynamicResource HeadFont}" FontSize="{DynamicResource SizeStepTitle}" Foreground="{DynamicResource AccentLight}" TextWrapping="Wrap"/>

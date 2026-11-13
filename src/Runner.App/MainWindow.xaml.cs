@@ -63,7 +63,7 @@ public partial class MainWindow : Window
 		if (!App.Headless) {
 			_watch = new RunsWatch(AppPaths.Runs, Wake);
 		}
-		Footer.Text = $"Ctrl+Enter start  ·  F5 check  ·  Ctrl+D dry run  ·  Ctrl+H history  ·  Ctrl+M MO2 changes  ·  Ctrl+T themes  ·  Ctrl+, settings   ·   version {AppVersion}";
+		Footer.Text = $"Ctrl+Enter start  ·  F5 check  ·  Ctrl+D dry run  ·  Ctrl+H history  ·  Ctrl+T themes  ·  Ctrl+, settings   ·   version {AppVersion}";
 		Footer.ToolTip = "Data folder: " + AppPaths.Data;
 		PreviewKeyDown += OnKeys;
 		// a mod ticked in Mod Organizer while the window was in the background: each step's last run is worked out again

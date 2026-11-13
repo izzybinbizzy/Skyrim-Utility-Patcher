@@ -125,6 +125,13 @@ public static class Reports
 		return o;
 	}
 
+	public static JsonObject Catalog()
+	{
+		var o = Head("catalog");
+		o["entries"] = new JsonArray([.. RunnerErrors.All.OrderBy(e => e.Code, StringComparer.Ordinal).Select(e => (JsonNode?)new JsonObject { ["code"] = e.Code, ["means"] = e.What, ["todo"] = e.Todo })]);
+		return o;
+	}
+
 	static JsonObject Run(Journal a_j) => new() {
 		["id"] = a_j.Id, ["setup"] = a_j.SetupName, ["setupFile"] = a_j.SetupFile, ["profile"] = a_j.Profile, ["state"] = a_j.State.ToString().ToLowerInvariant(),
 		["started"] = Iso(a_j.Started), ["ended"] = a_j.Ended is { } e ? Iso(e) : null, ["verdict"] = a_j.Verdict, ["folder"] = a_j.Folder, ["backup"] = a_j.BackupDir,
