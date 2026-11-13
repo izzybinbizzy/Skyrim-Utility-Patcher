@@ -1,0 +1,97 @@
+{
+  "name": {
+    "value": "Graphite"
+  },
+  "author": {
+    "value": "izzydoingit"
+  },
+  "description": {
+    "value": "Neutral dark grey, a clear blue accent."
+  },
+  "windowsMode": {
+    "value": "Dark"
+  },
+  "colors": {
+    "Bg": {
+      "value": "#17191C"
+    },
+    "Panel": {
+      "value": "#1F2226"
+    },
+    "Panel2": {
+      "value": "#272B30"
+    },
+    "Line": {
+      "value": "#383D44"
+    },
+    "Accent": {
+      "value": "#5AA2F5"
+    },
+    "AccentLight": {
+      "value": "#8FC0FA"
+    },
+    "AccentDim": {
+      "value": "#3A5F8F"
+    },
+    "Text": {
+      "value": "#E6E9ED"
+    },
+    "Muted": {
+      "value": "#9BA3AE"
+    },
+    "Good": {
+      "value": "#5FD08A"
+    },
+    "Warn": {
+      "value": "#E9B95A"
+    },
+    "Bad": {
+      "value": "#F07F72"
+    },
+    "OnAccent": {
+      "value": "#08172B"
+    },
+    "HoverFill": {
+      "value": "#2E3C4C"
+    },
+    "BannerBad": {
+      "value": "#493535"
+    },
+    "GuidedFill": {
+      "value": "#26313F"
+    },
+    "Shade": {
+      "value": "#99000000"
+    }
+  },
+  "gradients": {
+    "PrimaryAndProgress": {
+      "stops": [
+        {
+          "color": "#4C97F0",
+          "at": 0.0
+        },
+        {
+          "color": "#7DB6FA",
+          "at": 1.0
+        }
+      ]
+    }
+  },
+  "windowsAccent": {
+    "Light3": "#CDE3FC",
+    "Light2": "#A7CDFA",
+    "Light1": "#80B8F7",
+    "Base": "#5AA2F5",
+    "Dark1": "#348CF3",
+    "Dark2": "#0E77EF",
+    "Dark3": "#0C64C8"
+  },
+  "shape": {
+    "CardCorner": 10,
+    "ButtonCorner": 8,
+    "CheckBoxCorner": 5,
+    "GuidedBoxCorner": 8,
+    "ProgressBarHeight": 6
+  }
+}

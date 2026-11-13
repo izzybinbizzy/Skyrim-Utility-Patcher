@@ -2,6 +2,9 @@ using System.Text;
 
 namespace ToolRunner;
 
+// an order file was about to be written while Mod Organizer is open (it would write its own lists over it when it closes)
+public sealed class Mo2OpenException(string a_message) : InvalidOperationException(a_message);
+
 // One MO2 profile's order files. modlist.txt: one mod per line, '+' ticked, '-' unticked, '*' MO2's own entries (DLC,
 // Creation Club) - the LAST line is the top of MO2's left pane. Every write: MO2 closed (MO2 rewrites the files from memory
 // when it exits), atomic, the file's own line ending kept, every line it does not change kept byte for byte.
@@ -24,9 +27,12 @@ public sealed class Profile(Mo2Instance a_mo2, string a_name, Func<bool> a_mo2Ru
 	void MustBeClosed(string a_what)
 	{
 		if (a_mo2Running()) {
-			throw new InvalidOperationException($"Mod Organizer is open - {a_what} can only change while it is closed");
+			throw new Mo2OpenException($"Mod Organizer is open - {a_what} can only change while it is closed");
 		}
 	}
+
+	// the mods in modlist.txt's own order: the FIRST is the lowest in Mod Organizer's left pane, the one whose files win
+	public List<string> ModOrder() => ReadLines(ModList).Lines.Where(l => l.Length > 1 && l[0] is '+' or '-' or '*').Select(l => l[1..]).ToList();
 
 	static (List<string> Lines, string Nl) ReadLines(string a_path)
 	{
@@ -200,7 +206,7 @@ public sealed class Profile(Mo2Instance a_mo2, string a_name, Func<bool> a_mo2Ru
 		var d = Mo2.ModDir(a_mod);
 		if (!Directory.Exists(d)) {
 			Directory.CreateDirectory(d);
-			Files.WriteAtomic(Path.Combine(d, "meta.ini"), "[General]\r\nmodid=0\r\nversion=\r\ncomments=made by Skyrim Utility Patcher\r\n");
+			Files.WriteAtomic(Path.Combine(d, "meta.ini"), $"[General]\r\nmodid=0\r\nversion=\r\ncomments={MadeBy}{Brand.Name}\r\n");
 			a_log?.Detail($"made the output mod {a_mod}");
 		}
 		if (!States().ContainsKey(a_mod)) {
@@ -222,7 +228,12 @@ public sealed class Profile(Mo2Instance a_mo2, string a_name, Func<bool> a_mo2Ru
 		Directory.Exists(a_dir) &&
 		Directory.EnumerateFileSystemEntries(a_dir).All(e => Path.GetFileName(e).Equals("meta.ini", StringComparison.OrdinalIgnoreCase)) &&
 		File.Exists(Path.Combine(a_dir, "meta.ini")) &&
-		File.ReadAllText(Path.Combine(a_dir, "meta.ini")).Contains("made by Skyrim Utility Patcher", StringComparison.OrdinalIgnoreCase);
+		MadeByUs(File.ReadAllText(Path.Combine(a_dir, "meta.ini")));
+
+	// the mark an output mod it made carries in its meta.ini, under the name the program had then
+	const string MadeBy = "made by ";
+
+	public static bool MadeByUs(string a_metaText) => Brand.AllNames.Any(n => a_metaText.Contains(MadeBy + n, StringComparison.OrdinalIgnoreCase));
 
 	public bool TakeOutEmptyOutput(string a_mod, string a_parkIn, RunLog? a_log = null)
 	{
@@ -330,17 +341,29 @@ public sealed class Profile(Mo2Instance a_mo2, string a_name, Func<bool> a_mo2Ru
 
 	static string Bare(string a_line) => a_line.TrimStart('*').ToLowerInvariant();
 
-	(List<string> Lines, string Nl, bool Bom) ReadPluginFile(string a_path)
+	// Each of the two files is read, and written back, the way Mod Organizer itself reads and writes it: plugins.txt in the
+	// PC's own code page, loadorder.txt as UTF-8 (read off Mod Organizer's public source, its game_bethesda plugin:
+	// CreationGamePlugins writes plugins.txt with Qt's "System" encoding and reads it with fromLocal8Bit; GamebryoGamePlugins
+	// writes loadorder.txt as UTF-8). Read and written as UTF-8, a plugin name with an accent in plugins.txt came back as a line
+	// that names no file: Mod Organizer dropped it and listed the real plugin as new - unticked, at the end of the load order -
+	// after a run that said it had put everything back. A file that carries a mark of its own is read by that mark.
+	static (List<string> Lines, string Nl, Encoding How) ReadPluginFile(string a_path)
 	{
 		var raw = Files.ReadShared(a_path);
-		var bom = raw.Length >= 3 && raw[0] == 0xEF && raw[1] == 0xBB && raw[2] == 0xBF;
-		var text = Files.DecodeText(raw);
+		Encoding how;
+		string text;
+		if (Path.GetFileName(a_path).Equals("plugins.txt", StringComparison.OrdinalIgnoreCase) && !Files.HasMark(raw)) {
+			how = Files.AnsiEncoding;
+			text = how.GetString(raw);
+		} else {
+			text = Files.DecodeText(raw, out how);
+		}
 		var nl = text.Contains("\r\n") ? "\r\n" : "\n";
-		return (text.Replace("\r\n", "\n").Split('\n').Where(l => l != "").ToList(), nl, bom);
+		return (text.Replace("\r\n", "\n").Split('\n').Where(l => l != "").ToList(), nl, how);
 	}
 
-	static void WritePluginFile(string a_path, List<string> a_lines, string a_nl, bool a_bom) =>
-		Files.WriteAtomic(a_path, string.Join(a_nl, a_lines) + a_nl, new UTF8Encoding(a_bom));
+	static void WritePluginFile(string a_path, List<string> a_lines, string a_nl, Encoding a_how) =>
+		Files.WriteAtomic(a_path, Files.EncodeText(string.Join(a_nl, a_lines) + a_nl, a_how));
 
 	// the plugins ticked in plugins.txt ("*name")
 	public List<string> ActivePlugins() => File.Exists(PluginsTxt)
@@ -361,12 +384,15 @@ public sealed class Profile(Mo2Instance a_mo2, string a_name, Func<bool> a_mo2Ru
 		MustBeClosed("the plugin list");
 		var paths = PluginPaths();
 		var ruled = a_rules.Select(r => r.Plugin.ToLowerInvariant()).ToHashSet();
+		// which plugins are masters, looked up once for the whole call and only when a rule asks (every rule and both files
+		// used to ask each plugin's file again)
+		HashSet<string>? masters = null;
 		foreach (var fn in new[] { "plugins.txt", "loadorder.txt" }) {
 			var p = Path.Combine(Dir, fn);
 			if (!File.Exists(p)) {
 				continue;
 			}
-			var (lines, nl, bom) = ReadPluginFile(p);
+			var (lines, nl, how) = ReadPluginFile(p);
 			var before = lines.ToList();
 			foreach (var rule in a_rules) {
 				var idx = lines.FindIndex(l => !l.StartsWith('#') && string.Equals(Bare(l), rule.Plugin, StringComparison.OrdinalIgnoreCase));
@@ -381,12 +407,13 @@ public sealed class Profile(Mo2Instance a_mo2, string a_name, Func<bool> a_mo2Ru
 				}
 				int pos;
 				if (rule.Where == "last_master") {
+					masters ??= paths.Where(kv => Plugins.IsMaster(kv.Value)).Select(kv => kv.Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
 					var last = -1;
 					for (int i = 0; i < lines.Count; ++i) {
 						if (lines[i].StartsWith('#') || ruled.Contains(Bare(lines[i]))) {
 							continue;
 						}
-						if (paths.TryGetValue(Bare(lines[i]), out var q) && Plugins.IsMaster(q)) {
+						if (masters.Contains(Bare(lines[i]))) {
 							last = i;
 						}
 					}
@@ -401,11 +428,77 @@ public sealed class Profile(Mo2Instance a_mo2, string a_name, Func<bool> a_mo2Ru
 				lines.Insert(Math.Min(pos, lines.Count), entry);
 			}
 			if (!lines.SequenceEqual(before)) {
-				WritePluginFile(p, lines, nl, bom);
+				WritePluginFile(p, lines, nl, how);
 				moved.Add(fn);
 			}
 		}
 		return moved;
+	}
+
+	// LOOT's sorted list laid onto plugins.txt and loadorder.txt; the ticks stay. Returns the files that changed
+	public List<string> SortPlugins(IReadOnlyList<string> a_sorted)
+	{
+		MustBeClosed("the plugin list");
+		var paths = PluginPaths();
+		IReadOnlyList<string> MastersOf(string a_plugin) => paths.TryGetValue(a_plugin, out var p) && File.Exists(p) ? Plugins.Masters(p) : [];
+		var changed = new List<string>();
+		foreach (var fn in new[] { "plugins.txt", "loadorder.txt" }) {
+			var p = Path.Combine(Dir, fn);
+			if (!File.Exists(p)) {
+				continue;
+			}
+			var (lines, nl, how) = ReadPluginFile(p);
+			var sorted = InLootOrder(lines, a_sorted, MastersOf);
+			if (!sorted.SequenceEqual(lines)) {
+				WritePluginFile(p, sorted, nl, how);
+				changed.Add(fn);
+			}
+		}
+		return changed;
+	}
+
+	// a plugin LOOT did not see (its mod is off for this run, or no file is behind the line) stays right below the plugin it was below, and never above one of
+	// its masters; a plugin the file does not list is not added
+	public static List<string> InLootOrder(IReadOnlyList<string> a_lines, IReadOnlyList<string> a_sorted, Func<string, IReadOnlyList<string>> a_masters)
+	{
+		var rank = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+		foreach (var plugin in a_sorted) {
+			rank.TryAdd(plugin, rank.Count);
+		}
+		var entries = a_lines.Where(l => !l.StartsWith('#')).ToList();
+		var followers = new Dictionary<string, List<string>>();
+		var above = "";
+		foreach (var line in entries) {
+			if (rank.ContainsKey(Bare(line))) {
+				above = Bare(line);
+			} else if (followers.TryGetValue(above, out var list)) {
+				list.Add(line);
+			} else {
+				followers[above] = [line];
+			}
+		}
+		var result = new List<string>(entries.Count);
+		result.AddRange(followers.GetValueOrDefault("") ?? []);
+		foreach (var line in entries.Where(l => rank.ContainsKey(Bare(l))).OrderBy(l => rank[Bare(l)])) {
+			result.Add(line);
+			result.AddRange(followers.GetValueOrDefault(Bare(line)) ?? []);
+		}
+		// in the file's own order: a master that also moves has gone first. The unseen plugins right below it go with it, so two plugins LOOT said nothing
+		// about never swap places
+		foreach (var line in entries.Where(l => !rank.ContainsKey(Bare(l)))) {
+			var lastMaster = a_masters(Bare(line)).Select(m => result.FindIndex(l => string.Equals(Bare(l), m, StringComparison.OrdinalIgnoreCase))).DefaultIfEmpty(-1).Max();
+			var at = result.IndexOf(line);
+			if (lastMaster > at) {
+				var count = 1;
+				while (at + count < lastMaster && !rank.ContainsKey(Bare(result[at + count]))) {
+					++count;
+				}
+				var block = result.GetRange(at, count);
+				result.RemoveRange(at, count);
+				result.InsertRange(lastMaster - count + 1, block);
+			}
+		}
+		return [.. a_lines.Where(l => l.StartsWith('#')), .. result];
 	}
 
 	// tick the plugins of these (just switched on) mods; a plugin the files do not list yet gets a place in BOTH files
@@ -425,7 +518,7 @@ public sealed class Profile(Mo2Instance a_mo2, string a_name, Func<bool> a_mo2Ru
 			if (!File.Exists(p)) {
 				continue;
 			}
-			var (lines, nl, bom) = ReadPluginFile(p);
+			var (lines, nl, how) = ReadPluginFile(p);
 			var before = lines.ToList();
 			foreach (var (pl, path) in news) {
 				var i = lines.FindIndex(l => string.Equals(Bare(l), pl, StringComparison.OrdinalIgnoreCase));
@@ -457,7 +550,7 @@ public sealed class Profile(Mo2Instance a_mo2, string a_name, Func<bool> a_mo2Ru
 				changed.Add(pl);
 			}
 			if (!lines.SequenceEqual(before)) {
-				WritePluginFile(p, lines, nl, bom);
+				WritePluginFile(p, lines, nl, how);
 			}
 		}
 		return changed.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
@@ -483,7 +576,7 @@ public sealed class Profile(Mo2Instance a_mo2, string a_name, Func<bool> a_mo2Ru
 			return;
 		}
 		MustBeClosed("the plugin list");
-		var (lines, nl, bom) = ReadPluginFile(PluginsTxt);
+		var (lines, nl, how) = ReadPluginFile(PluginsTxt);
 		var changed = false;
 		for (int i = 0; i < lines.Count; ++i) {
 			if (lines[i].Length == 0 || lines[i].StartsWith('#') || !a_marks.TryGetValue(lines[i].TrimStart('*'), out var on) || lines[i].StartsWith('*') == on) {
@@ -493,7 +586,7 @@ public sealed class Profile(Mo2Instance a_mo2, string a_name, Func<bool> a_mo2Ru
 			changed = true;
 		}
 		if (changed) {
-			WritePluginFile(PluginsTxt, lines, nl, bom);
+			WritePluginFile(PluginsTxt, lines, nl, how);
 		}
 	}
 
@@ -526,7 +619,7 @@ public sealed class Profile(Mo2Instance a_mo2, string a_name, Func<bool> a_mo2Ru
 			return off;
 		}
 		MustBeClosed("the plugin list");
-		var (lines, nl, bom) = ReadPluginFile(PluginsTxt);
+		var (lines, nl, how) = ReadPluginFile(PluginsTxt);
 		for (int i = 0; i < lines.Count; ++i) {
 			if (lines[i].StartsWith('*') && names.Contains(lines[i][1..].ToLowerInvariant())) {
 				off.Add(lines[i][1..]);
@@ -534,7 +627,7 @@ public sealed class Profile(Mo2Instance a_mo2, string a_name, Func<bool> a_mo2Ru
 			}
 		}
 		if (off.Count > 0) {
-			WritePluginFile(PluginsTxt, lines, nl, bom);
+			WritePluginFile(PluginsTxt, lines, nl, how);
 		}
 		return off;
 	}

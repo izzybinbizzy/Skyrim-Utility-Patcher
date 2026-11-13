@@ -42,9 +42,14 @@ public static class SettingsPanel
 		["tool_dir"] = "The tool's folder",
 		["tool_writes"] = "The folder the tool writes into",
 		["min_files"] = "Fewest files that counts as a result",
+		["hidden"] = "Hidden (the tool runs where it never shows on your screen)",
 		["caches"] = "Shader caches (each: its shader mod, its cache mod)",
 		["settle_s"] = "Wait before closing (seconds)",
-		["quiet_min"] = "Done when quiet for (minutes)",
+		["quiet_min"] = "Done when quiet for (minutes), when the game's processor use cannot be read",
+		["idle_s"] = "Done when the game has gone quiet for (seconds)",
+		["build_for_off"] = "Also build the cache of a shader mod that is switched off",
+		["on_crash"] = "When the game crashes while compiling: ask, restart or stop",
+		["crash_wait_min"] = "Wait for your answer after a crash (minutes)",
 		["max_restarts"] = "Restarts allowed",
 		["build_min"] = "Patcher build limit (minutes)",
 		["extra_args"] = "Extra arguments (one per line)",
@@ -57,11 +62,13 @@ public static class SettingsPanel
 
 	// settings a step reads that its file may not list yet (shown empty, with the default the step uses)
 	static readonly Dictionary<string, (string Key, JsonValueKind Kind, string Default)[]> Known = new(StringComparer.Ordinal) {
-		["shaders"] = [("quiet_min", JsonValueKind.Number, "5"), ("min_files", JsonValueKind.Number, "50"), ("max_restarts", JsonValueKind.Number, "3")],
+		["shaders"] = [("build_for_off", JsonValueKind.False, "off"), ("on_crash", JsonValueKind.String, "ask"), ("crash_wait_min", JsonValueKind.Number, "30"),
+			("idle_s", JsonValueKind.Number, "45"), ("quiet_min", JsonValueKind.Number, "5"), ("min_files", JsonValueKind.Number, "50"), ("max_restarts", JsonValueKind.Number, "3")],
 		["grass"] = [("stall_min", JsonValueKind.Number, "10"), ("min_files", JsonValueKind.Number, "100")],
 		["pgpatcher"] = [("pglite_check", JsonValueKind.False, "off")],
 		["dyndolod"] = [("no_terrain_underside", JsonValueKind.False, "off"), ("preset", JsonValueKind.String, "none")],
 		["landscapefixer"] = [("min_files", JsonValueKind.Number, "3")],
+		["acmos"] = [("hidden", JsonValueKind.True, "on")],
 		["synthesis"] = [("build_min", JsonValueKind.Number, "15")],
 	};
 
@@ -166,6 +173,7 @@ public static class SettingsPanel
 				return;
 			}
 			tidy.IsEnabled = false;
+			using var hand = a_w.Working("old backups are being removed");
 			try {
 				var removed = await Task.Run(() => {
 					// one at a time with runs and put-backs (the run lock, taken and given back on this thread)
@@ -193,6 +201,7 @@ public static class SettingsPanel
 	// DynDOLOD's own help on the clean save
 	public static (string Url, string What)? HelpPage(string a_step) =>
 		a_step is "cleansave" or "playsave" ? ("https://dyndolod.info/Help/Clean-Save", "DynDOLOD's help on the clean save") :
+		a_step == Steps.LootStep.StepKey ? ("https://loot.github.io/", "LOOT's own page") :
 		ToolUpdates.Known.TryGetValue(a_step, out var src) ? (src.Page.Replace("?tab=files", "", StringComparison.Ordinal), "the tool's own page") : null;
 
 	static string Label(string a_key) => Labels.TryGetValue(a_key, out var l) ? l : char.ToUpperInvariant(a_key[0]) + a_key[1..].Replace('_', ' ');
@@ -292,6 +301,9 @@ public static class SettingsPanel
 			"Characters with saves here, most recently played first: " + string.Join(", ", t.Result.Take(12))), TaskScheduler.Default);
 		Field(stack, apply, "A tool idle this long is looked at (minutes)", work, "idleMinutes", JsonValueKind.Number);
 		Field(stack, apply, "Free space a run needs (GB)", work, "minFreeGb", JsonValueKind.Number);
+		// the forecast of the room a run takes: on, a run that will not fit is not started; off, it is only told
+		work["diskForecastStops"] ??= true;
+		Field(stack, apply, "Stop a run that will not fit on its disks (off: only told before it starts)", work, "diskForecastStops", JsonValueKind.True);
 		Choice(stack, apply, "Rebuild the shader caches", work, "shaderRebuild", [("whenChanged", "only when the shader mod changed"), ("always", "every run"), ("never", "never")]);
 		Field(stack, apply, "Allow writing into the game folder (NGIO's grass route)", work, "gameFolderWrites", JsonValueKind.True);
 		var alerts = work["alerts"] as JsonObject ?? (JsonObject)(work["alerts"] = new JsonObject { ["notification"] = true, ["sound"] = true, ["flash"] = false });
@@ -370,83 +382,22 @@ public static class SettingsPanel
 		stack.Children.Add(languageRow);
 
 		Head("THE WINDOW'S LOOK");
-		var themeNote = new TextBlock { Text = "A theme is a copy of \"Theme template.json\" (in the Themes folder) with new values. It applies at once.",
-			Style = (Style)a_w.FindResource("MutedText"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 8) };
-		var themeRow = new StackPanel { Orientation = Orientation.Horizontal };
-		var themes = new ComboBox { MinWidth = 220, Margin = new Thickness(0, 0, 10, 0) };
-		System.Windows.Automation.AutomationProperties.SetName(themes, "Theme");
-		// the Themes folder is read off the window's thread (many or slow files never freeze it)
-		var filling = false;
-		async void FillThemes()
-		{
-			var (list, error) = await Task.Run(() => {
-				string? err = null;
-				try {
-					Theme.EnsureFolder();
-				} catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException) {
-					err = "The Themes folder could not be made: " + e.Message;
-				}
-				// an unreadable folder still shows the built-in look, with why (the fourth review, L8)
-				try {
-					return (Theme.List(), err);
-				} catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Security.SecurityException) {
-					// the theme in use stays listed beside the built-in one, so the picker shows what is on screen and the built-in
-					// look can still be picked (CodeRabbit on PR #4)
-					var keep = new List<(string Name, string? File)> { (Theme.Default, null) };
-					keep.AddRange(Theme.BuiltInNames.Select(b => (b, (string?)null)));
-					if (Theme.Current != Theme.Default && !Theme.BuiltInNames.Contains(Theme.Current)) {
-						keep.Add((Theme.Current, null));
-					}
-					return (keep, "The Themes folder could not be read: " + e.Message);
-				}
-			});
-			if (error != null) {
-				themeNote.Text = error;
-			}
-			filling = true;
-			themes.ItemsSource = list.Select(t => t.Name).ToList();
-			themes.SelectedItem = list.Any(t => t.Name == Theme.Current) ? Theme.Current : Theme.Default;
-			filling = false;
-		}
-		FillThemes();
-		// a look changed by Windows (high contrast followed) shows in the picker while Settings is open
-		void OnChanged() => themes.Dispatcher.BeginInvoke(() => {
-			filling = true;
-			themes.SelectedItem = Theme.Current;
-			filling = false;
-		});
-		Theme.Changed += OnChanged;
-		themes.Unloaded += (_, _) => Theme.Changed -= OnChanged;
-		themes.SelectionChanged += async (_, _) => {
-			if (filling || themes.SelectedItem is not string name || name == Theme.Current) {
-				return;
-			}
-			var problems = await Theme.ApplyAsync(name);
-			themeNote.Text = problems.Count == 0 ? $"\"{Theme.Current}\" in use." : "In use, with these values left as the default: " + string.Join("; ", problems.Take(6));
-		};
-		var openThemes = new Button { Content = "Open the Themes folder", Style = (Style)a_w.FindResource("Ghost"), Margin = new Thickness(0, 0, 8, 0) };
-		openThemes.Click += (_, _) => System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(Theme.Folder) { UseShellExecute = true });
-		var reload = new Button { Content = "Look again", Style = (Style)a_w.FindResource("Ghost"), ToolTip = "Reads the Themes folder again (a theme just added)" };
-		reload.Click += (_, _) => FillThemes();
-		themeRow.Children.Add(themes);
-		themeRow.Children.Add(openThemes);
-		themeRow.Children.Add(reload);
-		stack.Children.Add(themeNote);
-		stack.Children.Add(themeRow);
-		// his checklist 473: bigger text for every theme, kept for the next start
-		stack.Children.Add(new TextBlock { Text = "Text size", Foreground = Brushes2.Get("Gold"), Margin = new Thickness(0, 12, 0, 4) });
-		var size = new ComboBox { MinWidth = 220, HorizontalAlignment = HorizontalAlignment.Left, ItemsSource = Theme.TextScales.Select(s => $"{s * 100:0} %").ToList(),
-			SelectedIndex = Math.Max(0, Array.IndexOf(Theme.TextScales, Theme.TextScale)) };
-		System.Windows.Automation.AutomationProperties.SetName(size, "Text size");
-		size.SelectionChanged += (_, _) => {
-			if (size.SelectedIndex >= 0) {
-				Theme.SetTextScale(Theme.TextScales[size.SelectedIndex]);
+		stack.Children.Add(new TextBlock { Text = "Themes and the text size have their own page: every look shown as a picture, one click to use it.",
+			Style = (Style)a_w.FindResource("MutedText"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 8) });
+		var openThemes = new Button { Content = "Open the themes ...", Style = (Style)a_w.FindResource("Ghost"), HorizontalAlignment = HorizontalAlignment.Left, ToolTip = "Ctrl+T" };
+		openThemes.Click += (_, _) => a_w.ShowPanel("themes");
+		stack.Children.Add(openThemes);
+		// drawn without the graphics card unless asked: less memory and a faster start for a window of text and bars (Drawing)
+		var card = new CheckBox { IsChecked = Drawing.Hardware, Margin = new Thickness(0, 12, 0, 0),
+			Content = new TextBlock { TextWrapping = TextWrapping.Wrap, Text = "Draw this window with the graphics card (it then holds about 25 MB more memory; applies the next time the program starts)" } };
+		card.Click += (_, _) => {
+			try {
+				Drawing.Pick(card.IsChecked == true);
+			} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+				a_vm.Say("That could not be kept: " + e.Message, "bad");
 			}
 		};
-		stack.Children.Add(size);
-		stack.Children.Add(new TextBlock { Text = "The \"High contrast\" theme takes Windows' own high-contrast colors and is used by itself while Windows has high contrast on " +
-			"and no theme was picked here. \"Color-blind safe\" keeps finished, warning and failed apart by more than red and green. Every state also has its own mark.",
-			Style = (Style)a_w.FindResource("MutedText"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 0) });
+		stack.Children.Add(card);
 
 		NewVersions(a_w, stack);
 
@@ -523,7 +474,7 @@ public static class SettingsPanel
 			}
 			try {
 				var parent = Path.GetDirectoryName(d.FileName);
-				var problems = AddOns.Problems(Files.ReadSharedText(d.FileName), Path.GetFileName(parent) == AddOns.FolderInMod ? Path.GetDirectoryName(parent) : null);
+				var problems = AddOns.Problems(Files.ReadSharedText(d.FileName), AddOns.IsFolderInMod(Path.GetFileName(parent)) ? Path.GetDirectoryName(parent) : null);
 				a_vm.Say(problems.Count == 0 ? "That add-on file is right." : string.Join(" ", problems.Select(p => p + ".")), problems.Count == 0 ? "good" : "bad");
 			} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
 				a_vm.Say("That file could not be read: " + e.Message, "bad");
@@ -646,6 +597,7 @@ public static class SettingsPanel
 			}
 			testTools.IsEnabled = false;
 			testRows.Children.Clear();
+			using var hand = a_w.Working("your tools are being tested");
 			try {
 				var results = await Task.Run(() => ToolProof.TestAll(testSetup, RunLog.Null, CancellationToken.None));
 				foreach (var r in results) {
@@ -730,6 +682,7 @@ public static class SettingsPanel
 					}
 					learn.IsEnabled = false;
 					status.Text = $"{name} is open - set it up, save, and close it ...";
+					using var hand = a_w.Working($"{name} is open to learn its settings");
 					try {
 						var l = await Task.Run(() => ToolSettings.Learn(setupNow, stepKey, RunLog.Null, CancellationToken.None));
 						status.Text = $"Learned: {l.Files.Count} settings file(s) ({string.Join(", ", l.Files.Select(f => Path.GetFileName(f.Live)))}) - every run uses them.";
@@ -748,7 +701,7 @@ public static class SettingsPanel
 			}
 			foreach (var (key, kind, def) in Known.GetValueOrDefault(stepKey, []).Append((Key: "deadline_min", Kind: JsonValueKind.Number, Default: "the step's own"))
 				         .Where(k => !o.ContainsKey(k.Key))) {
-				Field(stepHost, stepApply, $"{Label(key)} (default {def})", o, key, kind);
+				Field(stepHost, stepApply, $"{Label(key)} (default {def})", o, key, kind, def == "on");
 			}
 		};
 		stack.Children.Add(pick);
@@ -952,6 +905,7 @@ public static class SettingsPanel
 			return;
 		}
 		List<string> failed;
+		using var hand = a_w.Working("the program's data is being removed");
 		try {
 			failed = await Task.Run(() => DataRemoval.Carry(plan));
 		} catch (InvalidOperationException e) {
@@ -970,18 +924,19 @@ public static class SettingsPanel
 	static readonly JsonSerializerOptions Pretty = new() { WriteIndented = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
 
 	// one setting: its editor by its kind; the returned function writes it back (or says what is wrong)
-	static void Field(Panel a_host, List<Func<string?>> a_apply, string a_label, JsonObject a_obj, string a_key, JsonValueKind a_kind = JsonValueKind.String)
+	// a_onUnlessSet: a switch the setup does not hold yet shows on (its default), so saving the page keeps it what it was
+	static void Field(Panel a_host, List<Func<string?>> a_apply, string a_label, JsonObject a_obj, string a_key, JsonValueKind a_kind = JsonValueKind.String, bool a_onUnlessSet = false)
 	{
 		var row = new Grid { Margin = new Thickness(0, 0, 0, 10) };
 		row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(230) });
 		row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-		var label = new TextBlock { Text = a_label, Foreground = Brushes2.Get("Gold"), TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 12, 0) };
+		var label = new TextBlock { Text = a_label, Foreground = Brushes2.Get("Accent"), TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 12, 0) };
 		row.Children.Add(label);
 		FrameworkElement edit;
 		var cur = a_obj[a_key];
 		var kind = cur?.GetValueKind() ?? a_kind;
 		if (kind is JsonValueKind.True or JsonValueKind.False) {
-			var box = new CheckBox { IsChecked = cur?.GetValue<bool>() ?? false, VerticalAlignment = VerticalAlignment.Center };
+			var box = new CheckBox { IsChecked = cur?.GetValue<bool>() ?? a_onUnlessSet, VerticalAlignment = VerticalAlignment.Center };
 			box.Click += (_, _) => Changed();
 			a_apply.Add(() => {
 				a_obj[a_key] = box.IsChecked == true;
@@ -1052,7 +1007,7 @@ public static class SettingsPanel
 		var row = new Grid { Margin = new Thickness(0, 0, 0, 10) };
 		row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(230) });
 		row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-		row.Children.Add(new TextBlock { Text = a_label, Foreground = Brushes2.Get("Gold"), TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 12, 0) });
+		row.Children.Add(new TextBlock { Text = a_label, Foreground = Brushes2.Get("Accent"), TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 12, 0) });
 		var box = new ComboBox { ItemsSource = a_options.Select(o => o.Text).ToList() };
 		var cur = Setup.Str(a_obj, a_key);
 		box.SelectedIndex = Math.Max(0, Array.FindIndex(a_options, o => string.Equals(o.Value, cur, StringComparison.OrdinalIgnoreCase)));

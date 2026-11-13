@@ -46,6 +46,17 @@ public sealed class StartedSet : IEnumerable<int>
 		return at != null && Procs.StartTime(a_pid) == at;
 	}
 
+	// every recorded process that is still that very process - what "the run's own" means for closing a tool or telling the
+	// player's programs under Mod Organizer from the run's
+	public List<int> Live()
+	{
+		KeyValuePair<int, DateTime?>[] copy;
+		lock (_gate) {
+			copy = [.. _pids];
+		}
+		return copy.Where(p => p.Value != null && Procs.StartTime(p.Key) == p.Value).Select(p => p.Key).ToList();
+	}
+
 	public IEnumerator<int> GetEnumerator()
 	{
 		List<int> copy;

@@ -57,7 +57,7 @@ public sealed class StateToBrush : IValueConverter
 {
 	public object Convert(object? a_v, Type a_t, object? a_p, CultureInfo a_c) => a_v switch {
 		bool b => b ? Brushes2.Get(a_p as string == "bad" ? "Bad" : "Warn") : Brushes2.Get("Muted"),
-		StepState.Running => Brushes2.Get("GoldLight"),
+		StepState.Running => Brushes2.Get("AccentLight"),
 		StepState.Done => Brushes2.Get("Good"),
 		StepState.Failed => Brushes2.Get("Bad"),
 		StepState.Stopped => Brushes2.Get("Warn"),

@@ -49,6 +49,13 @@ public static class Preflight
 				outList.Add(new Issue("", true, $"only {free:0.0} GB free on {root} - the run needs at least {a_setup.MinFreeGb} GB for its outputs and backups"));
 			}
 		}
+		// what the run is about to remake, added up per disk (the floor above knows nothing of how big this setup's outputs are)
+		try {
+			var todo = a_setup.EnabledSteps.Where(s => a_steps.Contains(s.Key)).ToList();
+			outList.AddRange(DiskForecast.Build(a_setup, a_mo2, todo).Issues(Setup.Bool(a_setup.Root, "diskForecastStops") != false));
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException) {
+			outList.Add(new Issue("", false, "the room this run needs could not be worked out: " + e.Message));
+		}
 		var ow = Files.CountFiles(a_mo2.OverwriteDir);
 		if (ow > 0) {
 			outList.Add(new Issue("", false, $"Mod Organizer's overwrite folder holds {ow} file(s) - the tools will read them as part of your load order"));

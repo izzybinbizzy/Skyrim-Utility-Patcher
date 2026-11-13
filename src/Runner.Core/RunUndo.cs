@@ -15,9 +15,13 @@ public static class RunUndo
 		new DirectoryInfo(a_dir).EnumerateFiles("*", SearchOption.AllDirectories)
 			.ToDictionary(f => Path.GetRelativePath(a_dir, f.FullName).Replace('\\', '/'), f => f.Length, StringComparer.OrdinalIgnoreCase);
 
-	// the old outputs into one zip. A zip that does not read back whole, or any failure, keeps the folder and says so - packing only
-	// saves room, it never loses a backup or fails a run
-	public static void Pack(string a_backup, RunLog a_log)
+	static long Mb(long a_bytes) => a_bytes / 1048576;
+
+	// The old outputs into one zip. A zip that does not read back whole, or any failure, keeps the folder and says so - packing only
+	// saves room, it never loses a backup or fails a run. It can take minutes (a terrain LOD and a DynDOLOD output are tens of
+	// gigabytes), so it says what it is doing through a_doing and a Stop ends it at once, between two blocks of one file: the
+	// folder is then whole as it was and the half-made zip is gone (the Stop is thrown on to the caller).
+	public static void Pack(string a_backup, RunLog a_log, Action<string>? a_doing = null, CancellationToken a_ct = default)
 	{
 		var dir = Path.Combine(a_backup, OutputsFolder);
 		var zip = Path.Combine(a_backup, OutputsZip);
@@ -27,20 +31,61 @@ public static class RunUndo
 			if (!Directory.Exists(dir) || !Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories).Any()) {
 				return;
 			}
-			File.Delete(part);
+			Files.Delete(part);
 			want = Sizes(dir);
-			ZipFile.CreateFromDirectory(dir, part, CompressionLevel.Fastest, false);
+			var bytes = want.Values.Sum();
+			// the zip stands beside the folder until it has been read back: without that much room it is not begun
+			if (InGame.FreeBytes(a_backup) < bytes) {
+				a_log.Warn($"the old outputs stay unpacked in this run's backup: packing them needs {Mb(bytes)} MB free on that drive for a moment");
+				return;
+			}
+			a_log.Detail($"packing the old outputs in this run's backup: {want.Count} file(s), {Mb(bytes)} MB");
+			a_doing?.Invoke("packing the old outputs into one file");
+			var said = System.Diagnostics.Stopwatch.StartNew();
+			long done = 0;
+			var block = new byte[1 << 20];
+			using (var into = new FileStream(part, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+			using (var z = new ZipArchive(into, ZipArchiveMode.Create)) {
+				// a folder that holds nothing is part of what an output was
+				foreach (var d in new DirectoryInfo(dir).EnumerateDirectories("*", SearchOption.AllDirectories).Where(d => !d.EnumerateFileSystemInfos().Any())) {
+					z.CreateEntry(Path.GetRelativePath(dir, d.FullName).Replace('\\', '/') + "/");
+				}
+				foreach (var name in want.Keys) {
+					a_ct.ThrowIfCancellationRequested();
+					var file = Path.Combine(dir, name);
+					var entry = z.CreateEntry(name, CompressionLevel.Fastest);
+					// a time a zip cannot hold (before 1980) is kept as its first one, as .NET's own packing does
+					var written = File.GetLastWriteTime(file);
+					entry.LastWriteTime = written.Year is < 1980 or > 2107 ? new DateTime(1980, 1, 1, 0, 0, 0) : written;
+					using var from = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read, block.Length, FileOptions.SequentialScan);
+					using var to = entry.Open();
+					int n;
+					while ((n = from.Read(block, 0, block.Length)) > 0) {
+						a_ct.ThrowIfCancellationRequested();
+						to.Write(block, 0, n);
+						done += n;
+						if (a_doing != null && said.Elapsed > TimeSpan.FromSeconds(2)) {
+							said.Restart();
+							a_doing($"packing the old outputs into one file: {(bytes == 0 ? 100 : done * 100 / bytes)} %");
+						}
+					}
+				}
+			}
+			a_ct.ThrowIfCancellationRequested();
 			using (var z = ZipFile.OpenRead(part)) {
 				var files = z.Entries.Where(e => !e.FullName.EndsWith('/')).ToList();
 				if (files.Count != want.Count || files.Any(e => !want.TryGetValue(e.FullName, out var n) || n != e.Length)) {
 					throw new InvalidDataException($"the zip holds {files.Count} of {want.Count} files");
 				}
 			}
-			File.Move(part, zip, true);
-		} catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException or NotSupportedException) {
+			Files.Move(part, zip, true);
+		} catch (OperationCanceledException) {
+			Files.TryDelete(part);
+			throw;
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException or NotSupportedException or ArgumentException) {
 			a_log.Warn("the old outputs stay unpacked in this run's backup: " + e.Message);
 			try {
-				File.Delete(part);
+				Files.Delete(part);
 			} catch (Exception e2) when (e2 is IOException or UnauthorizedAccessException) {
 				// a part left behind goes with the run's backup
 			}
@@ -51,8 +96,8 @@ public static class RunUndo
 			foreach (var f in new DirectoryInfo(dir).EnumerateFiles("*", SearchOption.AllDirectories).Where(f => f.IsReadOnly)) {
 				f.IsReadOnly = false;
 			}
-			Directory.Delete(dir, true);
-			a_log.Detail($"the old outputs in this run's backup packed: {want.Count} file(s), {want.Values.Sum() / 1048576} MB into {new FileInfo(zip).Length / 1048576} MB");
+			Files.DeleteDir(dir);
+			a_log.Detail($"the old outputs in this run's backup packed: {want.Count} file(s), {Mb(want.Values.Sum())} MB into {Mb(new FileInfo(zip).Length)} MB");
 		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
 			a_log.Warn("the old outputs are packed in this run's backup, but part of their folder could not be removed: " + e.Message);
 		}
@@ -66,7 +111,7 @@ public static class RunUndo
 			return;
 		}
 		ZipFile.ExtractToDirectory(zip, Path.Combine(a_backup, OutputsFolder), true);
-		File.Delete(zip);
+		Files.Delete(zip);
 	}
 
 	// what stands at a_from (its meta.ini stays) moved into a folder of its own under a_aside: what is set aside is never written over,
@@ -85,7 +130,7 @@ public static class RunUndo
 	}
 
 	// did this run leave anything an undo would take back? (one that built nothing and put everything back did not)
-	public static bool LeftSomething(Journal a_j) => a_j.Built.Count > 0 || a_j.Retire.Count > 0 || a_j.Parked.Any(p => p.Replaced && !p.PutBack);
+	public static bool LeftSomething(Journal a_j) => a_j.OrderChanged || a_j.Built.Count > 0 || a_j.Retire.Count > 0 || a_j.Parked.Any(p => p.Replaced && !p.PutBack);
 
 	// a later run still standing that changed what undoing a_j would put back: the same setup's, one that moved the same output or tool
 	// folder, or another's on the same profile or with an output of a_j's - undoing a_j would lay its old lists and outputs over that run
@@ -118,7 +163,7 @@ public static class RunUndo
 		if (a_j.Undoing) {
 			return null;
 		}
-		if (a_j.Unfinished || (a_j.InGameAfter && a_j.OwnerAlive)) {
+		if (a_j.Unfinished || ((a_j.InGameAfter || a_j.FinishingUp) && a_j.OwnerAlive)) {
 			return "this run did not finish - put your profile back first";
 		}
 		if (!LeftSomething(a_j)) {

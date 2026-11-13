@@ -1,5 +1,5 @@
 name: Bug report
-description: Something Skyrim Utility Patcher did wrong, or a step that failed
+description: Something Tool Runner did wrong, or a step that failed
 labels: [bug]
 body:
   - type: markdown
@@ -53,5 +53,5 @@ body:
       options:
         - label: I pressed Check (F5) and read what it found.
           required: true
-        - label: I run the newest version of Skyrim Utility Patcher.
+        - label: I run the newest version of Tool Runner.
           required: true

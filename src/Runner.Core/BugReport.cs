@@ -12,7 +12,7 @@ namespace ToolRunner;
 // the zip is the player's to post or not.
 public static class BugReport
 {
-	public const string Issues = "https://github.com/izzybinbizzy/Skyrim-Utility-Patcher/issues/new/choose";
+	public const string Issues = "https://github.com/izzybinbizzy/Tool-Runner/issues/new/choose";
 
 	// a log can be long (a DynDOLOD run): only its last part goes in
 	const int MaxBytes = 8 * 1024 * 1024;
@@ -146,11 +146,29 @@ public static class BugReport
 					w.Write(Mask(text, names));
 				}
 			}
-			File.Move(tmp, zip, true);
+			Files.Move(tmp, zip, true);
 		} catch {
 			Files.TryDelete(tmp);
 			throw;
 		}
+		Tidy(a_outDir, zip);
 		return zip;
+	}
+
+	// how many of its own zips stay in the folder (each holds megabytes of log, and nobody empties a folder they never open)
+	public const int Kept = 10;
+
+	// all but the newest Kept bug reports the program made (under any of its names) removed; a file of another name is never
+	// touched, and a zip that will not go is left for the next time
+	static void Tidy(string a_outDir, string a_new)
+	{
+		try {
+			var own = new Regex("^(?:" + string.Join("|", Brand.AllNames.Select(Regex.Escape)) + @") bug report \d{4}-\d\d-\d\d \d\d-\d\d-\d\d\.zip$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+			foreach (var old in new DirectoryInfo(a_outDir).GetFiles("*.zip").Where(f => own.IsMatch(f.Name) && !Files.SamePath(f.FullName, a_new))
+				         .OrderByDescending(f => f.LastWriteTimeUtc).Skip(Kept - 1)) {
+				Files.TryDelete(old.FullName);
+			}
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+		}
 	}
 }

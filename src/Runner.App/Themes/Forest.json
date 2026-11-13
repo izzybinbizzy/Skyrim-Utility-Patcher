@@ -1,0 +1,97 @@
+{
+  "name": {
+    "value": "Forest"
+  },
+  "author": {
+    "value": "izzydoingit"
+  },
+  "description": {
+    "value": "Dark green-grey, emerald accents."
+  },
+  "windowsMode": {
+    "value": "Dark"
+  },
+  "colors": {
+    "Bg": {
+      "value": "#0F1512"
+    },
+    "Panel": {
+      "value": "#161F1A"
+    },
+    "Panel2": {
+      "value": "#1D2922"
+    },
+    "Line": {
+      "value": "#2C3B32"
+    },
+    "Accent": {
+      "value": "#34D399"
+    },
+    "AccentLight": {
+      "value": "#7BE5BF"
+    },
+    "AccentDim": {
+      "value": "#1F6F54"
+    },
+    "Text": {
+      "value": "#E3EDE7"
+    },
+    "Muted": {
+      "value": "#96A89D"
+    },
+    "Good": {
+      "value": "#6EE7A0"
+    },
+    "Warn": {
+      "value": "#F0C35C"
+    },
+    "Bad": {
+      "value": "#F58B7C"
+    },
+    "OnAccent": {
+      "value": "#052015"
+    },
+    "HoverFill": {
+      "value": "#204133"
+    },
+    "BannerBad": {
+      "value": "#43352E"
+    },
+    "GuidedFill": {
+      "value": "#1A3529"
+    },
+    "Shade": {
+      "value": "#99000000"
+    }
+  },
+  "gradients": {
+    "PrimaryAndProgress": {
+      "stops": [
+        {
+          "color": "#22B783",
+          "at": 0.0
+        },
+        {
+          "color": "#62DDB0",
+          "at": 1.0
+        }
+      ]
+    }
+  },
+  "windowsAccent": {
+    "Light3": "#99E9CC",
+    "Light2": "#77E2BB",
+    "Light1": "#56DAAA",
+    "Base": "#34D399",
+    "Dark1": "#28B782",
+    "Dark2": "#20956A",
+    "Dark3": "#197453"
+  },
+  "shape": {
+    "CardCorner": 10,
+    "ButtonCorner": 8,
+    "CheckBoxCorner": 5,
+    "GuidedBoxCorner": 8,
+    "ProgressBarHeight": 6
+  }
+}

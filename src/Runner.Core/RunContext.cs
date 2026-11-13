@@ -36,6 +36,21 @@ public sealed class RunContext
 
 	public void SetAfter(params string[] a_mods) => PendingEnable.AddRange(a_mods);
 
+	// one output of a step that makes several is complete: on record as built at once, so it stays - and is switched on at the
+	// put-back - even when a later part of the same step fails or is stopped (a step's failure used to lose its finished part)
+	public void Finished(string a_mod)
+	{
+		Steps.StepKit.MarkReplaced(this, a_mod);
+		if (!Journal.Built.Contains(a_mod, StringComparer.OrdinalIgnoreCase)) {
+			Journal.Built.Add(a_mod);
+		}
+		Journal.Save();
+		SetAfter(a_mod);
+	}
+
+	// a step's own wait (a tool settling, a pause between two tries): a Stop ends it at once - never Thread.Sleep in a step
+	public void Pause(TimeSpan a_for) => Waits.Pause(a_for, Cancel);
+
 	// what a step does now, for the window: saved at most once a second (a command-line tool prints thousands of lines); a
 	// "WAITING FOR YOU" text always at once. Only the run's own thread calls it.
 	public void Activity(string a_step, string a_text, double? a_progress = null)
@@ -123,6 +138,8 @@ public sealed class Toggle : IDisposable
 	{
 		_ctx = a_ctx;
 		_label = a_label;
+		// a Stop already asked for: nothing is switched and nothing started
+		a_ct.ThrowIfCancellationRequested();
 		var st = a_ctx.Profile.States();
 		var en = a_enable.Where(m => st.ContainsKey(m)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
 		var dis = a_disable.Where(m => st.ContainsKey(m) && !en.Contains(m, StringComparer.OrdinalIgnoreCase)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
@@ -161,7 +178,15 @@ public sealed class Toggle : IDisposable
 		// step), so the run's final put-back sees and keeps it too
 		var theirs = _ctx.Profile.ChangedByOthers();
 		var marks = theirs.Count > 0 ? _ctx.Profile.PluginMarks() : [];
-		_ctx.Profile.Restore(_snap);
+		try {
+			_ctx.Profile.Restore(_snap);
+		} catch (Mo2OpenException) {
+			// a Mod Organizer the step started a moment ago was not there for the close above and is there now (his run of
+			// 2026-11-10: a Stop seen right after the start left the step FAILED on "Mod Organizer is open"): closed, then once more
+			_ctx.Log.Detail("Mod Organizer came up while the mods were being put back - closing it, then putting them back");
+			_ctx.Control.Close();
+			_ctx.Profile.Restore(_snap);
+		}
 		_ctx.Profile.OursBack(_oursBefore);
 		if (theirs.Count > 0) {
 			var expected = _ctx.Profile.OursNow();
@@ -170,6 +195,17 @@ public sealed class Toggle : IDisposable
 			_ctx.Profile.OursBack(expected);
 		}
 	}
+}
+
+// A stopwatch of the time the PC was awake. A plain stopwatch goes on counting through a closed lid or the player's own
+// Sleep: a tool twenty minutes into its work then woke to a limit that had "run out" overnight
+public sealed class AwakeClock
+{
+	readonly ulong _start = Native.AwakeTicks();
+
+	public static AwakeClock StartNew() => new();
+
+	public TimeSpan Elapsed => TimeSpan.FromTicks((long)(Native.AwakeTicks() - _start));
 }
 
 // waiting on a tool: its own "done" signal (poll), a deadline, and its whole process tree's CPU - a tool that uses no CPU for
@@ -182,11 +218,27 @@ public static class Waits
 		Done,
 	}
 
+	// the one wait of the engine's steps: it ends the moment a Stop is asked, and says so by throwing as every other look at Stop
+	// does (his finds of 2026-11-04, 11-06 and 11-10: "pressing stop now still doesn't stop it" - each time a wait that could
+	// not see it). The offline test NoStepWaitIsBlindToStop holds the steps to it.
+	public static void Pause(TimeSpan a_for, CancellationToken a_ct)
+	{
+		if (a_for > TimeSpan.Zero) {
+			a_ct.WaitHandle.WaitOne(a_for);
+		}
+		a_ct.ThrowIfCancellationRequested();
+	}
+
 	// the offline tests only: a short idle limit
 	public static TimeSpan? IdleForTests { get; set; }
 
 	// how often a tool's whole window text is read for the idle rule (the tests shorten it with their idle limit)
 	public static TimeSpan ProgressEvery { get; set; } = TimeSpan.FromSeconds(30);
+
+	// How long a tool that has closed is still given to show it finished (its last file written, its output gone quiet) before
+	// the step fails as "closed before it finished" - never the rest of its limit, which is an hour for most tools (the offline
+	// tests shorten it). Longer than any step's own settling time: PGPatcher's output must be quiet for a minute
+	public static TimeSpan GoneGrace { get; set; } = TimeSpan.FromMinutes(3);
 
 	// a_progress: for a tool driven through its window - what its window says; a change counts as work, and so does CPU its CHILD
 	// processes use (a long patcher shows nothing new for minutes - the fourth review, M2), never the window process's own (a
@@ -196,7 +248,10 @@ public static class Waits
 	{
 		string? lastSeen = null;
 		var every = a_every ?? TimeSpan.FromSeconds(2);
-		var sw = Stopwatch.StartNew();
+		// time the PC was awake: a closed lid or the player's own Sleep in the middle of a long tool is not time the tool had,
+		// and on waking neither its limit nor the idle rule may have run out
+		var sw = AwakeClock.StartNew();
+		TimeSpan? goneAt = null;
 		var idleLimit = IdleForTests ?? TimeSpan.FromMinutes(Math.Max(1, a_ctx.Setup.IdleMinutes));
 		var lastCpu = TimeSpan.Zero;
 		IReadOnlyDictionary<int, TimeSpan> lastChildren = new Dictionary<int, TimeSpan>();
@@ -221,6 +276,14 @@ public static class Waits
 					alive = !a_proc.HasExited;
 				} catch (InvalidOperationException) {
 					alive = false;
+				}
+				if (!alive) {
+					// closed (or crashed) and still not done by the step's own signs: a short while more, then said - it used to
+					// be waited for until the tool's whole limit
+					goneAt ??= sw.Elapsed;
+					if (sw.Elapsed - goneAt > GoneGrace) {
+						throw new StepFailedException($"{StepCatalog.Name(a_step)} closed before it finished");
+					}
 				}
 				if (alive) {
 					// a window whose text cannot be read (empty) is judged by the tool's CPU, so a working tool is never called idle
@@ -253,15 +316,20 @@ public static class Waits
 						if (a_onIdle?.Invoke() == true) {
 							lastBusy = sw.Elapsed;
 						} else {
-							var boxes = Uia.Boxes(Procs.Tree(a_proc.Id));
+							var tree = Procs.Tree(a_proc.Id);
+							var boxes = Uia.Boxes(tree);
+							// a window of its own that is no message box (a Delphi form, a WPF dialog) is named by its title
+							var owned = boxes.Count > 0 ? [] : Uia.OwnedWindows(tree);
 							var said = boxes.Count > 0 ? " It shows: " + string.Join(" / ", boxes.Select(b => b.Text)) :
+								owned.Count > 0 ? " It has a window open: " + string.Join(" / ", owned) :
 								lastSeen is { Length: > 0 } s ? " Its window shows: " + (s.Length > 300 ? "..." + s[^300..] : s) : " It shows no question.";
 							throw new StepFailedException($"{StepCatalog.Name(a_step)} sat idle for {idleLimit.TotalMinutes:0} minutes without finishing.{said}");
 						}
 					}
 				}
 			}
-			Thread.Sleep(every);
+			// a Stop ends this wait too; the look at the top of the loop then throws
+			a_ctx.Cancel.WaitHandle.WaitOne(every);
 		}
 	}
 

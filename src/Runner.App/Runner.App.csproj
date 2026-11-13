@@ -12,24 +12,32 @@
     <!-- WPF0001: the Fluent theme's ThemeMode is marked experimental. The others are naming / style rules the engine project
          leaves out too (its a_ parameter names, a WPF override's parameter names), never a resource or correctness rule -->
     <NoWarn>$(NoWarn);WPF0001;CA1707;CA1401;CA1720;CA1861;CA1869;CA1822;CA1725</NoWarn>
-    <AssemblyName>Skyrim Utility Patcher</AssemblyName>
+    <AssemblyName>Tool Runner</AssemblyName>
     <RootNamespace>ToolRunner.App</RootNamespace>
     <ApplicationIcon>Icon.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- its own Main (Program.cs): a command runs without WPF ever starting; the window starts it -->
+    <StartupObject>ToolRunner.App.Program</StartupObject>
     <Version>1.0.0</Version>
     <Authors>izzydoingit</Authors>
-    <Product>Skyrim Utility Patcher</Product>
+    <Product>Tool Runner</Product>
     <Description>Runs Mod Organizer 2's generators in the right order, unattended, and puts the profile back.</Description>
     <Copyright>izzydoingit - GPL-3.0-or-later</Copyright>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>false</SelfContained>
     <PublishSingleFile>true</PublishSingleFile>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <!-- a small program that mostly waits: no second collector thread and no profile-guided re-compiling held in memory
+         (measured 2026-11-10: about 2.4 MB less private memory, nothing slower that can be seen) -->
+    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
+    <TieredPGO>false</TieredPGO>
   </PropertyGroup>
 
   <ItemGroup>
     <Resource Include="Logo.png" />
     <EmbeddedResource Include="Theme template.json" LogicalName="ThemeTemplate.json" />
+    <!-- the shipped themes, each the same file a player's own theme is (written by the work folder's "make themes.py") -->
+    <EmbeddedResource Include="Themes\*.json" LogicalName="Theme.%(Filename).json" />
   </ItemGroup>
 
   <ItemGroup>

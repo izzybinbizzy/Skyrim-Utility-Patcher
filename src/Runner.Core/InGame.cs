@@ -23,7 +23,7 @@ public static partial class InGame
 	{
 		Process? mine = null;
 		foreach (var p in Procs.ByImage(GameImage)) {
-			if (mine == null && a_ctx.Control.Started.Contains(p.Id)) {
+			if (mine == null && a_ctx.Control.Started.SameProcess(p.Id)) {
 				mine = p;
 			} else {
 				p.Dispose();
@@ -66,42 +66,135 @@ public static partial class InGame
 		}
 		var docs = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
 		var gog = Path.Combine(docs, "My Games", "Skyrim Special Edition GOG", "SKSE");
-		return a_mo2.GameDir.Contains("GOG", StringComparison.OrdinalIgnoreCase) && Directory.Exists(gog) ? gog :
+		// the GOG copy is known by what it ships (QuietGame.IsGog), never by the word "GOG" in a folder's name: a GOG game in
+		// "D:\Games\Skyrim" read as Steam's, a Steam game under "D:\GOG and Steam" as GOG's
+		return QuietGame.IsGog(a_mo2.GameDir) && Directory.Exists(gog) ? gog :
 			Path.Combine(docs, "My Games", "Skyrim Special Edition", "SKSE");
 	}
 
-	// his checklist 470: the game closed under a step - the crash log a crash logger wrote since the run began is named (Crash Logger
-	// writes SKSE\crash-<time>.log, Trainwreck SKSE\Crashlogs\crash-<time>.log, .NET Script Framework NetScriptFramework\Crash\Crash_<time>.txt
-	// into Mod Organizer's overwrite), so the failure points at the cause instead of only saying the game went
+	// Where the SKSE plugins' logs really are. The game is told My Games\<game>\SKSE, but a Mod Organizer file-mapper plugin (an
+	// "SKSE log redirector") can show it another folder there: the files are then in that other folder and the one in Documents
+	// stays empty (his run of 2026-11-10: the shader log and the crash logs were never found). So, when the setup names no
+	// folder: the usual one, then every existing folder such a plugin names in its own file.
+	public static List<string> LogFolders(Setup a_setup, Mo2Instance a_mo2)
+	{
+		var first = SkseLogs(a_setup, a_mo2);
+		var folders = new List<string> { first };
+		if (!string.IsNullOrWhiteSpace(Setup.Str(a_setup.Root, "skseLogs"))) {
+			return folders;
+		}
+		foreach (var d in MappedLogFolders(Path.Combine(Path.GetDirectoryName(a_mo2.Exe) ?? "", "plugins"))) {
+			if (!folders.Any(f => Files.SamePath(f, d))) {
+				folders.Add(d);
+			}
+		}
+		return folders;
+	}
+
+	// a quoted absolute Windows path in a script (the quote it opened with closes it: a folder name may hold the other one)
+	[GeneratedRegex("""[rR]?(["'])([A-Za-z]:[\\/](?:(?!\1)[^\r\n]){1,400})\1""")]
+	private static partial Regex PathLiteral();
+
+	// the plugin files as last read (their count, sizes and times), so a look that repeats every few seconds reads none again
+	static readonly Lock s_mappedGate = new();
+	static (string Dir, string Stamp, List<string> Folders)? s_mapped;
+
+	// The folders a Mod Organizer plugin that maps SKSE's log folder names as text in its file (read, never run). Only a folder
+	// that holds a log now counts, and never a drive's root: a plugin's file names other folders too, and every folder taken
+	// here is searched for crash logs.
+	public static List<string> MappedLogFolders(string a_pluginsDir)
+	{
+		var found = new List<string>();
+		try {
+			if (!Directory.Exists(a_pluginsDir)) {
+				return found;
+			}
+			var files = Directory.EnumerateFiles(a_pluginsDir, "*.py").Concat(Directory.EnumerateDirectories(a_pluginsDir).SelectMany(d => Directory.EnumerateFiles(d, "*.py")))
+				.Select(f => new FileInfo(f)).Where(f => f.Length < 512 * 1024).Take(400).ToList();
+			var stamp = string.Join("|", files.Select(f => $"{f.FullName}:{f.Length}:{f.LastWriteTimeUtc.Ticks}"));
+			lock (s_mappedGate) {
+				if (s_mapped is { } last && last.Dir == a_pluginsDir && last.Stamp == stamp) {
+					return last.Folders.Where(HoldsALog).ToList();
+				}
+			}
+			foreach (var f in files) {
+				var text = Files.ReadSharedText(f.FullName);
+				if (!text.Contains("IPluginFileMapper", StringComparison.Ordinal) || !text.Contains("SKSE", StringComparison.Ordinal)) {
+					continue;
+				}
+				foreach (Match m in PathLiteral().Matches(text)) {
+					var dir = m.Groups[2].Value.Replace(@"\\", @"\", StringComparison.Ordinal).Replace('/', '\\').TrimEnd('\\');
+					if (dir.Length > 3 && Directory.Exists(dir) && !found.Contains(dir, StringComparer.OrdinalIgnoreCase)) {
+						found.Add(dir);
+					}
+				}
+			}
+			lock (s_mappedGate) {
+				s_mapped = (a_pluginsDir, stamp, found);
+			}
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+		}
+		return found.Where(HoldsALog).ToList();
+	}
+
+	static bool HoldsALog(string a_dir)
+	{
+		try {
+			return Directory.EnumerateFiles(a_dir, "*.log").Any();
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+			return false;
+		}
+	}
+
+	// his checklist 470: the game closed under a step - the crash report written since that start is named (Crash Logger writes
+	// SKSE\crash-<time>.log, Trainwreck SKSE\Crashlogs\crash-<time>.log, .NET Script Framework NetScriptFramework\Crash\Crash_<time>.txt
+	// and Tullius CTD Logger SKSE\Plugins\...\SkyrimDiag_Crash_<time>_SkyrimDiagReport.txt, the last two in Mod Organizer's
+	// overwrite), so the failure points at the cause instead of only saying the game went
 	public static StepFailedException GameClosed(RunContext a_ctx, string a_while) =>
-		new($"the game closed {a_while}" + CrashNote(SkseLogs(a_ctx.Setup, a_ctx.Mo2), a_ctx.Mo2.OverwriteDir, a_ctx.GameLaunched ?? a_ctx.Journal.Started));
+		new($"the game closed {a_while}" + CrashNote(LogFolders(a_ctx.Setup, a_ctx.Mo2), a_ctx.Mo2.OverwriteDir, a_ctx.GameLaunched ?? a_ctx.Journal.Started));
 
-	public static string CrashNote(string a_skseLogs, string a_overwrite, DateTime a_since) =>
-		CrashLog(a_skseLogs, a_overwrite, a_since) is { } log ? $" - it crashed; its crash log: {log}" :
-			" - no crash log was written (a crash logger such as Crash Logger SSE names the cause of the next one)";
+	public static string CrashNote(string a_skseLogs, string a_overwrite, DateTime a_since) => CrashNote([a_skseLogs], a_overwrite, a_since);
 
-	public static string? CrashLog(string a_skseLogs, string a_overwrite, DateTime a_since)
+	public static string CrashNote(IReadOnlyList<string> a_logFolders, string a_overwrite, DateTime a_since) =>
+		CrashReports(a_logFolders, a_overwrite, a_since) is { Count: > 0 } logs ? $" - it crashed; its crash report: {string.Join(" and ", logs)}" :
+			" - no crash report was written (a crash logger such as Crash Logger SSE names the cause of the next one)";
+
+	public static string? CrashLog(string a_skseLogs, string a_overwrite, DateTime a_since) => CrashReports([a_skseLogs], a_overwrite, a_since).FirstOrDefault();
+
+	// a crash logger's own report file, by its name (a dump or a helper's log beside it is not the report a player reads)
+	public static bool IsCrashReport(string a_fileName) =>
+		Regex.IsMatch(a_fileName, @"^(crash.*\.log|Crash_.*\.txt|SkyrimDiag_Crash_.*_SkyrimDiagReport\.txt)$", RegexOptions.IgnoreCase);
+
+	// every crash report written since a_since, newest first - one per crash logger that wrote one
+	public static List<string> CrashReports(IReadOnlyList<string> a_logFolders, string a_overwrite, DateTime a_since)
 	{
 		var found = new List<FileInfo>();
 		void Look(string a_dir, string a_pattern, SearchOption a_how)
 		{
 			try {
 				if (Directory.Exists(a_dir)) {
-					found.AddRange(new DirectoryInfo(a_dir).EnumerateFiles(a_pattern, a_how).Where(f => f.LastWriteTime >= a_since));
+					found.AddRange(new DirectoryInfo(a_dir).EnumerateFiles(a_pattern, a_how).Where(f => f.LastWriteTime >= a_since && IsCrashReport(f.Name)));
 				}
 			} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
 			}
 		}
-		Look(a_skseLogs, "crash*.log", SearchOption.AllDirectories);
+		foreach (var logs in a_logFolders) {
+			Look(logs, "crash*.log", SearchOption.AllDirectories);
+			Look(logs, "SkyrimDiag_Crash_*_SkyrimDiagReport.txt", SearchOption.AllDirectories);
+		}
 		Look(Path.Combine(a_overwrite, "NetScriptFramework", "Crash"), "Crash*.txt", SearchOption.TopDirectoryOnly);
-		return found.OrderByDescending(f => f.LastWriteTime).FirstOrDefault()?.FullName;
+		Look(Path.Combine(a_overwrite, "SKSE", "Plugins"), "SkyrimDiag_Crash_*_SkyrimDiagReport.txt", SearchOption.AllDirectories);
+		return found.OrderByDescending(f => f.LastWriteTime).Select(f => f.FullName).Distinct(StringComparer.OrdinalIgnoreCase)
+			.GroupBy(f => Path.GetFileName(f).StartsWith("SkyrimDiag", StringComparison.OrdinalIgnoreCase) ? "t" : Path.GetExtension(f).ToLowerInvariant()).Select(g => g.First()).ToList();
 	}
 
 	// the log a shader mod writes now: the newest of the known names (Bottled Shaders renamed its log 2026-10-26)
-	public static string? NewestShaderLog(string a_folder, string? a_preferred = null)
+	public static string? NewestShaderLog(string a_folder, string? a_preferred = null) => NewestShaderLog([a_folder], a_preferred);
+
+	public static string? NewestShaderLog(IReadOnlyList<string> a_folders, string? a_preferred = null)
 	{
 		var names = a_preferred == null ? ShaderLogNames : [a_preferred, .. ShaderLogNames.Where(n => !n.Equals(a_preferred, StringComparison.OrdinalIgnoreCase))];
-		return names.Select(n => Path.Combine(a_folder, n)).Where(File.Exists).OrderByDescending(File.GetLastWriteTimeUtc).FirstOrDefault();
+		return a_folders.SelectMany(d => names.Select(n => Path.Combine(d, n))).Where(File.Exists).OrderByDescending(File.GetLastWriteTimeUtc).FirstOrDefault();
 	}
 
 	[GeneratedRegex(@"\[(?:\d{4}-\d\d-\d\d[ T])?\d\d:\d\d:\d\d(?:\.\d+)?\].*\[ShaderTiming\].*\bremaining=(\d+)")]
@@ -109,25 +202,29 @@ public static partial class InGame
 
 	// a compile runs: a "remaining=N" line (N > 0) in the last 5 minutes, or Open Shaders' "started" with no "completed" after it,
 	// or a shader landed in overwrite\ShaderCache in the last 2 minutes (the signal that survives a log's rename or re-stamp)
-	public static bool Compiling(string a_logFolder, string a_overwrite, DateTime a_since)
+	public static bool Compiling(string a_logFolder, string a_overwrite, DateTime a_since) => Compiling([a_logFolder], a_overwrite, a_since);
+
+	public static bool Compiling(IReadOnlyList<string> a_logFolders, string a_overwrite, DateTime a_since)
 	{
 		if (CacheBusy(a_overwrite)) {
 			return true;
 		}
-		var log = NewestShaderLog(a_logFolder);
+		var log = NewestShaderLog(a_logFolders);
 		if (log == null || File.GetLastWriteTimeUtc(log) < a_since.ToUniversalTime() || DateTime.UtcNow - File.GetLastWriteTimeUtc(log) > TimeSpan.FromMinutes(5)) {
 			return false;
 		}
 		string[] tail;
 		try {
-			tail = Files.ReadSharedText(log).Split('\n').TakeLast(300).ToArray();
+			tail = Files.ReadSharedTailText(log, LogTailBytes).Split('\n').TakeLast(300).ToArray();
 		} catch (IOException) {
 			return false;
 		}
 		for (int i = tail.Length - 1; i >= 0; --i) {
 			var m = Remaining().Match(tail[i]);
 			if (m.Success) {
-				return int.Parse(m.Groups[1].Value, InvariantCulture) > 0;
+				// Bottled Shaders writes this line only for a SLOW shader, so its last count can stay above 0 for good: by the
+				// line's own date it counts 5 minutes, however many other lines the log gains after it
+				return int.Parse(m.Groups[1].Value, InvariantCulture) > 0 && !(LineTime(tail[i]) is { } at && DateTime.Now - at > TimeSpan.FromMinutes(5));
 			}
 			if (tail[i].Contains("Shader compilation completed", StringComparison.Ordinal)) {
 				return false;
@@ -139,17 +236,31 @@ public static partial class InGame
 		return false;
 	}
 
+	// when a log line was written, by its own stamp "[yyyy-MM-dd HH:mm:ss" (null: it carries no date)
+	static DateTime? LineTime(string a_line)
+	{
+		var line = a_line.TrimStart();
+		return line.Length >= 20 && DateTime.TryParseExact(line[1..20], "yyyy-MM-dd HH:mm:ss", InvariantCulture, System.Globalization.DateTimeStyles.None, out var at) ? at : null;
+	}
+
 	// the newest "remaining=N" a shader log holds (null: it has no ShaderTiming lines - Open Shaders, an older Community Shaders)
 	public static int? LastRemaining(string a_log)
 	{
-		string[] tail;
 		try {
-			tail = Files.ReadSharedText(a_log).Split('\n').TakeLast(300).ToArray();
+			return RemainingIn(Files.ReadSharedText(a_log));
 		} catch (IOException) {
 			return null;
 		}
-		for (int i = tail.Length - 1; i >= 0; --i) {
-			var m = Remaining().Match(tail[i]);
+	}
+
+	// the same, of a log's text - the whole of it, however many lines follow the count. Bottled Shaders writes the line only for
+	// a SLOW shader, so a last count above 0 says nothing about now; only 0 is a verdict (his run of 2026-11-10: its last line
+	// read remaining=549 five minutes before the compile's real end, and nothing after it said done)
+	public static int? RemainingIn(string a_logText)
+	{
+		var lines = a_logText.Split('\n');
+		for (int i = lines.Length - 1; i >= 0; --i) {
+			var m = Remaining().Match(lines[i]);
 			if (m.Success) {
 				return int.Parse(m.Groups[1].Value, InvariantCulture);
 			}
@@ -176,18 +287,21 @@ public static partial class InGame
 		return false;
 	}
 
-	static bool BootPassOver(string a_logFolder, DateTime a_since)
+	static bool BootPassOver(IReadOnlyList<string> a_logFolders, DateTime a_since)
 	{
-		var log = NewestShaderLog(a_logFolder);
+		var log = NewestShaderLog(a_logFolders);
 		if (log == null || File.GetLastWriteTimeUtc(log) < a_since.ToUniversalTime()) {
 			return false;
 		}
 		try {
-			return BootPassOver(Files.ReadSharedText(log).Split('\n').TakeLast(300).ToList(), a_since);
+			return BootPassOver(Files.ReadSharedTailText(log, LogTailBytes).Split('\n').TakeLast(300).ToList(), a_since);
 		} catch (IOException) {
 			return false;
 		}
 	}
+
+	// how much of a shader log's end holds its last 300 lines, with room to spare (a line is a few hundred letters at most)
+	const int LogTailBytes = 512 * 1024;
 
 	public static bool CacheBusy(string a_overwrite, int a_quietSeconds = 120)
 	{
@@ -203,7 +317,7 @@ public static partial class InGame
 			return Path.Combine(a_profile.Dir, "saves");
 		}
 		var docs = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
-		var gog = a_profile.Mo2.GameDir.Contains("GOG", StringComparison.OrdinalIgnoreCase);
+		var gog = QuietGame.IsGog(a_profile.Mo2.GameDir);
 		var myGames = Path.Combine(docs, "My Games", gog ? "Skyrim Special Edition GOG" : "Skyrim Special Edition");
 		// the game's INIs: the profile's own when it keeps them (LocalSettings), else My Games'; SkyrimCustom.ini wins
 		var localInis = File.Exists(ini) && Files.ReadSharedText(ini).Split('\n').Any(l => l.Trim().Equals("LocalSettings=true", StringComparison.OrdinalIgnoreCase));
@@ -282,6 +396,25 @@ public static partial class InGame
 	public static IEnumerable<(DateTime From, DateTime To)> GameTimes(IEnumerable<StepRecord> a_steps, DateTime a_openEnd) =>
 		a_steps.Where(s => GameSteps.Contains(s.Key) && s.Started != null)
 			.Select(s => (s.Started!.Value.ToUniversalTime(), (s.Ended ?? (a_openEnd < s.Started.Value ? s.Started.Value : a_openEnd)).ToUniversalTime()));
+
+	// The place the player stood at before the clean save is on record in the run that MADE that save. A run that starts from an
+	// earlier run's clean save - "run again from the failed step" is a new run with a record of its own - takes the marker from
+	// that run: without it the save to play was made in the test cell, and the marker stayed in the save for good. The run is
+	// known by its clean-save step ending when the save was written.
+	public static string? MarkerOfCleanSave(RunContext a_ctx)
+	{
+		if (SaveTime(a_ctx.Profile, SaveClean) is not { } saved) {
+			return null;
+		}
+		try {
+			return Journal.All(Path.GetDirectoryName(a_ctx.Journal.Folder)!)
+				.Where(j => j.Id != a_ctx.Journal.Id && j.ReturnMarker != null && j.Profile.Equals(a_ctx.Profile.Name, StringComparison.OrdinalIgnoreCase))
+				.Where(j => j.Step("cleansave")?.Ended is { } ended && Math.Abs((ended.ToUniversalTime() - saved).TotalMinutes) < 5)
+				.OrderByDescending(j => j.Started).Select(j => j.ReturnMarker).FirstOrDefault();
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+			return null;
+		}
+	}
 
 	public static DateTime? SaveTime(Profile a_profile, string? a_name)
 	{
@@ -521,7 +654,7 @@ public static partial class InGame
 	static void WaitPlace(RunContext a_ctx)
 	{
 		var sw = Stopwatch.StartNew();
-		Thread.Sleep(3000);
+		a_ctx.Pause(TimeSpan.FromSeconds(3));
 		while (sw.Elapsed < TimeSpan.FromMinutes(5)) {
 			a_ctx.Cancel.ThrowIfCancellationRequested();
 			if (!GameUp(a_ctx)) {
@@ -534,7 +667,7 @@ public static partial class InGame
 				}
 			} catch (Exception e) when (e is HttpRequestException or TaskCanceledException or InvalidOperationException or System.Text.Json.JsonException or FormatException) {
 			}
-			Thread.Sleep(3000);
+			a_ctx.Pause(TimeSpan.FromSeconds(3));
 		}
 		throw new StepFailedException("the new place did not finish loading within 5 minutes");
 	}
@@ -735,7 +868,7 @@ public static partial class InGame
 				throw GameClosed(a_ctx, "while it was starting");
 			}
 			AnswerNativeBoxes(RunBoxes(a_ctx, launched), a_ctx.Log);
-			Thread.Sleep(2000);
+			a_ctx.Pause(TimeSpan.FromSeconds(2));
 		}
 		a_ctx.Log.Detail($"the game is up after {sw.Elapsed.TotalSeconds:0} s");
 		var compiled = WaitCompile(a_ctx, a_step, a_s, started);
@@ -750,7 +883,7 @@ public static partial class InGame
 				if (t.Elapsed > TimeSpan.FromMinutes(3)) {
 					throw new StepFailedException($"the game never accepted the load of \"{a_save}\": {e.Message}");
 				}
-				Thread.Sleep(3000);
+				a_ctx.Pause(TimeSpan.FromSeconds(3));
 			}
 		}
 		t.Restart();
@@ -761,12 +894,12 @@ public static partial class InGame
 			}
 			try {
 				if (AnswerGameBox(a_ctx) != null) {
-					Thread.Sleep(3000);
+					a_ctx.Pause(TimeSpan.FromSeconds(3));
 					continue;
 				}
 				if (a_ctx.DevBench.Call("inspect", new { kind = "state" }, 10)["playerLoaded"]?.GetValue<bool>() == true) {
 					var f1 = a_ctx.DevBench.Frame();
-					Thread.Sleep(2000);
+					a_ctx.Pause(TimeSpan.FromSeconds(2));
 					var f2 = a_ctx.DevBench.Frame();
 					if (f1 != null && f2 > f1) {
 						a_ctx.Log.Detail($"\"{a_save}\" loaded after {t.Elapsed.TotalSeconds:0} s");
@@ -776,9 +909,9 @@ public static partial class InGame
 				}
 			} catch (Exception e) when (e is HttpRequestException or TaskCanceledException or InvalidOperationException or FormatException or System.Text.Json.JsonException) {
 			}
-			Thread.Sleep(3000);
+			a_ctx.Pause(TimeSpan.FromSeconds(3));
 			// a compile that started under the load is never cut off - the load clock waits while one runs
-			if (t.Elapsed > limit - TimeSpan.FromMinutes(1) && Compiling(SkseLogs(a_ctx.Setup, a_ctx.Mo2), a_ctx.Mo2.OverwriteDir, started)) {
+			if (t.Elapsed > limit - TimeSpan.FromMinutes(1) && Compiling(LogFolders(a_ctx.Setup, a_ctx.Mo2), a_ctx.Mo2.OverwriteDir, started)) {
 				a_ctx.Log.Detail("shaders still compiling under the load - waiting for them");
 				// counted as a compile at this start too (the save to play reports a stale cache - the fourth review, L3)
 				compiled = true;
@@ -788,11 +921,43 @@ public static partial class InGame
 		throw new StepFailedException($"\"{a_save}\" did not finish loading in {limit.TotalMinutes:0} minutes");
 	}
 
+	// a Community Shaders-type plugin by its file name (Community Shaders itself, Open Shaders, Bottled Shaders)
+	public static bool IsShaderDll(string a_fileName) =>
+		a_fileName.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) && (a_fileName.Equals("CommunityShaders.dll", StringComparison.OrdinalIgnoreCase) ||
+			a_fileName.Contains("OpenShaders", StringComparison.OrdinalIgnoreCase) || a_fileName.Contains("BottledShaders", StringComparison.OrdinalIgnoreCase));
+
+	// Is there a shader mod in this game at all? One of the known plugins in a ticked mod, in overwrite or in the game's own
+	// folder; a cache the setup's own shader step names for a ticked shader mod; or a shader log this very start wrote (the
+	// shader mod writes it as the game starts, before the game answers). With none of them nothing compiles, and the watch is
+	// not sat out: a profile on ENB, or with no shader mod, waited five minutes at the main menu at each of its three game
+	// starts. Anything that cannot be looked at counts as "there is one": the watch then runs as before.
+	public static bool ShaderModHere(RunContext a_ctx, IReadOnlyList<string> a_logFolders, DateTime a_since)
+	{
+		try {
+			if (NewestShaderLog(a_logFolders) is { } log && File.GetLastWriteTimeUtc(log) >= a_since.ToUniversalTime().AddSeconds(-5)) {
+				return true;
+			}
+			var states = a_ctx.Profile.States();
+			if (a_ctx.Setup.StepSettings("shaders") is { } shaders && Steps.ShaderStep.Caches(new StepSettings(shaders)).Any(c => states.TryGetValue(c.ShaderMod, out var f) && f == '+')) {
+				return true;
+			}
+			return states.Where(s => s.Value == '+').Select(s => a_ctx.Mo2.ModDir(s.Key)).Append(a_ctx.Mo2.OverwriteDir).Append(Path.Combine(a_ctx.Mo2.GameDir, "Data"))
+				.Select(d => Path.Combine(d, "SKSE", "Plugins")).Where(Directory.Exists)
+				.Any(d => Directory.EnumerateFiles(d, "*.dll").Any(f => IsShaderDll(Path.GetFileName(f))));
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+			return true;
+		}
+	}
+
 	// "You can't load a save while shaders are compiling" (his word). A compile can begin a minute after the game answers and
 	// write its first line only when a shader finishes, so it is watched for `compile_watch_s` (300) before a load is sent.
 	public static bool WaitCompile(RunContext a_ctx, string a_step, StepSettings a_s, DateTime a_since)
 	{
-		var logs = SkseLogs(a_ctx.Setup, a_ctx.Mo2);
+		var logs = LogFolders(a_ctx.Setup, a_ctx.Mo2);
+		if (!ShaderModHere(a_ctx, logs, a_since)) {
+			a_ctx.Log.Detail("no shader mod in this game (no Community Shaders-type plugin, no shader log from this start) - no compile to wait for");
+			return false;
+		}
 		var watch = TimeSpan.FromSeconds(a_s.Int("compile_watch_s", 300));
 		var max = TimeSpan.FromMinutes(a_s.Int("compile_max_min", 90));
 		var sw = Stopwatch.StartNew();
@@ -826,7 +991,7 @@ public static partial class InGame
 				}
 				return seen;
 			}
-			Thread.Sleep(5000);
+			a_ctx.Pause(TimeSpan.FromSeconds(5));
 		}
 		throw new StepFailedException($"the shaders were still compiling after {max.TotalMinutes:0} minutes");
 	}
@@ -850,7 +1015,7 @@ public static partial class InGame
 			var there = File.Exists(a_path) && File.GetLastWriteTimeUtc(a_path) >= a_since;
 			if (there) {
 				var s1 = new FileInfo(a_path).Length;
-				Thread.Sleep(4000);
+				a_ctx.Pause(TimeSpan.FromSeconds(4));
 				if (s1 > 0 && new FileInfo(a_path).Length == s1) {
 					return true;
 				}
@@ -885,7 +1050,7 @@ public static partial class InGame
 		while (cw.Elapsed < TimeSpan.FromSeconds(20)) {
 			if (File.Exists(cosave) && File.GetLastWriteTimeUtc(cosave) >= t0) {
 				var c1 = new FileInfo(cosave).Length;
-				Thread.Sleep(2000);
+				a_ctx.Pause(TimeSpan.FromSeconds(2));
 				if (new FileInfo(cosave).Length == c1) {
 					break;
 				}
@@ -985,7 +1150,7 @@ public static partial class InGame
 				a_ctx.Log.Warn("your place could not be recorded - the save to play will leave you in " + cell);
 			}
 			MoveWithFollowers(a_ctx, () => a_ctx.DevBench.Console("coc " + cell), () => WaitPlace(a_ctx));
-			Thread.Sleep(TimeSpan.FromSeconds(a_s.Int("settle_s", 10)));
+			a_ctx.Pause(TimeSpan.FromSeconds(a_s.Int("settle_s", 10)));
 			if (dyn && a_ctx.DevBench.Papyrus(cls, "GetMyActive")?.GetValue<bool>() == true) {
 				throw new StepFailedException($"DynDOLOD switched itself back on in {cell}");
 			}
@@ -1058,7 +1223,10 @@ public static partial class InGame
 			}
 			var files = new DirectoryInfo(from).EnumerateFiles().Where(f => f.Extension.Equals(".ess", StringComparison.OrdinalIgnoreCase) ||
 				f.Extension.Equals(".skse", StringComparison.OrdinalIgnoreCase)).ToList();
-			var bytes = files.Sum(f => f.Length);
+			// a save unchanged since the last run's copy is linked to that copy, not copied again: only what changed takes room. Pruning that backup leaves this one whole
+			var earlier = Runner.BackupDirsOf(a_ctx.Setup).Select(d => Path.Combine(d.FullName, SavesCopyFolder)).FirstOrDefault(d => Directory.Exists(d) && !Files.SamePath(d, to));
+			FileInfo? Same(FileInfo a_f) => earlier != null && new FileInfo(Path.Combine(earlier, a_f.Name)) is { Exists: true } e && e.Length == a_f.Length && e.LastWriteTimeUtc == a_f.LastWriteTimeUtc ? e : null;
+			var bytes = files.Where(f => Same(f) == null).Sum(f => f.Length);
 			var mb = bytes / 1048576.0;
 			Directory.CreateDirectory(a_ctx.BackupFolder);
 			// the run's outputs and backups come first: the room the pre-check promised them stays free
@@ -1068,17 +1236,20 @@ public static partial class InGame
 				return null;
 			}
 			if (Directory.Exists(part)) {
-				Directory.Delete(part, true);
+				Files.DeleteDir(part);
 			}
 			Directory.CreateDirectory(part);
 			foreach (var f in files) {
 				a_ctx.Cancel.ThrowIfCancellationRequested();
-				f.CopyTo(Path.Combine(part, f.Name), false);
+				var dest = Path.Combine(part, f.Name);
+				if (Same(f) is not { } same || !Native.HardLink(dest, same.FullName)) {
+					f.CopyTo(dest, false);
+				}
 			}
 			// whole or not at all: a copy cut off part way is never taken for a full one
-			Directory.Move(part, to);
+			Files.MoveDirectory(part, to);
 			var saves = files.Count(f => f.Extension.Equals(".ess", StringComparison.OrdinalIgnoreCase));
-			a_ctx.Log.Detail($"your saves copied first: {saves} save(s), {mb:0} MB, into the run's backup ({SavesCopyFolder})");
+			a_ctx.Log.Detail($"your saves copied first: {saves} save(s), {mb:0} MB new, into the run's backup ({SavesCopyFolder})");
 			return to;
 		} catch (OperationCanceledException) {
 			DropPart(part);
@@ -1094,7 +1265,7 @@ public static partial class InGame
 	{
 		try {
 			if (Directory.Exists(a_part)) {
-				Directory.Delete(a_part, true);
+				Files.DeleteDir(a_part);
 			}
 		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
 			// a part left behind goes with the run's backup, and is never taken for a copy
@@ -1125,6 +1296,12 @@ public static partial class InGame
 		var from = pick ?? throw new StepFailedException(why);
 		a_ctx.Log.Detail($"the save to play starts from \"{from}\" ({why})");
 		var marker = a_ctx.Journal.ReturnMarker;
+		if (marker == null && a_ctx.CleanSaveName == null && from == SaveClean && MarkerOfCleanSave(a_ctx) is { } kept) {
+			marker = kept;
+			a_ctx.Journal.ReturnMarker = kept;
+			a_ctx.Journal.Save();
+			a_ctx.Log.Detail("the place you stood at before the clean save is taken from the run that made that save");
+		}
 		a_ctx.Control.Close();
 		if (!Auto(a_ctx)) {
 			GuidedSave(a_ctx, "playsave", a_s, $"In the game: load \"{from}\" and wait a full minute. Go back to the place you noted at the start" +

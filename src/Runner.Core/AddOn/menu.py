@@ -1,4 +1,4 @@
-"""Skyrim Utility Patcher's entry in Mod Organizer's Tools menu. Author: izzydoingit.
+"""Tool Runner's entry in Mod Organizer's Tools menu. Author: izzydoingit.
 
 Opens the program's window on the profile Mod Organizer shows. The program writes the line below when it adds this file; to take the entry
 out, delete this file from Mod Organizer's plugins folder.
@@ -23,7 +23,7 @@ except ImportError:
     from PyQt5.QtWidgets import QMessageBox
 
 PROGRAM = r"@PROGRAM@"
-NAME = "Skyrim Utility Patcher"
+NAME = "Tool Runner"
 
 # it must outlive the Mod Organizer a run closes, should that Mod Organizer sit in a job
 BREAKAWAY = 0x01000000
@@ -45,7 +45,7 @@ class Entry(mobase.IPluginTool):
         return True
 
     def _folder(self):
-        return os.path.join(self._org.pluginDataPath(), "SkyrimUtilityPatcher")
+        return os.path.join(self._org.pluginDataPath(), "ToolRunner")
 
     def _answer(self, ask_id):
         done = os.path.join(self._folder(), f"done {ask_id}.txt")
@@ -98,7 +98,7 @@ class Entry(mobase.IPluginTool):
         return "izzydoingit"
 
     def description(self):
-        return self.tr("Opens Skyrim Utility Patcher on this profile.")
+        return self.tr("Opens Tool Runner on this profile.")
 
     def tooltip(self):
         return self.description()
@@ -113,7 +113,7 @@ class Entry(mobase.IPluginTool):
         return QIcon(PROGRAM)
 
     def tr(self, text):
-        return QCoreApplication.translate("SkyrimUtilityPatcher", text)
+        return QCoreApplication.translate("ToolRunner", text)
 
     def display(self):
         if not os.path.exists(PROGRAM):

@@ -43,7 +43,7 @@ public sealed partial class HiddenDesktop : IDisposable
 	readonly nint _desk;
 	public string Name { get; }
 
-	public HiddenDesktop(string a_name = "Skyrim Utility Patcher")
+	public HiddenDesktop(string a_name = "Tool Runner")
 	{
 		Name = a_name.Replace(' ', '-');
 		_desk = CreateDesktop(Name, 0, 0, 0, GENERIC_ALL, 0);
@@ -80,7 +80,10 @@ public sealed partial class HiddenDesktop : IDisposable
 	// THE LEAK GUARD: a tool started here must never show on the player's screen (his catch 2026-10-27: a probe's box sat on
 	// his desktop). Every half second while the tool runs, its whole process tree is looked for among the visible windows of
 	// the normal desktop; one found there ends the tree at once (by PID) and the step fails naming it.
-	public string? Leak { get; private set; }
+	public string? Leak => _leak;
+
+	// written by a guard's thread, read by the run's
+	volatile string? _leak;
 
 	public static Func<IReadOnlyCollection<int>, List<nint>> OnPlayersDesktop { get; set; } = a_pids => Native.TopWindowsOf(a_pids, true);
 
@@ -91,14 +94,18 @@ public sealed partial class HiddenDesktop : IDisposable
 
 	void Watch(int a_root)
 	{
+		// the guard's own hold on the stop request and its wait handle, taken before it starts: it never reaches into the source
+		// again, which Dispose may be letting go while a guard is still inside a long look
+		var stop = _stop.Token;
+		var wake = stop.WaitHandle;
 		var t = new Thread(() => {
-			while (!_stop.IsCancellationRequested && Procs.Alive(a_root)) {
+			while (!stop.IsCancellationRequested && Procs.Alive(a_root)) {
 				// a look that fails (a process gone mid-read) is tried again next time: an exception here would end the program
 				try {
 					var tree = Procs.Tree(a_root);
 					var shown = OnPlayersDesktop(tree);
 					if (shown.Count > 0) {
-						Leak = "a window of the tool opened on the player's screen (" + string.Join(", ", shown.Select(h => "'" + Native.WindowText(h) + "'")) + ") - the tool was ended";
+						_leak = "a window of the tool opened on the player's screen (" + string.Join(", ", shown.Select(h => "'" + Native.WindowText(h) + "'")) + ") - the tool was ended";
 						foreach (var pid in tree.AsEnumerable().Reverse()) {
 							Procs.KillTree(pid);
 						}
@@ -106,7 +113,11 @@ public sealed partial class HiddenDesktop : IDisposable
 					}
 				} catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception or ArgumentException) {
 				}
-				_stop.Token.WaitHandle.WaitOne(GuardPoll);
+				try {
+					wake.WaitOne(GuardPoll);
+				} catch (ObjectDisposedException) {
+					return;
+				}
 			}
 		}) { IsBackground = true, Name = "hidden desktop leak guard" };
 		_guards.Add(t);
@@ -157,14 +168,19 @@ public sealed partial class HiddenDesktop : IDisposable
 		return result!;
 	}
 
-	// every guard thread (one per tool started here) is waited for before its token and the desktop go (it may be mid-look)
+	// Every guard thread (one per tool started here) is waited for before the stop request and the desktop go (it may be
+	// mid-look). A guard still inside a look after that wait (ending a leaked tree takes ten seconds a process) keeps the stop
+	// request alive: let go under it, its next wait would throw on a thread of its own and end the whole program mid-run
 	public void Dispose()
 	{
 		_stop.Cancel();
+		var ended = true;
 		foreach (var g in _guards) {
-			g.Join(TimeSpan.FromSeconds(10));
+			ended &= g.Join(TimeSpan.FromSeconds(10));
 		}
-		_stop.Dispose();
+		if (ended) {
+			_stop.Dispose();
+		}
 		CloseDesktop(_desk);
 	}
 }

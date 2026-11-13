@@ -6,9 +6,17 @@ namespace ToolRunner;
 public static class Mo2MenuEntry
 {
 	const string Slot = "@PROGRAM@";
-	const string FileName = "skyrimutilitypatcher.py";
+	static readonly string FileName = Brand.Compact.ToLowerInvariant() + ".py";
 
-	static string There(Mo2Instance a_mo2) => Path.Combine(Path.GetDirectoryName(a_mo2.Exe)!, "plugins", FileName);
+	static string Plugins(Mo2Instance a_mo2) => Path.Combine(Path.GetDirectoryName(a_mo2.Exe)!, "plugins");
+
+	static string There(Mo2Instance a_mo2) => Path.Combine(Plugins(a_mo2), FileName);
+
+	// the entry an older name of the program added: left beside the new one it would show the program twice in the Tools menu and answer the
+	// companion's questions twice. Only a file that is this entry (it names its author and the tool class) counts
+	public static IEnumerable<string> OldOnes(Mo2Instance a_mo2) =>
+		Brand.OldCompact.Select(n => Path.Combine(Plugins(a_mo2), n.ToLowerInvariant() + ".py")).Where(File.Exists)
+			.Where(f => Files.ReadSharedText(f) is var text && text.Contains("Author: izzydoingit", StringComparison.Ordinal) && text.Contains("mobase.IPluginTool", StringComparison.Ordinal));
 
 	public static string Text(string a_program)
 	{
@@ -17,10 +25,18 @@ public static class Mo2MenuEntry
 		return r.ReadToEnd().Replace(Slot, a_program, StringComparison.Ordinal);
 	}
 
-	public static bool IsCurrent(Mo2Instance a_mo2, string a_program) => File.Exists(There(a_mo2)) && File.ReadAllText(There(a_mo2)) == Text(a_program);
+	// current = this program's entry as it writes it now, and none of an older name beside it
+	public static bool IsCurrent(Mo2Instance a_mo2, string a_program) => File.Exists(There(a_mo2)) && File.ReadAllText(There(a_mo2)) == Text(a_program) && !OldOnes(a_mo2).Any();
 
-	public static void Add(Mo2Instance a_mo2, string a_program) => Files.WriteAtomic(There(a_mo2), Text(a_program));
+	public static void Add(Mo2Instance a_mo2, string a_program)
+	{
+		Files.WriteAtomic(There(a_mo2), Text(a_program));
+		foreach (var old in OldOnes(a_mo2).ToList()) {
+			Files.TryDelete(old);
+		}
+	}
 
+	// the entry under the program's name now: an older name's entry cannot answer this version (its data folder is another)
 	public static bool Present(Mo2Instance a_mo2) => File.Exists(There(a_mo2));
 }
 
@@ -28,7 +44,7 @@ public static class Mo2MenuEntry
 // while it is open and read back in by the plugin above before each tool. A file for each question and each answer, in the plugin's own data folder.
 public static class Companion
 {
-	static string Folder(Mo2Instance a_mo2) => Path.Combine(Path.GetDirectoryName(a_mo2.Exe)!, "plugins", "data", "SkyrimUtilityPatcher");
+	static string Folder(Mo2Instance a_mo2) => Path.Combine(Path.GetDirectoryName(a_mo2.Exe)!, "plugins", "data", "ToolRunner");
 
 	// true = answered; false = no answer within a_wait, and nothing is left behind. The question names the instance and profile: with several Mod Organizers
 	// open only the run's own may answer, or its lists would be read back into the wrong one

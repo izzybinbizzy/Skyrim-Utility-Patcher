@@ -91,7 +91,9 @@ public static class Engine
 	// every run record, newest first (read again only where a record changed)
 	public static List<Journal> Runs() => Cache.Read();
 
-	public static Journal? Active(List<Journal>? a_runs = null) => (a_runs ?? Runs()).FirstOrDefault(j => (j.Unfinished || j.InGameAfter) && j.OwnerAlive);
+	// the run that is going: also one that has finished and is at its last chores (its game for the save to play, the setup's
+	// after-run commands, packing the old outputs) - Stop and the close guard reach it until its engine has ended
+	public static Journal? Active(List<Journal>? a_runs = null) => (a_runs ?? Runs()).FirstOrDefault(j => j.Live && j.OwnerAlive);
 
 	public static Journal? Interrupted(List<Journal>? a_runs = null) => (a_runs ?? Runs()).FirstOrDefault(j => j.Unfinished && !j.OwnerAlive);
 

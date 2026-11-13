@@ -6,9 +6,9 @@ using ToolRunner.Steps;
 
 namespace ToolRunner;
 
-// His checklist 433-435: a modder adds their patcher with one file in their own mod, <mod>\Skyrim Utility Patcher\<anything>.json, saying what it is, how to
+// His checklist 433-435: a modder adds their patcher with one file in their own mod, <mod>\Tool Runner\<anything>.json, saying what it is, how to
 // start it, what it makes and where it goes in the order. No code of theirs is loaded into this program. The player sees exactly what it will start
-// and says yes once; a file that changes later is asked about again (a setting turns the question off). What the tool writes lands in overwrite, and goes
+// and says yes once; a file - or the program it starts - that changes later is asked about again (a setting turns the question off). What the tool writes lands in overwrite, and goes
 // into the add-on's own output mod, never another mod.
 public sealed record AddOn(string File, string ModDir, string Name, string Author, string Page, string Program, string Arguments, string Output, int Minutes,
 	string? Makes, string? Before, string? After, string Hash)
@@ -16,8 +16,21 @@ public sealed record AddOn(string File, string ModDir, string Name, string Autho
 	public string Key => AddOns.KeyPrefix + Name;
 	public string ProgramPath => Path.GetFullPath(Path.Combine(ModDir, Program));
 
+	// the program as it stands now, for the question: what is allowed is this very file (its size and day help a player tell)
+	string ProgramSaid
+	{
+		get {
+			try {
+				var f = new FileInfo(ProgramPath);
+				return f.Exists ? $"  ({(f.Length / 1024.0).ToString("#,0", InvariantCulture)} KB, last changed {f.LastWriteTime.ToString("yyyy-MM-dd", InvariantCulture)})" : "";
+			} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+				return "";
+			}
+		}
+	}
+
 	// what the question to the player says
-	public string Says => $"{Name}, by {Author}.\n\nIt starts:  {ProgramPath}" + (Arguments == "" ? "" : $"\nWith:  {Arguments}") +
+	public string Says => $"{Name}, by {Author}.\n\nIt starts:  {ProgramPath}{ProgramSaid}" + (Arguments == "" ? "" : $"\nWith:  {Arguments}") +
 		$"\n\nWhat it writes goes into its own output mod, {Output}. It runs as any program does: this program cannot stop one that writes somewhere else, so allow only an add-on you trust." +
 		(Page == "" ? "" : $"\n\nIts page: {Page}");
 }
@@ -25,7 +38,10 @@ public sealed record AddOn(string File, string ModDir, string Name, string Autho
 public static class AddOns
 {
 	public const string KeyPrefix = "addon:";
-	public const string FolderInMod = "Skyrim Utility Patcher";
+	// the folder inside a modder's own mod: named after the program, under any name it had (an add-on made for an older name still counts)
+	public const string FolderInMod = Brand.Name;
+
+	public static bool IsFolderInMod(string? a_folderName) => Brand.Is(a_folderName);
 	public const string NoAskSetting = "addonsNoAsk";
 	const int Schema = 1;
 	const int DefaultMinutes = 60, MostMinutes = 600, LongestName = 60;
@@ -33,7 +49,23 @@ public static class AddOns
 
 	static string? Text(JsonObject a_o, string a_key) => a_o[a_key] is JsonValue v && v.TryGetValue<string>(out var s) ? s.Trim() : null;
 
-	static string Hash(byte[] a_bytes) => Convert.ToHexString(SHA256.HashData(a_bytes));
+	// What the player allows is the add-on file AND the program it starts: one fingerprint over both. Over the file alone, a
+	// mod update (or anything else that writes in that mod) could put another program under an unchanged file, and it ran at the
+	// next Start with no question. A program that is not there adds nothing (the file's own problems say so).
+	static string Hash(byte[] a_bytes, string? a_program = null)
+	{
+		using var sha = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+		sha.AppendData(a_bytes);
+		if (a_program != null && File.Exists(a_program)) {
+			using var fs = new FileStream(a_program, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete, 1 << 16, FileOptions.SequentialScan);
+			var block = new byte[1 << 16];
+			int n;
+			while ((n = fs.Read(block, 0, block.Length)) > 0) {
+				sha.AppendData(block, 0, n);
+			}
+		}
+		return Convert.ToHexString(sha.GetHashAndReset());
+	}
 
 	static bool RelativeInside(string a_path) =>
 		!Path.IsPathRooted(a_path) && !a_path.Replace('\\', '/').Split('/').Contains("..");
@@ -100,7 +132,8 @@ public static class AddOns
 		}
 		var o = (JsonObject)JsonNode.Parse(text, null, new JsonDocumentOptions { AllowTrailingCommas = true, CommentHandling = JsonCommentHandling.Skip })!;
 		return new AddOn(a_file, a_modDir, Text(o, "name")!, Text(o, "author")!, Text(o, "page") ?? "", Text(o, "program")!, Text(o, "arguments") ?? "", Text(o, "output")!,
-			o["minutes"]?.GetValue<int>() ?? DefaultMinutes, Text(o, "makes"), Text(o, "before"), Text(o, "after"), Hash(bytes));
+			o["minutes"]?.GetValue<int>() ?? DefaultMinutes, Text(o, "makes"), Text(o, "before"), Text(o, "after"),
+			Hash(bytes, Path.GetFullPath(Path.Combine(a_modDir, Text(o, "program")!))));
 	}
 
 	public sealed record Found(string File, string Mod, AddOn? AddOn, IReadOnlyList<string> Problems);
@@ -111,11 +144,7 @@ public static class AddOns
 		var found = new List<Found>();
 		foreach (var mod in a_profile.States().Where(s => s.Value == '+').Select(s => s.Key)) {
 			var modDir = a_mo2.ModDir(mod);
-			var dir = Path.Combine(modDir, FolderInMod);
-			if (!Directory.Exists(dir)) {
-				continue;
-			}
-			foreach (var f in Directory.GetFiles(dir, "*.json")) {
+			foreach (var f in Brand.AllNames.Select(n => Path.Combine(modDir, n)).Where(Directory.Exists).SelectMany(d => Directory.GetFiles(d, "*.json"))) {
 				try {
 					var problems = Problems(Files.ReadSharedText(f), modDir);
 					found.Add(new Found(f, mod, problems.Count == 0 ? Read(f, modDir) : null, problems));
@@ -195,7 +224,7 @@ public sealed class AddOnStep(string a_key) : IStep
 		}
 		var addOn = AddOns.Read(file, modDir)!;
 		if (addOn.Hash != a_s.Str("sha") && Setup.Bool(a_c.Setup.Root, AddOns.NoAskSetting) != true) {
-			yield return new Issue(Key, true, "its add-on file changed since you allowed it: look at it again in Settings > ADD-ONS");
+			yield return new Issue(Key, true, "its add-on file or the program it starts changed since you allowed it: look at it again in Settings > ADD-ONS");
 		}
 		if (a_c.States.TryGetValue(Path.GetFileName(modDir), out var state) && state != '+') {
 			yield return new Issue(Key, true, $"the mod that holds it, {Path.GetFileName(modDir)}, is switched off in this profile");
@@ -211,12 +240,14 @@ public sealed class AddOnStep(string a_key) : IStep
 		var addOn = AddOns.Read(file, ModDirOf(file)) ?? throw new StepFailedException("its add-on file has problems - Settings > ADD-ONS names them");
 		// the file as it stands now is what starts: changed since the pre-check, it is not what the player allowed
 		if (addOn.Hash != a_s.Str("sha") && Setup.Bool(a_ctx.Setup.Root, AddOns.NoAskSetting) != true) {
-			throw new StepFailedException("its add-on file changed since you allowed it: look at it again in Settings > ADD-ONS");
+			throw new StepFailedException("its add-on file or the program it starts changed since you allowed it: look at it again in Settings > ADD-ONS");
 		}
 		var output = a_s.OutputMod ?? throw new StepFailedException("no output mod is set");
 		var image = Path.GetFileName(addOn.ProgramPath);
 		var before = Runner.OverwriteFiles(a_ctx);
 		StepKit.EnsureOutput(a_ctx, output);
+		// a tool told to write into its output mod rewrites its file where it stands
+		StepKit.KeepInPlace(a_ctx, output, addOn.Makes);
 		try {
 			using var proc = a_ctx.Control.RunExecutable(addOn.ProgramPath, image, addOn.Arguments == "" ? null : addOn.Arguments, a_ctx.Cancel, null, true);
 			a_ctx.Activity(Key, addOn.Name + " is working");
@@ -243,6 +274,8 @@ public sealed class AddOnStep(string a_key) : IStep
 			// a tool told to write into the output mod itself: Mod Organizer's virtual folder passes that through
 			if (a_makes != null && a_ctx.Journal.Step(a_step)?.Started is { } since && Path.Combine(a_ctx.Mo2.ModDir(a_mod), a_makes) is var inMod && File.Exists(inMod) && File.GetLastWriteTime(inMod) >= since) {
 				a_ctx.Log.Detail($"{StepCatalog.Name(a_step)} wrote {a_makes} straight into {a_mod}");
+				// its old bytes (kept before the tool started) are what an undo puts back
+				StepKit.Settled(a_ctx, [inMod]);
 				return true;
 			}
 			if (a_nothingIsFine) {
@@ -260,9 +293,13 @@ public sealed class AddOnStep(string a_key) : IStep
 		foreach (var f in fresh) {
 			var dst = Path.Combine(a_ctx.Mo2.ModDir(a_mod), Path.GetRelativePath(ow, f));
 			Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
-			File.Move(f, dst, true);
+			Files.Move(f, dst, true);
 		}
 		a_ctx.Log.Detail($"{fresh.Count} file(s) moved from overwrite into {a_mod}");
+		// the whole old mod is in the backup now: a file kept on its own before the tool started is covered by that
+		if (a_makes != null) {
+			StepKit.Settled(a_ctx, [Path.Combine(a_ctx.Mo2.ModDir(a_mod), a_makes)]);
+		}
 		return true;
 	}
 }

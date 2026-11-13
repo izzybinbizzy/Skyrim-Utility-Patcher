@@ -9,6 +9,12 @@ namespace ToolRunner;
 // through UI Automation or posted messages, text read with WM_GETTEXT, a list photographed with PrintWindow.
 public static partial class Native
 {
+	[DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+	static extern bool CreateHardLinkW(string a_new, string a_existing, nint a_security);
+
+	// one file under a second name; false when the volume or the file's link count refuses it
+	public static bool HardLink(string a_new, string a_existing) => CreateHardLinkW(a_new, a_existing, 0);
+
 	public const uint WM_CLOSE = 0x0010, WM_GETTEXT = 0x000D, WM_GETTEXTLENGTH = 0x000E, WM_KEYDOWN = 0x0100, WM_KEYUP = 0x0101,
 		WM_CHAR = 0x0102, WM_MOUSEMOVE = 0x0200, WM_LBUTTONDOWN = 0x0201, WM_LBUTTONUP = 0x0202, BM_CLICK = 0x00F5;
 	public const uint LB_SETCURSEL = 0x0186, LB_SETTOPINDEX = 0x0197, LB_GETCOUNT = 0x018B, LB_GETITEMRECT = 0x0198;
@@ -41,10 +47,30 @@ public static partial class Native
 	[LibraryImport("user32.dll", EntryPoint = "SendMessageTimeoutW")]
 	private static partial nint SendMessageTimeout(nint a_hwnd, uint a_msg, nint a_w, nint a_l, uint a_flags, uint a_ms, out nint a_result);
 
-	const uint WM_NULL = 0x0000, SMTO_ABORTIFHUNG = 0x0002;
+	[DllImport("user32.dll", EntryPoint = "SendMessageTimeoutW", CharSet = CharSet.Unicode)]
+	static extern nint SendMessageTimeoutBuf(nint a_hwnd, uint a_msg, nint a_w, [Out] char[] a_buf, uint a_flags, uint a_ms, out nint a_result);
+
+	[DllImport("user32.dll", EntryPoint = "SendMessageTimeoutW")]
+	static extern nint SendMessageTimeoutRect(nint a_hwnd, uint a_msg, nint a_w, ref RECT a_rect, uint a_flags, uint a_ms, out nint a_result);
+
+	const uint WM_NULL = 0x0000, SMTO_BLOCK = 0x0001, SMTO_ABORTIFHUNG = 0x0002;
 
 	// the window's thread answers a message within a_ms (a window busy loading or hung does not)
 	public static bool Responds(nint a_hwnd, uint a_ms = 1000) => SendMessageTimeout(a_hwnd, WM_NULL, 0, 0, SMTO_ABORTIFHUNG, a_ms, out _) != 0;
+
+	// how long another program's window is given to answer one message (the offline tests shorten it)
+	public static uint SendLimitMs { get; set; } = 5000;
+
+	// A message to another program's window, with a time limit: a tool whose window thread hangs (or is busy for minutes, as
+	// the xEdit-based tools are) never holds the step that asks. The step's own deadline and idle rule are looked at by the
+	// very loop that sends these, so a plain send to a hung window stopped the clock that should have ended the step. False =
+	// no answer in time, or the window is gone
+	public static bool TrySend(nint a_hwnd, uint a_msg, nint a_w, nint a_l, out nint a_result) =>
+		SendMessageTimeout(a_hwnd, a_msg, a_w, a_l, SMTO_ABORTIFHUNG | SMTO_BLOCK, SendLimitMs, out a_result) != 0;
+
+	// the same for a message that fills a rectangle (a list row's place)
+	public static bool TrySend(nint a_hwnd, uint a_msg, nint a_w, ref RECT a_rect) =>
+		SendMessageTimeoutRect(a_hwnd, a_msg, a_w, ref a_rect, SMTO_ABORTIFHUNG | SMTO_BLOCK, SendLimitMs, out _) != 0;
 
 	[LibraryImport("user32.dll")]
 	public static partial uint GetWindowThreadProcessId(nint a_hwnd, out uint a_pid);
@@ -79,11 +105,6 @@ public static partial class Native
 	[DllImport("user32.dll", EntryPoint = "GetClassNameW", CharSet = CharSet.Unicode)]
 	static extern int GetClassNameW(nint a_hwnd, [Out] char[] a_text, int a_max);
 
-	[LibraryImport("user32.dll", EntryPoint = "SendMessageW")]
-	public static partial nint SendMessage(nint a_hwnd, uint a_msg, nint a_w, nint a_l);
-
-	[DllImport("user32.dll", EntryPoint = "SendMessageW", CharSet = CharSet.Unicode)]
-	static extern nint SendMessageBuf(nint a_hwnd, uint a_msg, nint a_w, [Out] char[] a_buf);
 
 	[LibraryImport("user32.dll", EntryPoint = "PostMessageW")]
 	[return: MarshalAs(UnmanagedType.Bool)]
@@ -108,6 +129,13 @@ public static partial class Native
 	[LibraryImport("user32.dll")]
 	[return: MarshalAs(UnmanagedType.Bool)]
 	public static partial bool PrintWindow(nint a_hwnd, nint a_hdc, uint a_flags);
+
+	[LibraryImport("kernel32.dll")]
+	[return: MarshalAs(UnmanagedType.Bool)]
+	private static partial bool QueryUnbiasedInterruptTime(out ulong a_ticks);
+
+	// how long the PC has been awake since it started, in 100-nanosecond ticks: time asleep or hibernating is not in it
+	public static ulong AwakeTicks() => QueryUnbiasedInterruptTime(out var t) ? t : (ulong)Environment.TickCount64 * TimeSpan.TicksPerMillisecond;
 
 	[LibraryImport("kernel32.dll")]
 	public static partial uint SetThreadExecutionState(uint a_flags);
@@ -144,15 +172,15 @@ public static partial class Native
 
 	// the FULL text of an edit / memo (UI Automation cuts a VCL memo at 2048 characters), unpacked when a tool answers with its
 	// ANSI bytes packed two to a character (xLODGen 4.1.5o, 2026-10-12)
+	// A window that does not answer in time reads as no text this look: the caller's loop goes on to its own clock
 	public static string ControlText(nint a_hwnd)
 	{
-		var n = (int)SendMessage(a_hwnd, WM_GETTEXTLENGTH, 0, 0);
-		if (n <= 0) {
+		if (!TrySend(a_hwnd, WM_GETTEXTLENGTH, 0, 0, out var length) || (int)length <= 0) {
 			return "";
 		}
+		var n = (int)length;
 		var buf = new char[n + 1];
-		var got = (int)SendMessageBuf(a_hwnd, WM_GETTEXT, n + 1, buf);
-		return FromBuffer(buf, got);
+		return SendMessageTimeoutBuf(a_hwnd, WM_GETTEXT, n + 1, buf, SMTO_ABORTIFHUNG | SMTO_BLOCK, SendLimitMs, out var got) != 0 ? FromBuffer(buf, (int)got) : "";
 	}
 
 	// A tool that packs its ANSI bytes two to a character counts BYTES in its answer, so half the buffer stays empty; the text
@@ -233,28 +261,66 @@ public static partial class Native
 }
 
 // process helpers: find by image name, CPU of a whole tree, kill a tree by PID (never by name or window title)
-public static class Procs
+public static partial class Procs
 {
-	// the caller owns (and disposes) every Process returned; for ids only, Pids releases them itself
-	public static List<Process> ByImage(string a_image)
-	{
-		var name = Path.GetFileNameWithoutExtension(a_image);
-		return Process.GetProcessesByName(name).ToList();
-	}
+	// Every look by image name is one walk of Windows' own process list (the toolhelp snapshot), the names compared in place.
+	// Process.GetProcessesByName builds an object for every process and thread of the PC on each call - the window asks every
+	// poll and a step every two seconds, and that was most of what an idle window cost.
 
-	// the ids of the processes of an image, every Process object released at once (the window asks this every second and a step
-	// every two: undisposed, each look left objects for the finalizer to clear)
+	// an image's name without its ".exe" - what the name a caller gives is compared with
+	static ReadOnlySpan<char> Bare(ReadOnlySpan<char> a_image) =>
+		a_image.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? a_image[..^4] : a_image;
+
+	static bool Is(ReadOnlySpan<char> a_listed, ReadOnlySpan<char> a_want) => Bare(a_listed).Equals(a_want, StringComparison.OrdinalIgnoreCase);
+
+	// the ids of the processes of an image
 	public static List<int> Pids(string a_image)
 	{
-		var ps = ByImage(a_image);
-		try {
-			return ps.Select(p => p.Id).ToList();
-		} finally {
-			ps.ForEach(p => p.Dispose());
-		}
+		var want = Path.GetFileNameWithoutExtension(a_image);
+		var outList = new List<int>();
+		Walk((pid, _, image) => {
+			if (Is(image, want)) {
+				outList.Add(pid);
+			}
+			return true;
+		});
+		return outList;
 	}
 
-	public static bool Running(string a_image) => Pids(a_image).Count > 0;
+	public static bool Running(string a_image)
+	{
+		var want = Path.GetFileNameWithoutExtension(a_image);
+		var found = false;
+		Walk((_, _, image) => !(found = Is(image, want)));
+		return found;
+	}
+
+	// which of several images run, from ONE look (the window's poll asks for Mod Organizer and the game together)
+	public static bool[] Running(IReadOnlyList<string> a_images)
+	{
+		var want = a_images.Select(Path.GetFileNameWithoutExtension).ToArray();
+		var found = new bool[want.Length];
+		Walk((_, _, image) => {
+			for (var i = 0; i < want.Length; ++i) {
+				found[i] |= Is(image, want[i]);
+			}
+			return true;
+		});
+		return found;
+	}
+
+	// the caller owns (and disposes) every Process returned; one that ended since the look is left out
+	public static List<Process> ByImage(string a_image)
+	{
+		var outList = new List<Process>();
+		foreach (var pid in Pids(a_image)) {
+			try {
+				outList.Add(Process.GetProcessById(pid));
+			} catch (ArgumentException) {
+			}
+		}
+		return outList;
+	}
 
 	public static string? ExePath(Process a_p)
 	{
@@ -296,6 +362,19 @@ public static class Procs
 		} catch (Win32Exception) {
 		}
 		return TimeSpan.Zero;
+	}
+
+	// the same, with "not readable" told apart from "none used" (null: the process is gone or may not be read)
+	public static TimeSpan? CpuOrNull(int a_pid)
+	{
+		try {
+			using var p = Process.GetProcessById(a_pid);
+			return p.TotalProcessorTime;
+		} catch (ArgumentException) {
+		} catch (InvalidOperationException) {
+		} catch (Win32Exception) {
+		}
+		return null;
 	}
 
 	public static TimeSpan TreeCpu(int a_root)
@@ -346,16 +425,58 @@ public static class Procs
 		return null;
 	}
 
-	// the process's image name with .exe ("" when gone)
+	// the process's image name as Windows lists it, "ModOrganizer.exe" ("" when gone): asked of the process itself through a
+	// handle that reads nothing else, and off the process list for one this user may not open
 	public static string Image(int a_pid)
 	{
-		try {
-			using var p = Process.GetProcessById(a_pid);
-			return p.ProcessName + ".exe";
-		} catch (ArgumentException) {
-		} catch (InvalidOperationException) {
+		if (PathOf(a_pid) is { } path) {
+			return Path.GetFileName(path);
 		}
-		return "";
+		var found = "";
+		Walk((pid, _, image) => {
+			if (pid != a_pid) {
+				return true;
+			}
+			found = image.ToString();
+			return false;
+		});
+		return found != "" && Alive(a_pid) ? found : "";
+	}
+
+	// the same without its ".exe" (null when gone) - the name a program is known by
+	public static string? Name(int a_pid) => Image(a_pid) is { Length: > 0 } image ? Bare(image).ToString() : null;
+
+	const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000, SYNCHRONIZE = 0x00100000;
+
+	[LibraryImport("kernel32.dll", SetLastError = true)]
+	private static partial nint OpenProcess(uint a_access, [MarshalAs(UnmanagedType.Bool)] bool a_inherit, uint a_pid);
+
+	[LibraryImport("kernel32.dll", EntryPoint = "QueryFullProcessImageNameW", SetLastError = true)]
+	[return: MarshalAs(UnmanagedType.Bool)]
+	private static unsafe partial bool QueryFullProcessImageName(nint a_process, uint a_flags, char* a_path, ref uint a_size);
+
+	[LibraryImport("kernel32.dll")]
+	private static partial uint WaitForSingleObject(nint a_handle, uint a_ms);
+
+	// a running process's program file (null: gone, ended, or closed to this user)
+	static unsafe string? PathOf(int a_pid)
+	{
+		var h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, false, (uint)a_pid);
+		if (h == 0) {
+			return null;
+		}
+		try {
+			// a process that ended stays openable while anyone holds a handle to it: its handle is signalled
+			if (WaitForSingleObject(h, 0) == 0) {
+				return null;
+			}
+			const int Max = 1024;
+			var buf = stackalloc char[Max];
+			uint n = Max;
+			return QueryFullProcessImageName(h, 0, buf, ref n) ? new string(buf, 0, (int)n) : null;
+		} finally {
+			CloseHandle(h);
+		}
 	}
 
 	public static bool Alive(int a_pid)
@@ -374,47 +495,68 @@ public static class Procs
 		}
 	}
 
-	[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-	struct PROCESSENTRY32W
+	const int MaxImage = 260;
+
+	// the name is read where Windows wrote it: no string is made for the hundreds of processes a look passes over
+	[StructLayout(LayoutKind.Sequential)]
+	unsafe struct PROCESSENTRY32W
 	{
 		public uint dwSize, cntUsage, th32ProcessID;
 		public nint th32DefaultHeapID;
 		public uint th32ModuleID, cntThreads, th32ParentProcessID;
 		public int pcPriClassBase;
 		public uint dwFlags;
-		[MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
-		public string szExeFile;
+		public fixed char szExeFile[MaxImage];
 	}
 
-	[DllImport("kernel32.dll", SetLastError = true)]
-	static extern nint CreateToolhelp32Snapshot(uint a_flags, uint a_pid);
+	[LibraryImport("kernel32.dll", SetLastError = true)]
+	private static partial nint CreateToolhelp32Snapshot(uint a_flags, uint a_pid);
 
-	[DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
-	static extern bool Process32FirstW(nint a_snap, ref PROCESSENTRY32W a_entry);
+	[LibraryImport("kernel32.dll")]
+	[return: MarshalAs(UnmanagedType.Bool)]
+	private static partial bool Process32FirstW(nint a_snap, ref PROCESSENTRY32W a_entry);
 
-	[DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
-	static extern bool Process32NextW(nint a_snap, ref PROCESSENTRY32W a_entry);
+	[LibraryImport("kernel32.dll")]
+	[return: MarshalAs(UnmanagedType.Bool)]
+	private static partial bool Process32NextW(nint a_snap, ref PROCESSENTRY32W a_entry);
 
-	[DllImport("kernel32.dll")]
-	static extern bool CloseHandle(nint a_h);
+	[LibraryImport("kernel32.dll")]
+	[return: MarshalAs(UnmanagedType.Bool)]
+	private static partial bool CloseHandle(nint a_h);
 
-	public static List<(int Pid, int Parent)> Snapshot()
+	// one process of a look: its id, its parent's, its image name ("ModOrganizer.exe"); false ends the look
+	delegate bool Visit(int a_pid, int a_parent, ReadOnlySpan<char> a_image);
+
+	static unsafe void Walk(Visit a_visit)
 	{
-		var outList = new List<(int, int)>();
-		var snap = CreateToolhelp32Snapshot(2, 0);
+		const uint TH32CS_SNAPPROCESS = 2;
+		var snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
 		if (snap == -1) {
-			return outList;
+			return;
 		}
 		try {
-			var e = new PROCESSENTRY32W { dwSize = (uint)Marshal.SizeOf<PROCESSENTRY32W>() };
+			var e = new PROCESSENTRY32W { dwSize = (uint)sizeof(PROCESSENTRY32W) };
 			if (Process32FirstW(snap, ref e)) {
 				do {
-					outList.Add(((int)e.th32ProcessID, (int)e.th32ParentProcessID));
+					var image = new ReadOnlySpan<char>(e.szExeFile, MaxImage);
+					var end = image.IndexOf('\0');
+					if (!a_visit((int)e.th32ProcessID, (int)e.th32ParentProcessID, end < 0 ? image : image[..end])) {
+						break;
+					}
 				} while (Process32NextW(snap, ref e));
 			}
 		} finally {
 			CloseHandle(snap);
 		}
+	}
+
+	public static List<(int Pid, int Parent)> Snapshot()
+	{
+		var outList = new List<(int, int)>();
+		Walk((pid, parent, _) => {
+			outList.Add((pid, parent));
+			return true;
+		});
 		return outList;
 	}
 }

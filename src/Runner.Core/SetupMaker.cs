@@ -50,8 +50,7 @@ public static class SetupMaker
 		var plainTaken = false;
 		foreach (var (mod, flag) in states.Where(s => s.Value != '*')) {
 			var plugins = Path.Combine(mo2.ModDir(mod), "SKSE", "Plugins");
-			if (Directory.Exists(plugins) && Directory.GetFiles(plugins, "*.dll").Any(f => Path.GetFileName(f) is var n &&
-				    (n.Equals("CommunityShaders.dll", StringComparison.OrdinalIgnoreCase) || n.Contains("OpenShaders", StringComparison.OrdinalIgnoreCase) || n.Contains("BottledShaders", StringComparison.OrdinalIgnoreCase)))) {
+			if (Directory.Exists(plugins) && Directory.GetFiles(plugins, "*.dll").Any(f => InGame.IsShaderDll(Path.GetFileName(f)))) {
 				// one cache mod per shader mod: the first ticked one gets the plain name, every other its shader mod's name added
 				var plain = flag == '+' && !plainTaken;
 				plainTaken |= plain;
@@ -63,6 +62,10 @@ public static class SetupMaker
 		}
 		var dynDll = states.Any(s => s.Value == '+' && Directory.Exists(mo2.ModDir(s.Key)) && File.Exists(Path.Combine(mo2.ModDir(s.Key), "SKSE", "Plugins", "DynDOLOD.dll")));
 		Add("cleansave", false, new JsonObject { ["launch_executable"] = skse, ["interior_cell"] = "QASmoke", ["wait_s"] = 60, ["dyndolod_wait_s"] = 30, ["dyndolod_off"] = dynDll, ["save"] = "" });
+		// off: it changes the player's load order, which only they can ask for
+		if (File.Exists(Steps.LootStep.Program(mo2))) {
+			Add(Steps.LootStep.StepKey, false, new JsonObject { ["deadline_min"] = 10 });
+		}
 		// the guided patchers, each only where Mod Organizer's list holds it: off, for the same reason as Wrye Bash below
 		void Guided(string a_key, string a_output, Mo2Executable? a_entry)
 		{

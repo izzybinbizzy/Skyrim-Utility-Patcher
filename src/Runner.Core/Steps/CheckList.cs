@@ -14,7 +14,7 @@ public static class CheckList
 		for (int i = 0; i < a_count; ++i) {
 			var r = ItemRect(a_list, i);
 			if (r.Top < 0 || r.Bottom > pic.Height || r.Height <= 0) {
-				Native.SendMessage(a_list, Native.LB_SETTOPINDEX, i, 0);
+				Ask(a_list, Native.LB_SETTOPINDEX, i);
 				Thread.Sleep(150);
 				pic = Capture.Client(a_list) ?? throw new StepFailedException("could not draw the worldspace list to read its ticks");
 				r = ItemRect(a_list, i);
@@ -25,9 +25,14 @@ public static class CheckList
 			}
 			outArr[i] = IsTicked(pic, r.Left + 3, Math.Min(pic.Width, r.Left + 15), cy);
 		}
-		Native.SendMessage(a_list, Native.LB_SETTOPINDEX, 0, 0);
+		Ask(a_list, Native.LB_SETTOPINDEX, 0);
 		return outArr;
 	}
+
+	// one message to the tool's list, with Native's time limit: a tool whose window does not answer fails the step in words
+	// instead of holding it (and its deadline) for as long as the tool hangs
+	static nint Ask(nint a_list, uint a_msg, nint a_w) => Native.TrySend(a_list, a_msg, a_w, 0, out var answer) ? answer :
+		throw new StepFailedException("the tool's worldspace list does not answer - its window is not responding");
 
 	// a ticked box is filled with the accent colour; an empty one is grey / white
 	public static bool IsTicked(Picture a_pic, int a_x0, int a_x1, int a_y)
@@ -42,13 +47,12 @@ public static class CheckList
 		return coloured >= 3;
 	}
 
-	[System.Runtime.InteropServices.DllImport("user32.dll", EntryPoint = "SendMessageW")]
-	static extern nint SendRect(nint a_hwnd, uint a_msg, nint a_w, ref Native.RECT a_r);
-
 	static Native.RECT ItemRect(nint a_list, int a_i)
 	{
 		var r = new Native.RECT();
-		SendRect(a_list, Native.LB_GETITEMRECT, a_i, ref r);
+		if (!Native.TrySend(a_list, Native.LB_GETITEMRECT, a_i, ref r)) {
+			throw new StepFailedException("the tool's worldspace list does not answer - its window is not responding");
+		}
 		return r;
 	}
 
@@ -60,7 +64,7 @@ public static class CheckList
 			throw new StepFailedException("the worldspace list has no window handle");
 		}
 		var names = Uia.All(a_listElement, ControlType.ListItem).Select(Uia.Name).ToList();
-		var count = (int)Native.SendMessage(hwnd, Native.LB_GETCOUNT, 0, 0);
+		var count = (int)Ask(hwnd, Native.LB_GETCOUNT, 0);
 		if (count != names.Count) {
 			names = names.Take(count).ToList();
 		}
@@ -68,10 +72,10 @@ public static class CheckList
 		var changed = 0;
 		for (int i = 0; i < names.Count; ++i) {
 			if (now[i] != a_want(names[i])) {
-				Native.SendMessage(hwnd, Native.LB_SETCURSEL, i, 0);
-				Native.SendMessage(hwnd, Native.WM_KEYDOWN, Native.VK_SPACE, 0);
-				Native.SendMessage(hwnd, Native.WM_CHAR, Native.VK_SPACE, 0);
-				Native.SendMessage(hwnd, Native.WM_KEYUP, Native.VK_SPACE, 0);
+				Ask(hwnd, Native.LB_SETCURSEL, i);
+				Ask(hwnd, Native.WM_KEYDOWN, Native.VK_SPACE);
+				Ask(hwnd, Native.WM_CHAR, Native.VK_SPACE);
+				Ask(hwnd, Native.WM_KEYUP, Native.VK_SPACE);
 				++changed;
 				Thread.Sleep(80);
 			}

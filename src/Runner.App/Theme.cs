@@ -12,7 +12,12 @@ namespace ToolRunner.App;
 // start. A key left out keeps the default; a value that does not read is named, and its default kept.
 public static class Theme
 {
-	public const string Default = "Black and Gold";
+	// the default look: white panels, blue accents (his order 2026-11-10). App.xaml holds its values; its theme file is built in
+	// like the others, for the gallery's picture of it and as the start of a player's own theme
+	public const string Default = "Daylight";
+
+	// the default until 2026-11-10; a player who picked it keeps it
+	public const string BlackAndGold = "Black and Gold";
 
 	public static string Folder => Path.Combine(AppPaths.Data, "Themes");
 	static string ChoiceFile => Path.Combine(AppPaths.Data, "theme.txt");
@@ -20,16 +25,21 @@ public static class Theme
 
 	// the looks built into the program beside the default (his checklist 473): Windows' own high-contrast colors, taken from
 	// Windows each time it is applied, and a palette whose good / warning / bad states stay apart for color-blind eyes
-	// (blue / yellow / orange, the Okabe-Ito set); every state keeps its own glyph as well
+	// (blue / dark yellow / orange, from the Okabe-Ito set); every state keeps its own glyph as well
 	public const string HighContrast = "High contrast", ColorBlind = "Color-blind safe";
 
-	static readonly string[] BuiltIns = [HighContrast, ColorBlind];
+	// the themes shipped inside the program as theme files (Themes\<name>.json), in the gallery's order
+	static readonly string[] Shipped = [BlackAndGold, "Graphite", "Midnight", "Slate", "Paper", "Forest", "Ember", "Orchid", "Carbon", "Chalk"];
+
+	static readonly string[] BuiltIns = [.. Shipped, HighContrast, ColorBlind];
 
 	public static IReadOnlyList<string> BuiltInNames => BuiltIns;
 
+	public static IReadOnlyList<string> ShippedNames => Shipped;
+
 	static string Hex(Color a_c) => $"#{a_c.R:X2}{a_c.G:X2}{a_c.B:X2}";
 
-	static JsonObject Colors(params (string Key, string Value)[] a_values)
+	static JsonObject Tokens(params (string Key, string Value)[] a_values)
 	{
 		var o = new JsonObject();
 		foreach (var (k, v) in a_values) {
@@ -38,10 +48,21 @@ public static class Theme
 		return o;
 	}
 
+	// a shipped theme's own file, read out of the program
+	public static string ShippedText(string a_name)
+	{
+		using var s = typeof(Theme).Assembly.GetManifestResourceStream($"Theme.{a_name}.json") ?? throw new InvalidDataException($"the theme {a_name} is missing from the program");
+		using var r = new StreamReader(s);
+		return r.ReadToEnd();
+	}
+
 	static JsonObject BuiltIn(string a_name)
 	{
+		if (Shipped.Contains(a_name) || a_name == Default) {
+			return JsonNode.Parse(ShippedText(a_name)) as JsonObject ?? [];
+		}
 		if (a_name == ColorBlind) {
-			return new JsonObject { ["colors"] = Colors(("Good", "#56B4E9"), ("Warn", "#F0E442"), ("Bad", "#D55E00"), ("BannerBad", "#3A2410")) };
+			return new JsonObject { ["colors"] = Tokens(("Good", "#0072B2"), ("Warn", "#7A5C00"), ("Bad", "#B34E00"), ("BannerBad", "#FBE6D4")) };
 		}
 		var win = Hex(SystemColors.WindowColor);
 		var text = Hex(SystemColors.WindowTextColor);
@@ -51,7 +72,7 @@ public static class Theme
 		var dark = 0.2126 * w.R + 0.7152 * w.G + 0.0722 * w.B < 128;
 		return new JsonObject {
 			["windowsMode"] = dark ? "Dark" : "Light",
-			["colors"] = Colors(("Bg", win), ("Panel", win), ("Panel2", win), ("Line", text), ("Accent", high), ("AccentLight", text), ("AccentDim", text),
+			["colors"] = Tokens(("Bg", win), ("Panel", win), ("Panel2", win), ("Line", text), ("Accent", high), ("AccentLight", text), ("AccentDim", text),
 				("Text", text), ("Muted", text), ("Good", text), ("Warn", text), ("Bad", text), ("OnAccent", onHigh), ("HoverFill", win), ("BannerBad", win),
 				("GuidedFill", win), ("Shade", "#99000000")),
 			["highContrastPairs"] = true,
@@ -131,8 +152,8 @@ public static class Theme
 
 	// the template's colour names -> the window's resource keys (a brush, and the same name + "Color")
 	static readonly Dictionary<string, string> ColorKeys = new(StringComparer.Ordinal) {
-		["Bg"] = "Bg", ["Panel"] = "Panel", ["Panel2"] = "Panel2", ["Line"] = "Line", ["Accent"] = "Gold", ["AccentLight"] = "GoldLight",
-		["AccentDim"] = "GoldDim", ["Text"] = "Text", ["Muted"] = "Muted", ["Good"] = "Good", ["Warn"] = "Warn", ["Bad"] = "Bad",
+		["Bg"] = "Bg", ["Panel"] = "Panel", ["Panel2"] = "Panel2", ["Line"] = "Line", ["Accent"] = "Accent", ["AccentLight"] = "AccentLight",
+		["AccentDim"] = "AccentDim", ["Text"] = "Text", ["Muted"] = "Muted", ["Good"] = "Good", ["Warn"] = "Warn", ["Bad"] = "Bad",
 		["OnAccent"] = "OnAccent", ["HoverFill"] = "HoverFill", ["BannerBad"] = "BannerBad", ["GuidedFill"] = "GuidedFill", ["Shade"] = "Shade",
 	};
 
@@ -239,7 +260,94 @@ public static class Theme
 		s_glyphs = new(DefaultGlyphs);
 		Icon = null;
 		Application.Current.MainWindow?.ClearValue(Window.IconProperty);
-		SetMode("Dark");
+		SetMode("Light");
+	}
+
+	// ---------------------------------------------------------------- the gallery: a theme's own colors, read without applying it
+	public sealed record Look(string Name, string? File, string About, bool Dark, Color Bg, Color Panel, Color Panel2, Color Line, Color Accent, Color AccentLight,
+		Color Text, Color Muted, Color Good, Color Warn, Color Bad, Color OnAccent, Color BarFrom, Color BarTo, double Corner, string? Problem);
+
+	static Color ColorOr(JsonObject? a_colors, string a_key, Color a_else)
+	{
+		try {
+			return Value(a_colors?[a_key]) is { Length: > 0 } text ? (Color)ColorConverter.ConvertFromString(text.Trim()) : a_else;
+		} catch (FormatException) {
+			return a_else;
+		}
+	}
+
+	// what a theme looks like, for its card in the gallery; a key it leaves out shows the default's value, as applying it would
+	public static Look LookOf(string a_name, string? a_file)
+	{
+		var basis = JsonNode.Parse(ShippedText(Default)) as JsonObject ?? [];
+		JsonObject? own = null;
+		string? problem = null;
+		try {
+			own = a_file != null ? JsonNode.Parse(Files.ReadSharedText(a_file)) as JsonObject : a_name == Default ? basis : BuiltIn(a_name);
+		} catch (Exception e) when (e is JsonException or IOException or UnauthorizedAccessException or InvalidDataException) {
+			problem = "does not read: " + e.Message;
+		}
+		Color Pick(string a_key)
+		{
+			var fallback = ColorOr(basis["colors"] as JsonObject, a_key, Colors.Gray);
+			return ColorOr(own?["colors"] as JsonObject, a_key, fallback);
+		}
+		(Color From, Color To) Bar(JsonObject? a_t)
+		{
+			if (((a_t?["gradients"] as JsonObject)?["PrimaryAndProgress"] as JsonObject)?["stops"] is JsonArray { Count: >= 2 } stops) {
+				try {
+					return ((Color)ColorConverter.ConvertFromString(stops[0]!["color"]!.ToString()), (Color)ColorConverter.ConvertFromString(stops[^1]!["color"]!.ToString()));
+				} catch (Exception e) when (e is FormatException or NullReferenceException) {
+				}
+			}
+			return (Pick("Accent"), Pick("Accent"));
+		}
+		var bar = Bar(own is { } o && o["gradients"] != null ? o : own == null || a_name is HighContrast or ColorBlind ? basis : null);
+		var mode = Value(own?["windowsMode"]) ?? (a_name == ColorBlind || own == null ? "Light" : Value(basis["windowsMode"]) ?? "Light");
+		var corner = ((own?["shape"] ?? basis["shape"]) as JsonObject)?["CardCorner"] is JsonValue c && c.TryGetValue<double>(out var r) ? Math.Clamp(r, 0, 30) : 8;
+		return new(a_name, a_file, Value(own?["description"]) ?? (a_name switch {
+			HighContrast => "Windows' own high-contrast colors.", ColorBlind => "Finished, warning and failed kept apart for color-blind eyes.", _ => "" }),
+			mode == "Dark", Pick("Bg"), Pick("Panel"), Pick("Panel2"), Pick("Line"), Pick("Accent"), Pick("AccentLight"), Pick("Text"), Pick("Muted"), Pick("Good"),
+			Pick("Warn"), Pick("Bad"), Pick("OnAccent"), bar.From, bar.To, corner, problem);
+	}
+
+	// a new theme started from an existing one (the gallery's "New theme from this one"): the template with that theme's values, in
+	// the Themes folder under a free name. Returns the new file
+	public static string CopyAs(string a_name, string? a_file)
+	{
+		EnsureFolder();
+		var doc = JsonNode.Parse(TemplateText()) as JsonObject ?? [];
+		var from = a_file != null ? JsonNode.Parse(Files.ReadSharedText(a_file)) as JsonObject ?? [] : a_name == Default ? [] : BuiltIn(a_name);
+		// every value the source sets goes over the template's, group by group, so the copy keeps each "where" line
+		foreach (var (key, node) in from) {
+			if (node is JsonObject group && doc[key] is JsonObject target && key is "colors" or "fonts" or "sizes" or "shape" or "glyphs" or "windowsAccent") {
+				foreach (var (k, v) in group) {
+					if (target[k] is JsonObject slot && v is JsonObject given && given["value"] != null) {
+						slot["value"] = given["value"]!.DeepClone();
+					} else if (v != null) {
+						target[k] = v.DeepClone();
+					}
+				}
+			} else if (key is "gradients" && node != null) {
+				doc[key] = node.DeepClone();
+			} else if (key is "windowsMode" or "description" or "icon" && Value(node) is { } text && doc[key] is JsonObject one) {
+				one["value"] = text;
+			}
+		}
+		var title = a_name.Replace(" (file)", "", StringComparison.Ordinal) + " copy";
+		var path = Path.Combine(Folder, title + ".json");
+		for (var n = 2; File.Exists(path); ++n) {
+			title = $"{a_name.Replace(" (file)", "", StringComparison.Ordinal)} copy {n}";
+			path = Path.Combine(Folder, title + ".json");
+		}
+		if (doc["name"] is JsonObject nameSlot) {
+			nameSlot["value"] = title;
+		}
+		if (doc["author"] is JsonObject author) {
+			author["value"] = "";
+		}
+		Files.WriteAtomic(path, doc.ToJsonString(new JsonSerializerOptions { WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping }));
+		return path;
 	}
 
 	// a theme file read and parsed (no window work - Settings does this off the window's thread)
@@ -305,15 +413,6 @@ public static class Theme
 		return problems;
 	}
 
-	// the off-screen pictures only: a theme file from anywhere, not remembered
-	public static List<string> ApplyFileForPicture(string a_file)
-	{
-		Apply(Default, false);
-		var problems = new List<string>();
-		ApplyFile(JsonNode.Parse(File.ReadAllText(a_file)) as JsonObject ?? [], Path.GetDirectoryName(a_file)!, problems);
-		return problems;
-	}
-
 	static string? Value(JsonNode? a_n) => a_n is JsonObject o ? o["value"]?.ToString() : a_n is JsonValue ? a_n.ToString() : null;
 
 	static void ApplyFile(JsonObject a_t, string a_dir, List<string> a_problems)
@@ -355,7 +454,7 @@ public static class Theme
 			}
 			if (g.GradientStops.Count >= 2) {
 				g.Freeze();
-				res["GoldBar"] = g;
+				res["AccentBar"] = g;
 			}
 		}
 		if (a_t["windowsAccent"] is JsonObject acc) {
@@ -441,6 +540,9 @@ public static class Theme
 		}
 	}
 
+	// Dark or Light: the base Windows draws its own controls with under the theme in use
+	public static string Mode { get; private set; } = "Light";
+
 	static void SetMode(string a_mode)
 	{
 		if (Application.Current.ThemeMode.Value != a_mode) {
@@ -451,6 +553,7 @@ public static class Theme
 		// takes Windows' accent - blue on most PCs)
 		var merged = Application.Current.Resources.MergedDictionaries;
 		var want = a_mode == "Light" ? "AccentLight.xaml" : "Accent.xaml";
+		Mode = a_mode;
 		var ours = merged.Where(IsAccent).ToList();
 		if (ours.Count == 1 && merged[^1] == ours[0] && AccentFile(ours[0]) == want) {
 			return;

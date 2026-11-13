@@ -135,7 +135,7 @@ public static partial class ToolUpdates
 			Timeout = TimeSpan.FromSeconds(20), MaxResponseContentBufferSize = 1024 * 1024,
 		};
 #pragma warning restore CA2000
-		c.DefaultRequestHeaders.UserAgent.ParseAdd("Skyrim-Utility-Patcher/" + (typeof(ToolUpdates).Assembly.GetName().Version?.ToString(2) ?? "1.0"));
+		c.DefaultRequestHeaders.UserAgent.ParseAdd("Tool-Runner/" + (typeof(ToolUpdates).Assembly.GetName().Version?.ToString(2) ?? "1.0"));
 		return c;
 	}
 

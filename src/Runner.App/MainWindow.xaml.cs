@@ -14,7 +14,14 @@ namespace ToolRunner.App;
 public partial class MainWindow : Window
 {
 	readonly MainViewModel _vm = new();
-	readonly DispatcherTimer _timer = new() { Interval = TimeSpan.FromSeconds(1) };
+	// How often the window looks: every second while something is going (a run's clock and progress, a start being checked, the
+	// countdown before the PC sleeps), seldom while nothing is, hardly at all while it is minimised. A change in the runs folder
+	// (RunsWatch) and the window coming back wake it at once, so a slow look loses nothing
+	static readonly TimeSpan Live = TimeSpan.FromSeconds(1), Calm = TimeSpan.FromSeconds(3), Away = TimeSpan.FromSeconds(20);
+	readonly DispatcherTimer _timer = new() { Interval = Live };
+	RunsWatch? _watch;
+	int _woken;
+	bool _demo;
 	string _panel = "";
 	Tray? _tray;
 
@@ -27,21 +34,43 @@ public partial class MainWindow : Window
 		FitTheScreen();
 		DataContext = _vm;
 		_vm.Alert += Notify;
-		_vm.ConfirmRun = a_text => Ask.Show(this, "What this run will do", a_text, "Start the run", "Not now");
-		_vm.LogChanged += OnLog;
-		_timer.Tick += async (_, _) => {
-			await _vm.PollAsync();
-			// the notification-area icon (there once a run started or a notification was shown) says what runs
-			if (_vm.IsRunning || _tray?.Shown == true) {
-				_tray?.Show("Skyrim Utility Patcher - " + _vm.NowTitle);
+		// a start that would be refused is only told (one button); one that would go ahead is asked
+		_vm.ConfirmRun = (a_title, a_text, a_yes) => {
+			if (a_yes != null) {
+				return Ask.Show(this, a_title, a_text, a_yes, "Not now");
+			}
+			Ask.Tell(this, a_title, a_text, "Close");
+			return false;
+		};
+		// the header drops the word "Setup" where the window is narrow
+		SizeChanged += (_, e) => _vm.Roomy = e.NewSize.Width >= 1100;
+		_vm.Freed += () => {
+			if (_closeWhenFree) {
+				_closeWhenFree = false;
+				Close();
 			}
 		};
+		_vm.LogChanged += OnLog;
+		_timer.Tick += async (_, _) => await Look();
 		_timer.Start();
-		Footer.Text = $"Ctrl+Enter start  ·  F5 check  ·  Ctrl+H history  ·  Ctrl+M MO2 changes  ·  Ctrl+, settings  ·  Alt+Up / Down move a step   ·   version {AppVersion}";
+		StateChanged += (_, _) => Wake();
+		// nothing moves in a window nobody sees (minimized, or put away while a run goes)
+		void SeenOrNot() => _vm.WindowAway = WindowState == WindowState.Minimized || !IsVisible;
+		StateChanged += (_, _) => SeenOrNot();
+		IsVisibleChanged += (_, _) => SeenOrNot();
+		_vm.WantsLook += Wake;
+		// the off-screen pictures show a made-up run: nothing is watched for them
+		if (!App.Headless) {
+			_watch = new RunsWatch(AppPaths.Runs, Wake);
+		}
+		Footer.Text = $"Ctrl+Enter start  ·  F5 check  ·  Ctrl+D dry run  ·  Ctrl+H history  ·  Ctrl+T themes  ·  Ctrl+, settings   ·   version {AppVersion}";
 		Footer.ToolTip = "Data folder: " + AppPaths.Data;
 		PreviewKeyDown += OnKeys;
 		// a mod ticked in Mod Organizer while the window was in the background: each step's last run is worked out again
-		Activated += async (_, _) => await _vm.LoadLastRunsIfStale();
+		Activated += async (_, _) => {
+			Wake();
+			await _vm.LoadLastRunsIfStale();
+		};
 		if (_vm.Setups.Count == 0) {
 			_vm.Say("No setup yet: press New setup and pick your Mod Organizer and profile.", "warn");
 		}
@@ -59,6 +88,39 @@ public partial class MainWindow : Window
 	}
 
 	public void Say(string a_text) => _vm.Say(a_text, "warn");
+
+	// work the window carries itself (Settings' own buttons): it is not closed in the middle of it
+	public IDisposable Working(string a_what) => _vm.Working(a_what);
+
+	// one look, and the pace of the next ones set by what it found
+	async Task Look()
+	{
+		await _vm.PollAsync();
+		// the notification-area icon (there once a run started or a notification was shown) says what runs
+		if (_vm.IsRunning || _tray?.Shown == true) {
+			_tray?.Show(Brand.Name + " - " + _vm.NowTitle);
+		}
+		var pace = _vm.Busy ? Live : WindowState == WindowState.Minimized ? Away : Calm;
+		if (_timer.Interval != pace) {
+			_timer.Interval = pace;
+		}
+	}
+
+	// from any thread: a look soon. Wakes that come before it has run are that one look
+	void Wake()
+	{
+		if (!_demo && Interlocked.Exchange(ref _woken, 1) == 0) {
+			Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(Woken));
+		}
+	}
+
+	async void Woken()
+	{
+		Interlocked.Exchange(ref _woken, 0);
+		if (!_demo) {
+			await Look();
+		}
+	}
 
 	public void ShowProfile(string a_mo2Exe, string a_base, string a_profile)
 	{
@@ -80,7 +142,7 @@ public partial class MainWindow : Window
 			A11y.Say(this, "Now: " + _vm.NowTitle);
 			break;
 		case nameof(MainViewModel.Waiting) when _vm.Waiting != "":
-			A11y.Say(this, "Your turn in the game: " + _vm.Waiting, true);
+			A11y.Say(this, _vm.WaitingTitle + ": " + _vm.Waiting, true);
 			break;
 		case nameof(MainViewModel.Verdict) when _vm.Verdict != "":
 			A11y.Say(this, _vm.NowTitle + ": " + _vm.Verdict, true);
@@ -133,6 +195,9 @@ public partial class MainWindow : Window
 			a_e.Handled = true;
 		} else if (ctrl && a_e.Key == Key.OemComma) {
 			ShowPanel("settings");
+			a_e.Handled = true;
+		} else if (ctrl && a_e.Key == Key.T) {
+			ShowPanel("themes");
 			a_e.Handled = true;
 		} else if (ctrl && a_e.Key == Key.F && _panel == "settings" && Drawer.Visibility == Visibility.Visible) {
 			SettingsPanel.FocusFind();
@@ -253,6 +318,7 @@ public partial class MainWindow : Window
 	// ---------------------------------------------------------------- drawers
 	void History_Click(object a_s, RoutedEventArgs a_e) => ShowPanel("history");
 	void Settings_Click(object a_s, RoutedEventArgs a_e) => ShowPanel("settings");
+	void Themes_Click(object a_s, RoutedEventArgs a_e) => ShowPanel("themes");
 	void CloseDrawer_Click(object a_s, RoutedEventArgs a_e) => CloseDrawer();
 	void Shade_MouseDown(object a_s, MouseButtonEventArgs a_e) => CloseDrawer();
 
@@ -305,15 +371,40 @@ public partial class MainWindow : Window
 	// the off-screen pictures only: the live view stops and a made-up run is shown (a_frame moves it on a minute a frame)
 	public void Demo(bool a_waiting, int a_frame = 0)
 	{
-		_timer.Stop();
+		StopLooking();
 		_vm.Demo(a_waiting, a_frame);
+	}
+
+	// the off-screen pictures only: the made-up run ended (its summary), and the window as a first start shows it
+	public void DemoEnded(bool a_failed)
+	{
+		StopLooking();
+		_vm.DemoEnded(a_failed);
+	}
+
+	public void DemoFirstStart()
+	{
+		StopLooking();
+		_vm.DemoFirstStart();
+	}
+
+	public void DemoWaitsOutside()
+	{
+		StopLooking();
+		_vm.DemoWaitsOutside();
 	}
 
 	// the page's pictures only: the dashboard with nothing running, and past runs of the made-up setup
 	public void DemoReady()
 	{
-		_timer.Stop();
+		StopLooking();
 		_vm.DemoReady();
+	}
+
+	void StopLooking()
+	{
+		_demo = true;
+		_timer.Stop();
 	}
 
 	public void DemoHistory(IEnumerable<HistoryRow> a_rows) => _vm.DemoHistory(a_rows);
@@ -328,10 +419,11 @@ public partial class MainWindow : Window
 			return;
 		}
 		_panel = a_which;
-		DrawerTitle.Text = a_which switch { "history" => "PAST RUNS", "changes" => "WHAT MO2 CHANGED", _ => "SETTINGS" };
+		DrawerTitle.Text = a_which switch { "history" => "PAST RUNS", "changes" => "WHAT MO2 CHANGED", "themes" => "THEMES", _ => "SETTINGS" };
 		DrawerBody.Content = a_which switch {
 			"history" => WithSwitch(HistoryPanel(), a_which),
 			"changes" => WithSwitch(ChangesPanel(null), a_which),
+			"themes" => ThemeGallery.Build(this, _vm),
 			_ => SettingsPanel.Build(this, _vm),
 		};
 		if (DrawerBody.Content is DependencyObject drawn) {
@@ -341,7 +433,7 @@ public partial class MainWindow : Window
 		if (opening) {
 			_beforeDrawer = Keyboard.FocusedElement;
 		}
-		System.Windows.Automation.AutomationProperties.SetName(Drawer, a_which switch { "history" => "Past runs", "changes" => "What MO2 changed", _ => "Settings" });
+		System.Windows.Automation.AutomationProperties.SetName(Drawer, a_which switch { "history" => "Past runs", "changes" => "What MO2 changed", "themes" => "Themes", _ => "Settings" });
 		Drawer.Visibility = Shade.Visibility = Visibility.Visible;
 		// the keyboard moves into the drawer (Tab then stays inside it - its own cycle - until Esc or Close), and a screen reader
 		// hears which one opened
@@ -618,6 +710,7 @@ public partial class MainWindow : Window
 
 	bool _stopping;
 	bool _closeNow;
+	bool _closeWhenFree;
 
 	// the window goes once the run has stopped and put the profile back; a run that does not stop in 10 minutes keeps the window
 	// a run going, a start not yet answered (the engine still checking, no run record yet), or a queue between two setups
@@ -650,6 +743,12 @@ public partial class MainWindow : Window
 	protected override void OnClosing(System.ComponentModel.CancelEventArgs a_e)
 	{
 		if (!LeaveSettings()) {
+			a_e.Cancel = true;
+		} else if (_vm.InHand != "") {
+			// a put-back, an undo, a tool opened from Settings: this window's own work, cut off half way by closing it. The window
+			// stays until it is done and then closes by itself
+			_vm.Say($"Not closed yet: {_vm.InHand}. The window closes by itself when that is done.", "warn");
+			_closeWhenFree = true;
 			a_e.Cancel = true;
 		} else if (!_closeNow && StillGoing()) {
 			// a run never goes on unseen behind a closed window (it closed his Mod Organizer a minute after the window went), not
@@ -692,7 +791,9 @@ public partial class MainWindow : Window
 	protected override void OnClosed(EventArgs a_e)
 	{
 		Theme.Applied -= _vm.Repaint;
+		_demo = true;
 		_timer.Stop();
+		_watch?.Dispose();
 		_tray?.Dispose();
 		base.OnClosed(a_e);
 	}

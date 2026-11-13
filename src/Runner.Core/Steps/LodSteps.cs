@@ -33,7 +33,9 @@ public sealed class XLodGenStep : IStep
 				using var proc = a_ctx.Control.RunExecutable(a_s.Req("executable"), image, args, a_ctx.Cancel);
 				var main = StepKit.WaitWindow(a_ctx, image, t => t.Contains("LODGen", StringComparison.Ordinal), TimeSpan.FromMinutes(10), "xLODGen's window");
 				a_ctx.Activity(Key, "xLODGen is reading the load order");
-				var opts = Find(a_ctx, main, e => Uia.Name(e) == "LODGen Options" && Uia.Type(e) == ControlType.Window, TimeSpan.FromMinutes(15), "xLODGen's options");
+				var loadingHwnd = (nint)main.Current.NativeWindowHandle;
+				var opts = Find(a_ctx, main, e => Uia.Name(e) == "LODGen Options" && Uia.Type(e) == ControlType.Window, TimeSpan.FromMinutes(15), "xLODGen's options",
+					proc, () => LogText(loadingHwnd));
 				var list = WorldspaceList(a_ctx, opts, TimeSpan.FromSeconds(30));
 				var want = a_s.List("worldspaces");
 				CheckList.Set(a_ctx, list, n => want.Count == 0 || want.Contains("all", StringComparer.OrdinalIgnoreCase) || want.Contains(n.Split(' ')[0], StringComparer.OrdinalIgnoreCase));
@@ -67,7 +69,7 @@ public sealed class XLodGenStep : IStep
 				}, a_every: TimeSpan.FromSeconds(5));
 				a_ctx.Log.Detail("xLODGen: LOD generation done");
 				Native.PostMessage((nint)main.Current.NativeWindowHandle, Native.WM_CLOSE, 0, 0);
-				Waits.Exit(a_ctx, Key, proc, TimeSpan.FromMinutes(2));
+				StepKit.LetClose(a_ctx, Key, proc, TimeSpan.FromMinutes(2), "xLODGen");
 			} finally {
 				StepKit.CloseTool(a_ctx, image);
 			}
@@ -147,19 +149,53 @@ public sealed class XLodGenStep : IStep
 		return best.n > 0 ? best.i : null;
 	}
 
-	internal static AutomationElement Find(RunContext a_ctx, AutomationElement a_root, Func<AutomationElement, bool> a_match, TimeSpan a_timeout, string a_what)
+	// A line of the tool's own log that says it stopped while loading (a plugin with a missing master, a file it cannot read):
+	// its loader's "Fatal: ..." wherever it stands in the line (the log puts a time and "Background Loader:" before it), or a
+	// line that begins "Error: ..."
+	public static string? LoadError(string a_log)
+	{
+		var tail = a_log.Length > 2000 ? a_log[^2000..] : a_log;
+		return Regex.Match(tail, @"^.*\bFatal: .*$|^\s*Error: .*$", RegexOptions.Multiline) is { Success: true } m ? m.Value.Trim() : null;
+	}
+
+	// A window of the tool that comes once it has read the load order. a_proc and a_says: the tool itself and what its log
+	// box says - a tool that closed, or whose log names an error while it loads, is said at once with its own words; the wait
+	// used to look for the window alone and end, a quarter of an hour later, with "did not appear"
+	internal static AutomationElement Find(RunContext a_ctx, AutomationElement a_root, Func<AutomationElement, bool> a_match, TimeSpan a_timeout, string a_what,
+		Process? a_proc = null, Func<string>? a_says = null)
 	{
 		var sw = Stopwatch.StartNew();
+		var read = TimeSpan.FromSeconds(-10);
+		var said = "";
 		while (sw.Elapsed < a_timeout) {
 			a_ctx.Cancel.ThrowIfCancellationRequested();
 			var hit = Uia.All(a_root).FirstOrDefault(a_match);
 			if (hit != null) {
 				return hit;
 			}
-			Thread.Sleep(1000);
+			// its log is read every few seconds, not every look (the whole text crosses from its process each time)
+			if (a_says != null && sw.Elapsed - read >= TimeSpan.FromSeconds(5)) {
+				read = sw.Elapsed;
+				said = a_says();
+				if (LoadError(said) is { } error) {
+					throw new StepFailedException($"{a_what} never came - the tool stopped while it was loading: {error}");
+				}
+			}
+			var gone = false;
+			try {
+				gone = a_proc?.HasExited == true;
+			} catch (InvalidOperationException) {
+				gone = true;
+			}
+			if (gone) {
+				throw new StepFailedException($"the tool closed before {a_what} appeared" + LastSaid(said));
+			}
+			a_ctx.Pause(TimeSpan.FromSeconds(1));
 		}
-		throw new StepFailedException($"{a_what} did not appear within {a_timeout.TotalMinutes:0.#} minutes");
+		throw new StepFailedException($"{a_what} did not appear within {a_timeout.TotalMinutes:0.#} minutes" + LastSaid(said));
 	}
+
+	static string LastSaid(string a_log) => LastLine(a_log) is { Length: > 0 } last ? $" - the last line of its log: {last}" : "";
 }
 
 public sealed class AcmosStep : IStep
@@ -201,11 +237,15 @@ public sealed class AcmosStep : IStep
 		var roadsOut = reads + " roads";
 		StepKit.ParkDir(a_ctx, roadsOut, "ACMOS roads");
 		var roads = a_s.Str("roads") ?? AcmosRoads(toolDir) ?? "Paths Only";
-		var cmd = $"{Mo2Control.Quote(exe)} -autorun -t:\"{roads}\" -l:\"{lod}\" -o:\"{roadsOut}\"";
+		var args = $"-autorun -t:\"{roads}\" -l:\"{lod}\" -o:\"{roadsOut}\"";
+		var cmd = $"{Mo2Control.Quote(exe)} {args}";
 		a_ctx.Activity(Key, "painting roads into the terrain LOD");
 		string body;
-		using (var desk = new HiddenDesktop()) {
-			using var proc = desk.Start(cmd, toolDir);
+		// Hidden unless the step's "hidden" is switched off (his rule: a setting lets players turn it off): on a PC where a hidden
+		// start does not work the tool then runs in the open like the others - started as any program, never brought to the front
+		using (var desk = a_s.Bool("hidden", true) ? new HiddenDesktop() : null) {
+			using var proc = desk?.Start(cmd, toolDir) ??
+				Process.Start(new ProcessStartInfo(exe, args) { UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = toolDir }) ?? throw new StepFailedException("could not start " + exe);
 			// the run's own, at the setup's priority like every other tool
 			a_ctx.Control.Ours(proc.Id);
 			try {
@@ -213,7 +253,7 @@ public sealed class AcmosStep : IStep
 			} finally {
 				StepKit.CloseTool(a_ctx, Path.GetFileName(exe));
 			}
-			if (desk.Leak != null) {
+			if (desk?.Leak != null) {
 				throw new StepFailedException("ACMOS: " + desk.Leak);
 			}
 			var fresh = Directory.Exists(logs) ? Directory.GetDirectories(logs).Where(d => !before.Contains(Path.GetFileName(d))).Order().LastOrDefault() : null;
@@ -243,7 +283,7 @@ public sealed class AcmosStep : IStep
 			throw new StepFailedException($"ACMOS: its painted textures could not all go into {mod} ({e.Message}) - the plain ones are put back");
 		}
 		StepKit.Settled(a_ctx, plain);
-		Directory.Delete(roadsOut, true);
+		Files.DeleteDir(roadsOut);
 		a_ctx.SetAfter(mod);
 	}
 
@@ -343,13 +383,20 @@ public static class Cli
 		}
 		a_ctx.Log.Detail(Path.GetFileName(a_exe) + " " + string.Join(" ", psi.ArgumentList.Select(Mo2Control.Quote)));
 		using var p = Process.Start(psi) ?? throw new StepFailedException("could not start " + a_exe);
+		// one of the run's own processes: Stop's sweep ends it at once, and the setup's lower priority reaches the tools that
+		// load every core
+		a_ctx.Control.Ours(p.Id);
 		p.StandardInput.Close();
 		var sb = new System.Text.StringBuilder();
 		string? latest = null;
+		// each stream's end (its last line has arrived)
+		var outEnd = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		var errEnd = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 		// the output arrives on other threads: kept here, shown by the run's own thread (the run record is not thread-safe)
-		void Add(string? a_line)
+		void Add(string? a_line, TaskCompletionSource a_end)
 		{
 			if (a_line == null) {
+				a_end.TrySetResult();
 				return;
 			}
 			lock (sb) {
@@ -357,8 +404,8 @@ public static class Cli
 				latest = a_line;
 			}
 		}
-		p.OutputDataReceived += (_, e) => Add(e.Data);
-		p.ErrorDataReceived += (_, e) => Add(e.Data);
+		p.OutputDataReceived += (_, e) => Add(e.Data, outEnd);
+		p.ErrorDataReceived += (_, e) => Add(e.Data, errEnd);
 		p.BeginOutputReadLine();
 		p.BeginErrorReadLine();
 		try {
@@ -387,8 +434,10 @@ public static class Cli
 			}
 			Files.WriteAtomic(a_outFile, text);
 		}
-		// the last output lines, but never forever: a child process that kept the output pipe open would hold it
-		p.WaitForExit(TimeSpan.FromSeconds(30));
+		// The last output lines: both streams read to their end (a wait on the process alone returns the moment it has ended,
+		// before its last lines have arrived - a finished tool's "Done" line was then missed). Never for long: a child process
+		// that kept the output pipe open would hold it
+		Task.WaitAll([outEnd.Task, errEnd.Task], TimeSpan.FromSeconds(30));
 		string all;
 		lock (sb) {
 			all = sb.ToString();
@@ -439,6 +488,7 @@ public abstract class DynDolodFamily : IStep
 		var outDir = a_s.Req("output_dir");
 		var image = a_s.Str("image") ?? (Tool + "x64.exe");
 		StepKit.ParkDir(a_ctx, outDir, Tool + " output");
+		var began = DateTime.UtcNow;
 		using (new Toggle(a_ctx, [.. a_s.List("enable_during"), .. StepKit.ToolMods(a_ctx, a_s)], [.. ExtraOff(a_s), .. a_s.List("disable_during")], Tool, a_ctx.Cancel)) {
 			try {
 				var args = XLodGenStep.WithData(a_s.Str("args") ?? a_ctx.Mo2.Executable(a_s.Req("executable"))?.Arguments ?? "", a_ctx.Mo2.GameDir);
@@ -470,7 +520,7 @@ public abstract class DynDolodFamily : IStep
 						var opts = Uia.Children(main).FirstOrDefault(c => Uia.Type(c) == ControlType.Window &&
 							(Regex.IsMatch(Uia.Name(c), "Options|Expert") || Uia.ClassName(c) is "TfrmTexGen" or "TfrmDynDOLODAdvanced" or "TfrmDynDOLOD"));
 						if (opts != null) {
-							Thread.Sleep(3000);
+							a_ctx.Pause(TimeSpan.FromSeconds(3));
 							DriveOptions(a_ctx, opts, a_s);
 							startedRun = true;
 							a_ctx.Activity(Key, Tool + " is generating");
@@ -495,7 +545,8 @@ public abstract class DynDolodFamily : IStep
 				});
 				a_ctx.Log.Detail($"{Tool} finished");
 				FinalQuestion(a_ctx, image);
-				Waits.Exit(a_ctx, Key, proc, TimeSpan.FromMinutes(3));
+				Saved(a_ctx, outDir, began);
+				StepKit.LetClose(a_ctx, Key, proc, TimeSpan.FromMinutes(3), Tool);
 			} finally {
 				StepKit.CloseTool(a_ctx, image);
 			}
@@ -503,6 +554,9 @@ public abstract class DynDolodFamily : IStep
 		StepKit.IntoMod(a_ctx, Key, outDir, a_s.OutputMod!, a_s.Int("min_files", 1));
 		a_ctx.SetAfter(a_s.OutputMod!);
 	}
+
+	// what the tool writes after its last question, waited for before it may be closed (TexGen: nothing)
+	protected virtual void Saved(RunContext a_ctx, string a_outDir, DateTime a_sinceUtc) { }
 
 	protected virtual void DriveOptions(RunContext a_ctx, AutomationElement a_opts, StepSettings a_s)
 	{
@@ -525,12 +579,12 @@ public abstract class DynDolodFamily : IStep
 					a_ctx.Log.Detail($"pressed {Uia.Name(hit)}");
 					Uia.Press(hit);
 					if (Tool == "DynDOLOD") {
-						Thread.Sleep(20000);           // it writes DynDOLOD.esm / .esp and Occlusion.esp before closing
+						// it now writes DynDOLOD.esm / .esp and Occlusion.esp before closing: Saved waits for them
 						return;
 					}
 					// a press can land while the box is still busy (TexGen opens its summary page then): the same question still up 10 s
 					// later is answered again
-					Thread.Sleep(10000);
+					a_ctx.Pause(TimeSpan.FromSeconds(10));
 					if (Uia.Boxes(StepKit.PidsOf(a_image)()).Any(b => b.Text == box.Text)) {
 						a_ctx.Log.Detail($"{Tool}'s last question is still up - pressing again");
 						break;
@@ -541,7 +595,7 @@ public abstract class DynDolodFamily : IStep
 					a_ctx.Log.Detail($"{Tool}'s last question offers: {string.Join(", ", names)}");
 				}
 			}
-			Thread.Sleep(2000);
+			a_ctx.Pause(TimeSpan.FromSeconds(2));
 		}
 		throw new StepFailedException($"{Tool} finished but its last question has no {(Tool == "DynDOLOD" ? "save" : "Exit")} button");
 	}
@@ -587,6 +641,42 @@ public sealed class DynDolodStep : DynDolodFamily
 		}
 		base.Run(a_ctx, a_s);
 		a_ctx.Journal.Retire.AddRange(a_s.List("replaces").Where(m => !a_ctx.Journal.Retire.Contains(m)));
+	}
+
+	// how long its plugins must stand unchanged before they count as saved, and how long the save may take (the offline tests
+	// shorten both)
+	public static TimeSpan SaveQuiet { get; set; } = TimeSpan.FromSeconds(10);
+	public static TimeSpan SaveLimit { get; set; } = TimeSpan.FromMinutes(15);
+
+	protected override void Saved(RunContext a_ctx, string a_outDir, DateTime a_sinceUtc) => WaitSaved(a_ctx, a_outDir, a_sinceUtc);
+
+	// DynDOLOD's plugins are what its save writes: waited for until a fresh DynDOLOD.esp stands in the output folder and no
+	// plugin there has changed for a while. Only then may the tool be closed - a fixed twenty seconds once let the close
+	// reach it in the middle of the save on a large load order
+	public static void WaitSaved(RunContext a_ctx, string a_outDir, DateTime a_sinceUtc)
+	{
+		var esp = Path.Combine(a_outDir, "DynDOLOD.esp");
+		var sw = Stopwatch.StartNew();
+		(DateTime Newest, long Bytes)? last = null;
+		var quietSince = TimeSpan.Zero;
+		while (true) {
+			a_ctx.Cancel.ThrowIfCancellationRequested();
+			if (File.Exists(esp) && File.GetLastWriteTimeUtc(esp) > a_sinceUtc) {
+				var plugins = new DirectoryInfo(a_outDir).EnumerateFiles("*.es?").ToList();
+				var now = (plugins.Max(f => f.LastWriteTimeUtc), plugins.Sum(f => f.Length));
+				if (now != last) {
+					last = now;
+					quietSince = sw.Elapsed;
+				} else if (sw.Elapsed - quietSince >= SaveQuiet) {
+					a_ctx.Log.Detail($"DynDOLOD's plugins are saved ({string.Join(", ", plugins.Select(f => f.Name))})");
+					return;
+				}
+			}
+			if (sw.Elapsed > SaveLimit) {
+				throw new StepFailedException($"DynDOLOD did not save its plugins within {SaveLimit.TotalMinutes:0} minutes of its last question - no new DynDOLOD.esp in {a_outDir}");
+			}
+			a_ctx.Pause(TimeSpan.FromSeconds(1));
+		}
 	}
 
 	protected override void DriveOptions(RunContext a_ctx, AutomationElement a_opts, StepSettings a_s)

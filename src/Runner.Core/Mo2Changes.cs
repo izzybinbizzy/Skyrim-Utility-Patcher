@@ -223,7 +223,7 @@ public static class Mo2Changes
 			all.AddRange(rows);
 			WriteRows(dir, all.Count > KeepRows ? all[^KeepRows..] : all);
 		}
-		File.Move(nextFile, lookFile, true);
+		Files.Move(nextFile, lookFile, true);
 		return rows;
 	}
 
@@ -300,9 +300,9 @@ public static class Mo2Changes
 		}
 		var next = ReadLook(a_nextFile);
 		if (next != null && Read(a_dir).Any(r => r.When == next.Taken)) {
-			File.Move(a_nextFile, a_lookFile, true);
+			Files.Move(a_nextFile, a_lookFile, true);
 		} else {
-			File.Delete(a_nextFile);
+			Files.Delete(a_nextFile);
 		}
 	}
 
@@ -344,7 +344,7 @@ public static class Mo2Changes
 		try {
 			return ParseRows(Files.ReadSharedText(file));
 		} catch (Exception e) when (e is JsonException or InvalidOperationException or FormatException) {
-			File.Move(file, Path.Combine(a_dir, $"changes unreadable {DateTime.Now.ToString("yyyy-MM-dd HH-mm-ss", InvariantCulture)}.json"));
+			Files.Move(file, Path.Combine(a_dir, $"changes unreadable {DateTime.Now.ToString("yyyy-MM-dd HH-mm-ss", InvariantCulture)}.json"));
 			return [];
 		}
 	}
@@ -450,7 +450,7 @@ public static class Mo2Changes
 		public static Gate Take(string a_dir)
 		{
 			var key = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Path.GetFullPath(a_dir).ToUpperInvariant())))[..16];
-			var m = new Mutex(false, "Skyrim Utility Patcher changes " + key);
+			var m = new Mutex(false, "Tool Runner changes " + key);
 			try {
 				if (!m.WaitOne(TimeSpan.FromSeconds(30))) {
 					m.Dispose();

@@ -34,6 +34,8 @@ public sealed class StepRecord
 	public double? Progress { get; set; }
 	// the mod this run's step builds into (null: a step with no output mod)
 	public string? Output { get; set; }
+	// how big that mod was once the step had finished (null: not measured) - the run's summary and the next run's forecast
+	public long? OutputBytes { get; set; }
 }
 
 // an output moved into the run's backup before a tool rewrote it; put back when its step did not finish
@@ -51,6 +53,9 @@ public sealed class ParkRecord
 	public bool SetAside { get; set; }
 	// a tool's folder is all in the backup: until then what stands at From is what the move left, never the run's own
 	public bool Moved { get; set; }
+	// its copy in the backup was gone when it was to be put back (the backup cleared by hand): nothing can bring it back, the mod is
+	// left switched off, and the put-back is not held up for ever by it
+	public bool Lost { get; set; }
 }
 
 // a file outside the mods that a step changes for its run (a tool's settings, DynDOLOD's preset, NGIO's flag): its old bytes
@@ -87,6 +92,10 @@ public sealed class Journal
 	public bool StopAfterStep { get; set; }
 	public List<StepRecord> Steps { get; set; } = [];
 	public List<string> Built { get; set; } = [];
+	// LOOT's sort finished: its list is in this run's folder (LootStep.SortedFile) and every put-back of this run keeps it
+	public bool Sorted { get; set; }
+	// that sort left the plugin files other than they were before the run: Undo has an order to take back
+	public bool OrderChanged { get; set; }
 	public List<string> Retire { get; set; } = [];
 	public List<string> Added { get; set; } = [];
 	public List<ParkRecord> Parked { get; set; } = [];
@@ -115,6 +124,18 @@ public sealed class Journal
 	{
 		lock (_gate) {
 			Files.WriteAtomic(File, JsonSerializer.SerializeToUtf8Bytes(this, Options));
+		}
+	}
+
+	// for the paths that put things back: there the work comes first, and a record the disk will not take (it is full, or gone)
+	// is said by the caller - never the reason a profile stays half switched
+	public bool TrySave()
+	{
+		try {
+			Save();
+			return true;
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+			return false;
 		}
 	}
 
@@ -165,17 +186,32 @@ public sealed class Journal
 	// game still runs, so the window keeps it as the running run (Stop and the close guard reach it)
 	public bool InGameAfter { get; set; }
 
+	// the run has finished and its profile is back, and the engine is still at its last chores (the setup's after-run commands,
+	// packing the old outputs): to the window still the run going - Stop ends the chores - with Doing as what it shows
+	public bool FinishingUp { get; set; }
+	public string Doing { get; set; } = "";
+
+	// what the window and the command line follow as "the run that is going", while its owner lives
+	[JsonIgnore]
+	public bool Live => Unfinished || InGameAfter || FinishingUp;
+
 	// is the program that wrote it still alive? (a run that is still going is never "unfinished")
 	public bool OwnerAlive => Pid != 0 && Procs.Alive(Pid) && IsRunner(Pid) &&
 		(PidStarted == null || Procs.StartTime(Pid) is { } s && Math.Abs((s - PidStarted.Value).TotalSeconds) < 2);
 
 	public static bool IsRunner(int a_pid)
 	{
+		if (Procs.Name(a_pid) is not { } name) {
+			return false;
+		}
+		if (IsRunnerName(name)) {
+			return true;
+		}
 		try {
-			using var p = System.Diagnostics.Process.GetProcessById(a_pid);
 			// a copy the player renamed is known by the product name inside its file (the start time check above keeps a reused
 			// PID out)
-			return IsRunnerName(p.ProcessName) || IsRunnerName(ProductOf(p));
+			using var p = System.Diagnostics.Process.GetProcessById(a_pid);
+			return IsRunnerName(ProductOf(p));
 		} catch (ArgumentException) {
 			return false;
 		} catch (InvalidOperationException) {
@@ -183,7 +219,7 @@ public sealed class Journal
 		}
 	}
 
-	// the program under its name or any it had ("Skyrim Utility Patcher", "MO2 Tool Runner", ...), its project names when built
+	// the program under its name or any it had ("Tool Runner", "MO2 Tool Runner", ...), its project names when built
 	// without one, and the offline tests' own process. The rename of 2026-11-03 had left this on the old names only: every real
 	// run then read as dead to the window - Stop now sent nothing, closing the window neither asked nor stopped the run, and a
 	// running run showed as interrupted (his finds of 2026-11-04); the tests did not see it, their own process name matched
@@ -221,6 +257,38 @@ public sealed class Journal
 	}
 
 	public static Journal? Interrupted(string a_runsDir) => All(a_runsDir).FirstOrDefault(j => j.Unfinished && !j.OwnerAlive);
+
+	// The newest run's record when it cannot be read, with why (null: there is none, or it reads). An interrupted run is always
+	// the newest one - nothing starts after it - so a newest record that does not read may be exactly the run whose outputs are
+	// still off: a new run must not start over it as if there were none. (Older records that do not read are passed over.)
+	public static (string Folder, Exception Why)? NewestUnreadable(string a_runsDir)
+	{
+		if (!Directory.Exists(a_runsDir)) {
+			return null;
+		}
+		foreach (var d in Directory.GetDirectories(a_runsDir).OrderDescending()) {
+			if (!System.IO.File.Exists(Path.Combine(d, "journal.json"))) {
+				continue;
+			}
+			try {
+				Exception? last = null;
+				for (var i = 0; i < 5; ++i) {
+					try {
+						Load(d);
+						return null;
+					} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+						// held for a moment by another program: looked at again before it counts
+						last = e;
+						Thread.Sleep(200);
+					}
+				}
+				return (d, last!);
+			} catch (Exception e) when (e is JsonException or InvalidDataException) {
+				return (d, e);
+			}
+		}
+		return null;
+	}
 }
 
 // The run records for a reader that looks often (the window, once a second): a record is read again only when its file

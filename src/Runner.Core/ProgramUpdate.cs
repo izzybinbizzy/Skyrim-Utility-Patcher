@@ -11,7 +11,7 @@ public static class ProgramUpdate
 	// its Nexus mod number once the page is published (null until then)
 	public static readonly string? NexusId;
 
-	public const string GitHubRepo = "izzybinbizzy/Skyrim-Utility-Patcher";
+	public const string GitHubRepo = "izzybinbizzy/Tool-Runner";
 
 	public static string Page => NexusId != null ? $"https://www.nexusmods.com/skyrimspecialedition/mods/{NexusId}?tab=files" : $"https://github.com/{GitHubRepo}/releases/latest";
 

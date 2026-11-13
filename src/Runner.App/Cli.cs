@@ -1,25 +1,39 @@
 namespace ToolRunner.App;
 
 // The command line (for players who script, and for agents under watch.py):
-//   "Skyrim Utility Patcher.exe" run --setup <file> [--only <step> | --from <step> | --until <step>]   a run, no window
-//   "Skyrim Utility Patcher.exe" retry --setup <file>                                                  its last run again, from the step that did not finish
-//   "Skyrim Utility Patcher.exe" queue --setup <file> --setup <file> ... [--keep-going]               several setups, one after another
-//   "Skyrim Utility Patcher.exe" check --setup <file>                                                  the pre-check, printed
-//   "Skyrim Utility Patcher.exe" preview --setup <file> [--only | --from | --until <step>]              what a run would do (nothing changed)
-//   "Skyrim Utility Patcher.exe" lod --setup <file> --step <step>                                      the mods a LOD step builds from, with their pages
-//   "Skyrim Utility Patcher.exe" restore [--setup <file>]                                              put back an interrupted run
-//   "Skyrim Utility Patcher.exe" stop | stop-after                                                     ask the running run to stop
-//   "Skyrim Utility Patcher.exe" updates --setup <file>                                                its tools' newest versions (asks their pages)
-//   "Skyrim Utility Patcher.exe" changes --setup <file> [--look]                                       what Mod Organizer changed, newest first
-//   "Skyrim Utility Patcher.exe" tools --mo2 <ModOrganizer.exe> [--instance <folder>] [--add]          which tools it finds, where to get the rest; --add puts the found ones in Mod Organizer's list
-//   "Skyrim Utility Patcher.exe" test-tools --setup <file>                                             each tool opened to the window a run presses; nothing pressed
-//   "Skyrim Utility Patcher.exe" addon-check <file>                                                    what is wrong with an add-on file, in plain words
-//   "Skyrim Utility Patcher.exe" bugreport [--setup <file>]                                            one zip for a bug report (the setup's last run), names masked
-//   "Skyrim Utility Patcher.exe" share --setup <file> [--out <folder>]                                 a copy of the setup to share: its paths and commands taken out
-// exit 0 = finished / clean, 1 = failed / refused, 2 = stopped, 3 = bad arguments, 4 = (updates) a tool has a newer version
+//   "Tool Runner.exe" run --setup <file> [--only <step> | --from <step> | --until <step>]   a run, no window
+//   "Tool Runner.exe" retry --setup <file>                                                  its last run again, from the step that did not finish
+//   "Tool Runner.exe" queue --setup <file> --setup <file> ... [--keep-going]               several setups, one after another
+//   "Tool Runner.exe" check --setup <file>                                                  the pre-check, printed
+//   "Tool Runner.exe" preview --setup <file> [--only | --from | --until <step>]              what a run would do (nothing changed)
+//   "Tool Runner.exe" dryrun --setup <file> [--only | --from | --until <step>]               everything a start would meet and then do: nothing started, nothing written
+//   "Tool Runner.exe" status [--setup <file>]                                               what is going right now
+//   "Tool Runner.exe" catalog                                                               every refusal and failure of its own: its code, what it means, what to do
+//   "Tool Runner.exe" lod --setup <file> --step <step>                                      the mods a LOD step builds from, with their pages
+//   "Tool Runner.exe" restore [--setup <file>]                                              put back an interrupted run
+//   "Tool Runner.exe" stop | stop-after                                                     ask the running run to stop
+//   "Tool Runner.exe" updates --setup <file>                                                its tools' newest versions (asks their pages)
+//   "Tool Runner.exe" changes --setup <file> [--look]                                       what Mod Organizer changed, newest first
+//   "Tool Runner.exe" tools --mo2 <ModOrganizer.exe> [--instance <folder>] [--add]          which tools it finds, where to get the rest; --add puts the found ones in Mod Organizer's list
+//   "Tool Runner.exe" test-tools --setup <file>                                             each tool opened to the window a run presses; nothing pressed
+//   "Tool Runner.exe" addon-check <file>                                                    what is wrong with an add-on file, in plain words
+//   "Tool Runner.exe" bugreport [--setup <file>]                                            one zip for a bug report (the setup's last run), names masked
+//   "Tool Runner.exe" share --setup <file> [--out <folder>]                                 a copy of the setup to share: its paths and commands taken out
+// --json after run, retry, check, preview, dryrun, status, updates, changes or tools prints one JSON object and nothing else (Reports.cs)
+// exit 0 = finished / clean / would start / idle, 1 = failed / refused / a run was cut off, 2 = stopped, 3 = bad arguments,
+//      4 = (updates) a tool has a newer version, 5 = (status) a run is going
 public static class Cli
 {
-	public static bool Handles(string[] a_args) => a_args.Length > 0 && a_args[0] is "tools" or "addon-check" or "test-tools" or "run" or "retry" or "queue" or "check" or "preview" or "lod" or "restore" or "stop" or "stop-after" or "import" or "updates" or "changes" or "bugreport" or "share" or "undo" or "--help" or "-h" or "/?";
+	public static bool Handles(string[] a_args) => a_args.Length > 0 && a_args[0] is "tools" or "addon-check" or "test-tools" or "run" or "retry" or "queue" or "check" or "preview" or "dryrun" or "status" or "catalog" or "lod" or "restore" or "stop" or "stop-after" or "import" or "updates" or "changes" or "bugreport" or "share" or "undo" or "--help" or "-h" or "/?";
+
+	// one JSON object on the output and nothing else: no line of words before or after it
+	static bool Json(string[] a_args) => a_args.Contains("--json");
+
+	static int Print(System.Text.Json.Nodes.JsonObject a_o, int a_exit)
+	{
+		Console.WriteLine(Reports.Text(a_o));
+		return a_exit;
+	}
 
 	static string? Opt(string[] a_args, string a_name)
 	{
@@ -34,9 +48,11 @@ public static class Cli
 		// opens the window), before the command itself
 		// (never before a stop: Windows' task list can take half a minute, and a run is waiting on it)
 		try {
-			if (a_args[0] is not ("stop" or "stop-after")) {
+			if (a_args[0] is not ("stop" or "stop-after" or "status" or "catalog")) {
 				foreach (var left in Schedule.RemoveLeftoversOnce(AppPaths.Data)) {
-					Console.WriteLine("an old timed run's task could not be removed - delete it in Windows' Task Scheduler: " + left);
+					if (!Json(a_args)) {
+						Console.WriteLine("an old timed run's task could not be removed - delete it in Windows' Task Scheduler: " + left);
+					}
 				}
 			}
 		} catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) {
@@ -48,6 +64,9 @@ public static class Cli
 				"queue" => Queue(a_args),
 				"check" => Check(a_args),
 				"preview" => Preview(a_args),
+				"dryrun" => DryRunCmd(a_args),
+				"status" => StatusCmd(a_args),
+				"catalog" => CatalogCmd(a_args),
 				"lod" => Lod(a_args),
 				"restore" => RestoreCmd(a_args),
 				"undo" => UndoCmd(a_args),
@@ -63,19 +82,30 @@ public static class Cli
 				_ => Help(),
 			};
 		} catch (Exception e) when (e is ArgumentException or IOException or InvalidDataException) {
-			Console.WriteLine("Skyrim Utility Patcher: " + e.Message);
+			Said(a_args, e.Message);
 			return 3;
 		} catch (Exception e) {
 			// never Windows' crash box (a window on the player's screen): said, logged, exit 1
-			Console.WriteLine("Skyrim Utility Patcher: something went wrong - " + e.GetType().Name + ": " + e.Message);
+			Said(a_args, "something went wrong - " + e.GetType().Name + ": " + e.Message);
 			App.LogCrash(e);
 			return 1;
 		}
 	}
 
+	// a command that could not be carried out: in words, or as the one JSON object a script was promised
+	static void Said(string[] a_args, string a_error)
+	{
+		if (Json(a_args)) {
+			Console.WriteLine(Reports.Text(new System.Text.Json.Nodes.JsonObject { ["schema"] = Reports.Schema, ["program"] = Brand.Name, ["command"] = a_args[0], ["error"] = a_error }));
+		} else {
+			Console.WriteLine("Tool Runner: " + a_error);
+		}
+	}
+
 	static int Help()
 	{
-		Console.WriteLine("Skyrim Utility Patcher - run | retry | queue | check | preview | lod | restore | undo | stop | stop-after | updates | changes | import | bugreport | share | tools | test-tools | addon-check   (see the readme)");
+		Console.WriteLine("Tool Runner - run | retry | queue | check | preview | dryrun | status | catalog | lod | restore | undo | stop | stop-after | updates | changes | import | bugreport | share | tools | test-tools | addon-check");
+		Console.WriteLine("  --json after run, retry, check, preview, dryrun, status, catalog, updates, changes or tools prints one JSON object (see the readme)");
 		return 0;
 	}
 
@@ -121,7 +151,7 @@ public static class Cli
 	static int Run(string[] a_args)
 	{
 		var setup = SetupArg(a_args);
-		return RunOne(new RunRequest(setup, AppPaths.Data, Opt(a_args, "--only"), Opt(a_args, "--from"), Opt(a_args, "--until")));
+		return RunOne(new RunRequest(setup, AppPaths.Data, Opt(a_args, "--only"), Opt(a_args, "--from"), Opt(a_args, "--until")), Json(a_args));
 	}
 
 	static int RetryCmd(string[] a_args)
@@ -129,15 +159,17 @@ public static class Cli
 		var setup = SetupArg(a_args);
 		var last = Journal.All(AppPaths.Runs).FirstOrDefault(j => string.Equals(j.SetupFile, setup, StringComparison.OrdinalIgnoreCase));
 		if (last == null) {
-			Console.WriteLine("this setup has no run to start again");
+			Said(a_args, "this setup has no run to start again");
 			return 1;
 		}
 		if (Retry.Request(last, AppPaths.Data) is not { } req) {
-			Console.WriteLine(last.Unfinished ? "its last run did not finish - put the profile back first (restore)" : "its last run finished - nothing to run again");
+			Said(a_args, last.Unfinished ? "its last run did not finish - put the profile back first (restore)" : "its last run finished - nothing to run again");
 			return 1;
 		}
-		Console.WriteLine($"starting again from {StepCatalog.Name(req.From!)}");
-		return RunOne(req);
+		if (!Json(a_args)) {
+			Console.WriteLine($"starting again from {StepCatalog.Name(req.From!)}");
+		}
+		return RunOne(req, Json(a_args));
 	}
 
 	static int Queue(string[] a_args)
@@ -165,13 +197,36 @@ public static class Cli
 		return notFinished == null ? 0 : notFinished.State == RunState.Stopped ? 2 : 1;
 	}
 
-	static int RunOne(RunRequest a_req)
+	// the run's record as it stands on disk at its end (null: a refused start made none, or it no longer reads)
+	static Journal? Ended(RunOutcome a_outcome)
+	{
+		try {
+			return a_outcome.Folder == null ? null : Journal.Load(a_outcome.Folder);
+		} catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Text.Json.JsonException or InvalidDataException) {
+			return null;
+		}
+	}
+
+	static int RunOne(RunRequest a_req, bool a_json = false)
 	{
 		var outcome = Runner.Run(a_req);
-		Console.WriteLine(outcome.Verdict);
+		var ended = Ended(outcome);
+		if (a_json) {
+			Console.WriteLine(Reports.Text(Reports.Outcome(outcome, ended)));
+		} else if (ended != null) {
+			// the verdict, then what the run did in a few lines
+			Console.WriteLine(outcome.Verdict);
+			foreach (var line in RunSummary.Of(ended).Lines()) {
+				Console.WriteLine(line);
+			}
+		} else {
+			foreach (var line in Explain.Lines("", outcome.Verdict)) {
+				Console.WriteLine(line);
+			}
+		}
 		// a run that was refused (nothing changed) never shuts the PC down
 		if (outcome.Folder != null) {
-			PowerAfterRun(a_req.SetupFile, outcome.State);
+			PowerAfterRun(a_req.SetupFile, outcome.State, a_json);
 		}
 		if (outcome.Folder == null) {
 			WriteRefusal(outcome.Verdict);
@@ -194,8 +249,15 @@ public static class Cli
 	}
 
 	// the setup's "after the run" power setting, with its minute of notice; a setup that does not read is left alone
-	static void PowerAfterRun(string a_setupFile, RunState a_state)
+	// a_quiet: a script reads the output (--json) - the notice is in the window and in power.json, never between the lines it parses
+	static void PowerAfterRun(string a_setupFile, RunState a_state, bool a_quiet = false)
 	{
+		void Tell(string a_line)
+		{
+			if (!a_quiet) {
+				Console.WriteLine(a_line);
+			}
+		}
 		try {
 			var s = Setup.Load(a_setupFile);
 			var what = PowerAfter.Decide(PowerAfter.Read(s), PowerAfter.OnlyFinished(s), a_state);
@@ -203,18 +265,22 @@ public static class Cli
 				// the run lock through the notice: no run can start and then be cut off by the sleep or shut-down
 				using var hold = Runner.HoldIfFree();
 				if (hold == null) {
-					Console.WriteLine("not sleeping or shutting down: another run started");
+					Tell("not sleeping or shutting down: another run started");
 					return;
 				}
 				var logDir = Path.Combine(AppPaths.Runs, "after run power");
 				Directory.CreateDirectory(logDir);
+				// one folder for every run's notice, added to each time: kept to a size
+				foreach (var name in new[] { "log.txt", RunLog.SimpleName }) {
+					Files.RollIfOver(Path.Combine(logDir, name), 256 * 1024);
+				}
 				using var log = new RunLog(logDir);
-				Console.WriteLine($"the PC will {(what == PowerAfter.Kind.Sleep ? "go to sleep" : "shut down")} in {PowerAfter.Notice.TotalSeconds:0} s - cancel in the window, or with: stop");
+				Tell($"the PC will {(what == PowerAfter.Kind.Sleep ? "go to sleep" : "shut down")} in {PowerAfter.Notice.TotalSeconds:0} s - cancel in the window, or with: stop");
 				PowerAfter.Carry(what, AppPaths.Data, log);
 			}
 		} catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException or System.Text.Json.JsonException or
 		                            System.ComponentModel.Win32Exception or InvalidOperationException) {
-			Console.WriteLine("the after-run power setting was not read: " + e.Message);
+			Tell("the after-run power setting was not read: " + e.Message);
 		}
 	}
 
@@ -223,11 +289,63 @@ public static class Cli
 		var setup = Setup.Load(SetupArg(a_args));
 		var mo2 = Mo2Instance.Load(setup.Mo2Exe, setup.Mo2Instance);
 		var issues = Preflight.Run(setup, mo2, setup.EnabledSteps.Select(s => s.Key).ToList());
+		var ready = !issues.Any(i => i.Blocking);
+		if (Json(a_args)) {
+			return Print(Reports.Check(setup, issues), ready ? 0 : 1);
+		}
 		foreach (var i in issues) {
 			Console.WriteLine($"{(i.Blocking ? "BLOCKS" : "note  ")}  {(i.Step == "" ? "" : StepCatalog.Name(i.Step) + ": ")}{i.Text}");
+			// what stops a run comes with what to do about it
+			if (i.Blocking && Explain.For(i.Step, i.Text) is { } why) {
+				Console.WriteLine($"        what to do: {why.Todo}{(why.Code == null ? "" : $" [{why.Code}]")}");
+			}
 		}
-		Console.WriteLine(issues.Any(i => i.Blocking) ? "NOT READY" : "READY");
-		return issues.Any(i => i.Blocking) ? 1 : 0;
+		Console.WriteLine(ready ? "READY" : "NOT READY");
+		return ready ? 0 : 1;
+	}
+
+	// everything a start would meet and then do, and nothing started: exit 0 = it would start, 1 = it would be refused
+	static int DryRunCmd(string[] a_args)
+	{
+		var file = SetupArg(a_args);
+		var report = DryRun.Make(new RunRequest(file, AppPaths.Data, Opt(a_args, "--only"), Opt(a_args, "--from"), Opt(a_args, "--until")));
+		var usual = Engine.UsualTimes(file);
+		TimeSpan? Usual(string a_key) => usual.TryGetValue(a_key, out var t) ? t : null;
+		if (Json(a_args)) {
+			return Print(Reports.DryRun(report, Usual), report.Starts ? 0 : 1);
+		}
+		Console.WriteLine("DRY RUN - nothing is started and nothing is changed.");
+		foreach (var l in report.Lines(Usual)) {
+			Console.WriteLine(l);
+		}
+		return report.Starts ? 0 : 1;
+	}
+
+	// every refusal and failure the program knows as its own, by its code (the guide's list is made from this)
+	static int CatalogCmd(string[] a_args)
+	{
+		if (Json(a_args)) {
+			return Print(Reports.Catalog(), 0);
+		}
+		foreach (var e in RunnerErrors.All.OrderBy(e => e.Code, StringComparer.Ordinal)) {
+			Console.WriteLine($"{e.Code}  {e.What}");
+			Console.WriteLine($"        {e.Todo}");
+		}
+		return 0;
+	}
+
+	// what is going right now: exit 0 = nothing, 5 = a run is going, 1 = a run was cut off and its profile is not back
+	static int StatusCmd(string[] a_args)
+	{
+		var s = RunStatus.Take(AppPaths.Data, Opt(a_args, "--setup") is { } f ? Path.GetFullPath(f) : null);
+		var exit = s.Run != null ? 5 : s.Interrupted != null ? 1 : 0;
+		if (Json(a_args)) {
+			return Print(Reports.Status(s, MainWindow.AppVersion), exit);
+		}
+		foreach (var l in RunStatus.Lines(s)) {
+			Console.WriteLine(l);
+		}
+		return exit;
 	}
 
 	static int Preview(string[] a_args)
@@ -236,6 +354,9 @@ public static class Cli
 		var mo2 = Mo2Instance.Load(setup.Mo2Exe, setup.Mo2Instance);
 		var usual = Engine.UsualTimes(setup.File);
 		var p = RunPreview.Build(setup, mo2, Runner.Plan(setup, Opt(a_args, "--only"), Opt(a_args, "--from"), Opt(a_args, "--until")));
+		if (Json(a_args)) {
+			return Print(Reports.Preview(setup, p, k => usual.TryGetValue(k, out var t) ? t : null), 0);
+		}
 		foreach (var l in p.Lines(k => usual.TryGetValue(k, out var t) ? t : null)) {
 			Console.WriteLine(l);
 		}
@@ -267,6 +388,9 @@ public static class Cli
 		var setup = Setup.Load(SetupArg(a_args));
 		var mo2 = Mo2Instance.Load(setup.Mo2Exe, setup.Mo2Instance);
 		var res = Task.Run(() => ToolUpdates.Check(setup, mo2, CancellationToken.None)).GetAwaiter().GetResult();
+		if (Json(a_args)) {
+			return Print(Reports.Updates(setup, res), res.Any(r => r.Newer) ? 4 : 0);
+		}
 		foreach (var r in res) {
 			Console.WriteLine($"{(r.Newer ? "NEWER " : "      ")}  {r.Tool}: yours {r.Yours}, its page {r.Newest}{(r.Problem == null ? "" : " - " + r.Problem)}  {r.Page}");
 		}
@@ -279,14 +403,21 @@ public static class Cli
 		var setup = Setup.Load(SetupArg(a_args));
 		var mo2 = Mo2Instance.Load(setup.Mo2Exe, setup.Mo2Instance);
 		var dir = Mo2Changes.Dir(AppPaths.Data, mo2);
+		int? looked = null;
 		if (a_args.Contains("--look")) {
 			if (Mo2Changes.RecordOutside(mo2, AppPaths.Data) is not { } n) {
-				Console.WriteLine("not looked: a run is going or did not finish - its changes would read as made outside the runner");
+				Said(a_args, "not looked: a run is going or did not finish - its changes would read as made outside the runner");
 				return 1;
 			}
-			Console.WriteLine($"{n} new change(s)");
+			looked = n;
+			if (!Json(a_args)) {
+				Console.WriteLine($"{n} new change(s)");
+			}
 		}
 		var since = Mo2Changes.WatchedSince(dir);
+		if (Json(a_args)) {
+			return Print(Reports.Changes(setup, since, looked, Enumerable.Reverse(Mo2Changes.Shown(Mo2Changes.Read(dir), setup.ChangesHideProfiles, setup.ChangesHideMods))), 0);
+		}
 		Console.WriteLine(since == null ? "not watched yet - a run or a look starts it" : $"watched since {since.Value.ToString("yyyy-MM-dd HH:mm", InvariantCulture)}");
 		foreach (var r in Enumerable.Reverse(Mo2Changes.Shown(Mo2Changes.Read(dir), setup.ChangesHideProfiles, setup.ChangesHideMods))) {
 			Console.WriteLine($"{r.When.ToString("yyyy-MM-dd HH:mm", InvariantCulture)}  {r.Mod}: {r.What}  [{(r.Profiles.Count == 0 ? "Mod Organizer" : string.Join(", ", r.Profiles))}]  {r.Who}");
@@ -318,7 +449,7 @@ public static class Cli
 		var file = Path.GetFullPath(a_args[1]);
 		// the mod's folder is the one above the add-on folder, when it sits in one
 		var parent = Path.GetDirectoryName(file);
-		var mod = Path.GetFileName(parent) == AddOns.FolderInMod ? Path.GetDirectoryName(parent) : null;
+		var mod = AddOns.IsFolderInMod(Path.GetFileName(parent)) ? Path.GetDirectoryName(parent) : null;
 		var problems = AddOns.Problems(Files.ReadSharedText(file), mod);
 		Console.WriteLine(problems.Count == 0 ? "It is right." : string.Join(Environment.NewLine, problems));
 		return problems.Count == 0 ? 0 : 1;
@@ -328,11 +459,14 @@ public static class Cli
 	static int ToolsCmd(string[] a_args)
 	{
 		if (Opt(a_args, "--mo2") is not { } exe) {
-			Console.WriteLine("tools needs --mo2 <ModOrganizer.exe>");
+			Said(a_args, "tools needs --mo2 <ModOrganizer.exe>");
 			return 3;
 		}
 		var mo2 = Mo2Instance.Load(exe, Opt(a_args, "--instance"));
 		var rows = ToolFinder.Find(mo2);
+		if (Json(a_args)) {
+			return Print(Reports.Tools(rows, a_args.Contains("--add") ? ToolFinder.AddFound(mo2, rows) : null), 0);
+		}
 		foreach (var r in rows) {
 			Console.WriteLine(r.State switch {
 				ToolFinder.Found.Listed => $"{r.Tool.Name}: in the list",
@@ -399,9 +533,19 @@ public static class Cli
 			Console.WriteLine("a setup with that name exists: " + dst);
 			return 1;
 		}
+		// a file from elsewhere: what it gives as a mod's name must be one, and it brings no command of its own to run here
+		var wrong = s.ModNames().Where(m => !Setup.PlainName(m.Name)).Select(m => $"{m.Where}: {m.Name}").Distinct().ToList();
+		if (wrong.Count > 0) {
+			Console.WriteLine("not brought in - these are not mod names (a plain folder name each): " + string.Join("; ", wrong.Take(8)));
+			return 1;
+		}
+		var commands = s.TakeOutCommands();
 		Directory.CreateDirectory(AppPaths.Setups);
 		s.Save(dst);
 		Console.WriteLine("setup written: " + dst);
+		if (commands > 0) {
+			Console.WriteLine($"its {commands} own command(s) to run before or after a run were taken out - a setup from elsewhere runs no command on this PC; add your own in Settings");
+		}
 		return 0;
 	}
 

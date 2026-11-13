@@ -16,6 +16,7 @@
   <Window.InputBindings>
     <KeyBinding Gesture="Ctrl+Return" Command="{Binding StartCommand}"/>
     <KeyBinding Gesture="F5" Command="{Binding CheckCommand}"/>
+    <KeyBinding Gesture="Ctrl+D" Command="{Binding DryRunCommand}"/>
   </Window.InputBindings>
   <!-- the run's progress on the taskbar button: seen while the window is behind the game or minimised -->
   <Window.TaskbarItemInfo>
@@ -32,7 +33,7 @@
     </Grid.RowDefinitions>
 
     <!-- header: the name, the setup, the panels; three columns so nothing is cut off down to the smallest window -->
-    <Border Grid.Row="0" Background="{DynamicResource Panel}" BorderBrush="{DynamicResource Line}" BorderThickness="0,0,0,1" Padding="20,12">
+    <Border Grid.Row="0" Background="{DynamicResource Panel}" BorderBrush="{DynamicResource Line}" BorderThickness="0,0,0,1" Padding="20,10">
       <Grid>
         <Grid.ColumnDefinitions>
           <ColumnDefinition Width="Auto"/>
@@ -40,22 +41,29 @@
           <ColumnDefinition Width="Auto"/>
         </Grid.ColumnDefinitions>
         <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
-          <Image Source="{DynamicResource Logo}" Width="30" Height="30" Margin="0,0,12,0" RenderOptions.BitmapScalingMode="HighQuality" AutomationProperties.Name="Skyrim Utility Patcher"/>
-          <TextBlock Text="SKYRIM UTILITY PATCHER" Style="{StaticResource H1}" VerticalAlignment="Center"/>
+          <Image Source="{DynamicResource Logo}" Width="30" Height="30" Margin="0,0,12,0" RenderOptions.BitmapScalingMode="HighQuality" AutomationProperties.Name="Tool Runner"/>
+          <TextBlock Text="TOOL RUNNER" Style="{StaticResource H1}" VerticalAlignment="Center"/>
         </StackPanel>
-        <DockPanel Grid.Column="1" VerticalAlignment="Center" Margin="28,0,16,0">
-          <TextBlock DockPanel.Dock="Left" Text="Setup" Foreground="{DynamicResource Muted}" VerticalAlignment="Center" Margin="0,0,8,0"/>
-          <Button DockPanel.Dock="Right" Content="_New setup" Style="{StaticResource Ghost}" Margin="8,0,0,0" Click="NewSetup_Click" ToolTip="Make a setup for an MO2 profile (Ctrl+N)"
+        <Grid Grid.Column="1" VerticalAlignment="Center" Margin="24,0,12,0">
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="Auto"/>
+            <ColumnDefinition Width="*" MaxWidth="300"/>
+            <ColumnDefinition Width="Auto"/>
+          </Grid.ColumnDefinitions>
+          <TextBlock Grid.Column="0" Text="Setup" Foreground="{DynamicResource Muted}" VerticalAlignment="Center" Margin="0,0,8,0"
+                     Visibility="{Binding Roomy, Converter={StaticResource Vis}}"/>
+          <ComboBox Grid.Column="1" x:Name="SetupBox" ItemsSource="{Binding Setups}" SelectedItem="{Binding SelectedSetup}" DisplayMemberPath="Name" MinWidth="120"
+                    HorizontalAlignment="Stretch" AutomationProperties.Name="Setup" IsEnabled="{Binding IsRunning, Converter={StaticResource Not}}"/>
+          <Button Grid.Column="2" Content="_New setup" Style="{StaticResource Ghost}" Margin="8,0,0,0" Click="NewSetup_Click" ToolTip="Make a setup for an MO2 profile (Ctrl+N)"
                   IsEnabled="{Binding IsRunning, Converter={StaticResource Not}}" AutomationProperties.AcceleratorKey="Ctrl+N"/>
-          <ComboBox x:Name="SetupBox" ItemsSource="{Binding Setups}" SelectedItem="{Binding SelectedSetup}" DisplayMemberPath="Name" MinWidth="150" MaxWidth="320"
-                    HorizontalAlignment="Left" AutomationProperties.Name="Setup" IsEnabled="{Binding IsRunning, Converter={StaticResource Not}}"/>
-        </DockPanel>
+        </Grid>
         <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
-          <Button Content="_Check" Style="{StaticResource Ghost}" Command="{Binding CheckCommand}" ToolTip="Check every tool and setting before a run (F5)" Margin="0,0,8,0"
+          <Button Content="_Check" Style="{StaticResource Nav}" Command="{Binding CheckCommand}" ToolTip="Check every tool and setting before a run (F5)"
                   AutomationProperties.AcceleratorKey="F5"/>
-          <Button Content="_History" Style="{StaticResource Ghost}" Click="History_Click" ToolTip="Past runs (Ctrl+H)" Margin="0,0,8,0" AutomationProperties.AcceleratorKey="Ctrl+H"/>
-          <Button Content="_Queue" Style="{StaticResource Ghost}" Click="Queue_Click" ToolTip="Run several setups one after another" Margin="0,0,8,0"/>
-          <Button Content="_Settings" Style="{StaticResource Ghost}" Click="Settings_Click" ToolTip="This setup's settings (Ctrl+,)" AutomationProperties.AcceleratorKey="Ctrl+Comma"/>
+          <Button Content="_History" Style="{StaticResource Nav}" Click="History_Click" ToolTip="Past runs (Ctrl+H)" AutomationProperties.AcceleratorKey="Ctrl+H"/>
+          <Button Content="_Queue" Style="{StaticResource Nav}" Click="Queue_Click" ToolTip="Run several setups one after another"/>
+          <Button Content="_Themes" Style="{StaticResource Nav}" Click="Themes_Click" ToolTip="The window's look (Ctrl+T)" AutomationProperties.AcceleratorKey="Ctrl+T"/>
+          <Button Content="_Settings" Style="{StaticResource Nav}" Click="Settings_Click" ToolTip="This setup's settings (Ctrl+,)" AutomationProperties.AcceleratorKey="Ctrl+Comma"/>
         </StackPanel>
       </Grid>
     </Border>
@@ -77,7 +85,7 @@
           <TextBlock Text="{Binding Interrupted}" Foreground="{DynamicResource Text}" VerticalAlignment="Center" TextWrapping="Wrap" Margin="0,0,16,0"/>
         </DockPanel>
       </Border>
-      <Border Background="{DynamicResource Panel2}" BorderBrush="{DynamicResource Gold}" BorderThickness="0,0,0,1" Padding="20,10"
+      <Border Background="{DynamicResource Panel2}" BorderBrush="{DynamicResource Accent}" BorderThickness="0,0,0,1" Padding="20,10"
               Visibility="{Binding NewVersion, Converter={StaticResource NotEmpty}}">
         <DockPanel>
           <Button DockPanel.Dock="Right" Content="Not now" Style="{StaticResource Ghost}" Command="{Binding SetAsideNewVersionCommand}" Margin="8,0,0,0"
@@ -99,22 +107,25 @@
         <ColumnDefinition Width="*"/>
       </Grid.ColumnDefinitions>
 
-      <DockPanel Grid.Column="0">
-        <DockPanel DockPanel.Dock="Top" Margin="0,0,0,8">
+      <Border Grid.Column="0" Style="{StaticResource Card}" Padding="0">
+      <DockPanel>
+        <DockPanel DockPanel.Dock="Top" Margin="18,16,18,8">
           <TextBlock DockPanel.Dock="Right" Text="{Binding EstimateText}" Style="{StaticResource MutedText}" VerticalAlignment="Bottom"/>
           <TextBlock Text="STEPS, IN RUN ORDER" Style="{StaticResource H2}" Margin="0"/>
         </DockPanel>
-        <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,10,0,0">
-          <Button Content="Move _up" Style="{StaticResource Ghost}" Click="Up_Click" ToolTip="Alt+Up" Margin="0,0,8,0"/>
-          <Button Content="Move _down" Style="{StaticResource Ghost}" Click="Down_Click" ToolTip="Alt+Down" Margin="0,0,8,0"/>
-          <TextBlock Text="Right-click a step to run only it, from it, or up to it." Style="{StaticResource MutedText}" VerticalAlignment="Center" Width="200"/>
-        </StackPanel>
-        <Grid>
+        <Border DockPanel.Dock="Bottom" BorderBrush="{DynamicResource Line}" BorderThickness="0,1,0,0" Padding="14,10">
+          <StackPanel Orientation="Horizontal">
+            <Button Content="Move _up" Style="{StaticResource Ghost}" Click="Up_Click" ToolTip="Alt+Up" Margin="0,0,8,0"/>
+            <Button Content="Move _down" Style="{StaticResource Ghost}" Click="Down_Click" ToolTip="Alt+Down" Margin="0,0,10,0"/>
+            <TextBlock Text="Right-click a step to run only it, from it, or up to it." Style="{StaticResource MutedText}" VerticalAlignment="Center" Width="178"/>
+          </StackPanel>
+        </Border>
+        <Grid Margin="6,0">
         <TextBlock Text="No steps yet: press New setup at the top and pick your Mod Organizer and profile - the steps are found from its Executables list."
                    Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="16" Panel.ZIndex="1" IsHitTestVisible="False"
                    Visibility="{Binding Steps.Count, Converter={StaticResource ZeroVis}}"/>
-        <ListBox x:Name="StepList" ItemsSource="{Binding Steps}" SelectedItem="{Binding SelectedStep}" Background="{DynamicResource Panel}"
-                 BorderBrush="{DynamicResource Line}" BorderThickness="1" ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+        <ListBox x:Name="StepList" ItemsSource="{Binding Steps}" SelectedItem="{Binding SelectedStep}" Background="Transparent"
+                 BorderThickness="0" ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                  AutomationProperties.Name="Steps" KeyDown="StepList_KeyDown" CheckBox.Click="StepOn_Click">
           <!-- no event handler inside a template or a style: WPF numbers them wrongly there (it crashed at start) -->
           <ListBox.ContextMenu>
@@ -163,7 +174,7 @@
                              Visibility="{Binding LastRun, Converter={StaticResource NotEmpty}}"/>
                 </StackPanel>
                 <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
-                  <TextBlock x:Name="elapsed" Text="{Binding Elapsed}" Foreground="{DynamicResource GoldLight}" Margin="0,0,8,0"/>
+                  <TextBlock x:Name="elapsed" Text="{Binding Elapsed}" Foreground="{DynamicResource AccentLight}" Margin="0,0,8,0"/>
                   <TextBlock x:Name="usual" Text="{Binding Usual}" Style="{StaticResource MutedText}" ToolTip="its usual time"/>
                 </StackPanel>
                 <TextBlock x:Name="glyph" Grid.Column="4" Text="{Binding Glyph}" HorizontalAlignment="Right" VerticalAlignment="Center" FontSize="{DynamicResource SizeBody}"
@@ -190,6 +201,7 @@
         </ListBox>
         </Grid>
       </DockPanel>
+      </Border>
 
       <DockPanel Grid.Column="2">
         <!-- now -->
@@ -197,33 +209,55 @@
           <StackPanel>
             <DockPanel>
               <StackPanel DockPanel.Dock="Right" HorizontalAlignment="Right">
-                <TextBlock Text="{Binding Clock}" FontFamily="{DynamicResource HeadFont}" FontSize="{DynamicResource SizeClock}" Foreground="{DynamicResource GoldLight}" HorizontalAlignment="Right"/>
-                <TextBlock Text="{Binding Left}" Style="{StaticResource MutedText}" HorizontalAlignment="Right"/>
+                <TextBlock Text="{Binding Clock}" FontFamily="{DynamicResource HeadFont}" FontSize="{DynamicResource SizeClock}" Foreground="{DynamicResource AccentLight}" HorizontalAlignment="Right"/>
+                <TextBlock Text="{Binding Left}" Style="{StaticResource MutedText}" HorizontalAlignment="Right" Visibility="{Binding Left, Converter={StaticResource NotEmpty}}"/>
+                <TextBlock Text="{Binding StepOf}" Style="{StaticResource MutedText}" HorizontalAlignment="Right" Visibility="{Binding StepOf, Converter={StaticResource NotEmpty}}"/>
               </StackPanel>
               <StackPanel>
-                <TextBlock Text="{Binding NowTitle}" FontFamily="{DynamicResource HeadFont}" FontSize="{DynamicResource SizeStepTitle}" Foreground="{DynamicResource GoldLight}"/>
-                <TextBlock Text="{Binding NowActivity}" TextWrapping="Wrap" Margin="0,4,0,0" Foreground="{DynamicResource Text}"/>
+                <TextBlock Text="{Binding HeadTitle}" FontFamily="{DynamicResource HeadFont}" FontSize="{DynamicResource SizeStepTitle}" Foreground="{DynamicResource AccentLight}" TextWrapping="Wrap"/>
+                <TextBlock Text="{Binding NowActivity}" TextWrapping="Wrap" Margin="0,4,0,0" Foreground="{DynamicResource Text}"
+                           Visibility="{Binding NowActivity, Converter={StaticResource NotEmpty}}"/>
               </StackPanel>
             </DockPanel>
-            <ProgressBar Height="{DynamicResource ProgressBarHeight}" Margin="0,14,0,0" Maximum="1" Value="{Binding Progress}" Foreground="{DynamicResource GoldBar}" AutomationProperties.Name="Run progress"
-                         IsIndeterminate="{Binding ProgressKnown, Converter={StaticResource Not}}"
+            <ProgressBar Height="{DynamicResource ProgressBarHeight}" Margin="0,14,0,0" Maximum="1" Value="{Binding Progress}" Foreground="{DynamicResource AccentBar}" AutomationProperties.Name="Run progress"
+                         IsIndeterminate="{Binding ProgressBusy}"
                          Visibility="{Binding ShowProgress, Converter={StaticResource Vis}}"/>
-            <!-- a guided in-game step waits for the player -->
-            <Border Margin="0,14,0,0" Padding="14" CornerRadius="{DynamicResource GuidedBoxCorner}" Background="{DynamicResource GuidedFill}" BorderBrush="{DynamicResource Gold}" BorderThickness="1"
+            <!-- the run waits for the player: a guided in-game step (Done when they did it), or their own Mod Organizer left open (the run goes on by itself once it is closed: no Done) -->
+            <Border Margin="0,14,0,0" Padding="14" CornerRadius="{DynamicResource GuidedBoxCorner}" Background="{DynamicResource GuidedFill}" BorderBrush="{DynamicResource Accent}" BorderThickness="1"
                     Visibility="{Binding Waiting, Converter={StaticResource NotEmpty}}">
               <DockPanel>
-                <Button DockPanel.Dock="Right" Content="_Done" Style="{StaticResource Primary}" Command="{Binding ContinueCommand}" Margin="12,0,0,0"/>
+                <Button DockPanel.Dock="Right" Content="_Done" Style="{StaticResource Primary}" Command="{Binding ContinueCommand}" Margin="12,0,0,0"
+                        Visibility="{Binding WaitingInGame, Converter={StaticResource Vis}}"/>
                 <StackPanel>
-                  <TextBlock Text="YOUR TURN IN THE GAME" Style="{StaticResource H2}" Margin="0,0,0,4"/>
+                  <TextBlock Text="YOUR TURN IN THE GAME" Style="{StaticResource H2}" Margin="0,0,0,4" Visibility="{Binding WaitingInGame, Converter={StaticResource Vis}}"/>
+                  <TextBlock Text="THE RUN WAITS FOR YOU" Style="{StaticResource H2}" Margin="0,0,0,4" Visibility="{Binding WaitingOutside, Converter={StaticResource Vis}}"/>
                   <TextBlock Text="{Binding Waiting}" TextWrapping="Wrap"/>
                 </StackPanel>
               </DockPanel>
             </Border>
-            <TextBlock Text="{Binding QueueText}" TextWrapping="Wrap" Margin="0,12,0,0" Foreground="{DynamicResource Gold}"
+            <TextBlock Text="{Binding QueueText}" TextWrapping="Wrap" Margin="0,12,0,0" Foreground="{DynamicResource Accent}"
                        Visibility="{Binding QueueText, Converter={StaticResource NotEmpty}}"/>
-            <TextBlock Text="{Binding Verdict}" TextWrapping="Wrap" Margin="0,12,0,0" FontSize="{DynamicResource SizeVerdict}"
+            <TextBlock Text="{Binding VerdictLine}" TextWrapping="Wrap" Margin="0,10,0,0" FontSize="{DynamicResource SizeVerdict}"
                        Foreground="{Binding VerdictKind, Converter={StaticResource KindBrush}}"
-                       Visibility="{Binding Verdict, Converter={StaticResource NotEmpty}}"/>
+                       Visibility="{Binding VerdictLine, Converter={StaticResource NotEmpty}}"/>
+            <!-- the run that ended, in a few rows: what finished, what it built, what to do next (held to a few lines so the log keeps its room) -->
+            <ScrollViewer MaxHeight="172" Margin="0,10,0,0" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                          Visibility="{Binding HasSummary, Converter={StaticResource Vis}}" Focusable="False">
+              <ItemsControl ItemsSource="{Binding SummaryRows}" Focusable="False" AutomationProperties.Name="What the run did">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate>
+                    <Grid Margin="0,2">
+                      <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="104"/>
+                        <ColumnDefinition Width="*"/>
+                      </Grid.ColumnDefinitions>
+                      <TextBlock Text="{Binding Label}" Style="{StaticResource MutedText}" FontSize="{DynamicResource SizeBody}"/>
+                      <TextBlock Grid.Column="1" Text="{Binding Text}" TextWrapping="Wrap"/>
+                    </Grid>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </ScrollViewer>
             <!-- wraps: in the smallest window the New game tick goes under the buttons instead of being cut off -->
             <!-- the space sits right of and under each item, so a row that wraps starts flush left -->
             <WrapPanel Orientation="Horizontal" Margin="0,16,0,-8">
@@ -235,6 +269,9 @@
                       IsEnabled="{Binding IsRunning}" ToolTip="Lets the running step finish, then puts your profile back"/>
               <Button Content="Stop _now" Style="{StaticResource Danger}" Command="{Binding StopNowCommand}" Margin="0,0,8,8"
                       IsEnabled="{Binding IsRunning}" ToolTip="Closes the tool at once and puts your profile back"/>
+              <Button Content="_Dry run" Style="{StaticResource Ghost}" Command="{Binding DryRunCommand}" Margin="0,0,8,8"
+                      ToolTip="Goes through everything a start would meet and then do - the check, what is switched off, what is built, the room on disk. Nothing is started and nothing is changed (Ctrl+D)"
+                      AutomationProperties.AcceleratorKey="Ctrl+D"/>
               <!-- the last run failed or was stopped: run it again from the step it stopped at -->
               <Button Content="{Binding RetryText}" Style="{StaticResource Ghost}" Command="{Binding RetryCommand}" Margin="0,0,8,8"
                       Visibility="{Binding RetryFrom, Converter={StaticResource NotEmpty}}"
@@ -244,6 +281,29 @@
                         Foreground="{DynamicResource Text}" AutomationProperties.Name="New game"
                         ToolTip="Tick this when you will start a new character after the run: there is no save to keep clean, so the clean save and the save to play are left out. Untick it once you play on an existing save."/>
             </WrapPanel>
+          </StackPanel>
+        </Border>
+        <!-- the first start, step by step: until this setup has run once -->
+        <Border DockPanel.Dock="Top" Style="{StaticResource Card}" Margin="0,0,0,12" Visibility="{Binding HasGuide, Converter={StaticResource Vis}}">
+          <StackPanel>
+            <TextBlock Text="GETTING STARTED" Style="{StaticResource H2}" Margin="0,0,0,6"/>
+            <ItemsControl ItemsSource="{Binding Guide}" Focusable="False" AutomationProperties.Name="Getting started">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                  <Grid Margin="0,2">
+                    <Grid.ColumnDefinitions>
+                      <ColumnDefinition Width="26"/>
+                      <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="{Binding Mark}" FontWeight="SemiBold" Foreground="{Binding Kind, Converter={StaticResource KindBrush}}"/>
+                    <StackPanel Grid.Column="1">
+                      <TextBlock Text="{Binding Title}" FontWeight="SemiBold" Foreground="{Binding TitleKind, Converter={StaticResource KindBrush}}"/>
+                      <TextBlock Text="{Binding Text}" TextWrapping="Wrap" Margin="0,2,0,2" Visibility="{Binding Next, Converter={StaticResource Vis}}"/>
+                    </StackPanel>
+                  </Grid>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
           </StackPanel>
         </Border>
         <!-- the check's findings -->
@@ -297,9 +357,14 @@
             <Run Text="●" Foreground="{Binding Mo2Open, Converter={StaticResource StateBrush}, ConverterParameter=warn}"/>
             <Run Text="{Binding Mo2Text, Mode=OneWay}" Foreground="{DynamicResource Text}"/>
           </TextBlock>
-          <TextBlock AutomationProperties.Name="{Binding GameText}">
+          <TextBlock Margin="0,0,18,0" AutomationProperties.Name="{Binding GameText}">
             <Run Text="●" Foreground="{Binding GameRunning, Converter={StaticResource StateBrush}, ConverterParameter=bad}"/>
             <Run Text="{Binding GameText, Mode=OneWay}" Foreground="{DynamicResource Text}"/>
+          </TextBlock>
+          <TextBlock AutomationProperties.Name="{Binding CloseText}"
+                     ToolTip="A run is the engine's own and is stopped cleanly when the window closes; a put-back or an undo is this window's own work and is never cut off">
+            <Run Text="●" Foreground="{Binding CloseKind, Converter={StaticResource KindBrush}}"/>
+            <Run Text="{Binding CloseText, Mode=OneWay}" Foreground="{DynamicResource Text}"/>
           </TextBlock>
         </StackPanel>
         <TextBlock x:Name="Footer" Style="{StaticResource MutedText}" HorizontalAlignment="Right" TextTrimming="CharacterEllipsis" TextWrapping="NoWrap"/>
@@ -310,7 +375,7 @@
     <Border x:Name="Shade" Grid.Row="0" Grid.RowSpan="4" Background="{DynamicResource Shade}" Visibility="Collapsed" MouseDown="Shade_MouseDown"/>
     <!-- Tab stays inside an open drawer (its own cycle) until Esc or Close - the window behind it is shaded and out of reach -->
     <Border x:Name="Drawer" Grid.Row="1" Grid.RowSpan="3" HorizontalAlignment="Right" Width="640" Background="{DynamicResource Panel}"
-            BorderBrush="{DynamicResource GoldDim}" BorderThickness="1,0,0,0" Visibility="Collapsed"
+            BorderBrush="{DynamicResource AccentDim}" BorderThickness="1,0,0,0" Visibility="Collapsed"
             KeyboardNavigation.TabNavigation="Cycle" KeyboardNavigation.ControlTabNavigation="Cycle" KeyboardNavigation.DirectionalNavigation="Contained">
       <DockPanel Margin="20">
         <DockPanel DockPanel.Dock="Top" Margin="0,0,0,12">

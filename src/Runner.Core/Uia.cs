@@ -215,19 +215,31 @@ public static class Uia
 		return outList;
 	}
 
+	// a window class that is only ever a message box: Windows' dialogs and task dialogs, Qt's message box, Delphi's own message
+	// form (what its tools show when Windows' task dialog is not used)
+	public static bool BoxClass(string a_class) =>
+		a_class is "#32770" or "QMessageBox" or "TMessageForm" || a_class.Contains("MessageBox", StringComparison.OrdinalIgnoreCase);
+
+	// The windows of a tool that another of its windows owns and that are no message box by their class: a Delphi form, a WPF or
+	// WinForms window used as a dialog, an options window. They are NAMED when a tool sits idle (their title, read from Windows
+	// itself) and never answered: which button of such a window is safe to press cannot be known (DynDOLOD's and xLODGen's
+	// options windows are owned too).
+	public static List<string> OwnedWindows(IReadOnlyCollection<int> a_pids) =>
+		Native.TopWindowsOf(a_pids).Where(h => Native.IsOwned(h) && !BoxClass(Native.ClassName(h))).Select(Native.WindowText).Where(t => t.Trim() != "").Distinct().ToList();
+
 	// the small boxes a tool shows (Windows' #32770 dialogs and task dialogs, Qt message boxes), with their text and buttons
 	public static List<Box> Boxes(IReadOnlyCollection<int> a_pids)
 	{
 		var outList = new List<Box>();
 		foreach (var h in Native.TopWindowsOf(a_pids)) {
 			var cls = Native.ClassName(h);
-			// only a window that can be a box, or hold one, becomes a UI Automation element: Windows' dialogs and message boxes, Qt
-			// windows (a Qt box shows inside its window's tree), and any window another window owns - the boxes of Delphi tools
-			// (xLODGen, TexGen, DynDOLOD), WPF and WinForms carry their toolkit's own class but are always owned. A tool's unowned main
-			// window is left out: .NET's UI Automation client keeps every element it ever made (measured 2026-11-07: about 1 KB a call,
-			// growing without end, when every window of a tool was read every two seconds)
-			if (!(cls is "#32770" or "QMessageBox" || cls.Contains("MessageBox", StringComparison.OrdinalIgnoreCase) || cls.StartsWith("Qt", StringComparison.Ordinal) ||
-			      Native.IsOwned(h))) {
+			// Only a window that can be a box, or hold one, becomes a UI Automation element: the message-box classes, and Qt
+			// windows (a Qt box shows inside its window's tree). Every other window is left out, a tool's main window and the
+			// windows it owns alike: .NET's UI Automation client keeps every element it ever made (measured 2026-11-07: about
+			// 1 KB a call, growing without end, when every window of a tool was read every two seconds). An owned window used to
+			// be let in here and then never became a box (a box is told by its class below), so each look made its element for
+			// nothing - OwnedWindows names those without one
+			if (!(BoxClass(cls) || cls.StartsWith("Qt", StringComparison.Ordinal))) {
 				continue;
 			}
 			var e = FromHandle(h);
@@ -236,7 +248,7 @@ public static class Uia
 			}
 			var candidates = new List<AutomationElement>();
 			// a Qt message box that is its own top window carries a Qt window class - its UI Automation class names it
-			if (cls is "#32770" or "QMessageBox" || cls.Contains("MessageBox", StringComparison.OrdinalIgnoreCase) || ClassName(e) == "QMessageBox") {
+			if (BoxClass(cls) || ClassName(e) == "QMessageBox") {
 				candidates.Add(e);
 			}
 			candidates.AddRange(Children(e).Where(c => Type(c) == ControlType.Window && ClassName(c) is "#32770" or "QMessageBox"));
