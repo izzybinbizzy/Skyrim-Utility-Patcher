@@ -109,6 +109,8 @@ public static class RunnerErrors
 			"Learn PGPatcher's settings again from its own window (Settings > A step > PGPatcher > Learn its settings), or tick / untick PGLite in Mod Organizer to match."),
 		E("TR-311", "its add-on file is gone|its add-on file:|changed since you allowed it|the mod that holds it", "An add-on step's file is missing, changed, or its mod is switched off.",
 			"Tick the add-on's mod in Mod Organizer and look at the add-on again in Settings > ADD-ONS; allow it only if you trust what it starts."),
+		E("TR-317", "Mod Organizer's LOOT is not there", "The LOOT sort step runs the LOOT that ships inside Mod Organizer, and it is missing from Mod Organizer's folder.",
+			"Reinstall Mod Organizer over itself (it brings its loot folder back), or untick the LOOT sort step."),
 		E("TR-312", "is not in this profile's mod list", "A mod this step names is not in this profile's mod list.",
 			"Install the mod or correct its name: in Mod Organizer, or in Settings > A step where the step names it."),
 
@@ -137,6 +139,8 @@ public static class RunnerErrors
 			"Open the tool once by hand and look at its own log: it usually found nothing to work on (no worldspace ticked, a missing master, a wrong output path)."),
 		E("TR-412", "opened on the player's screen", "A tool that runs hidden showed a window on your screen, so it was ended.",
 			"Run again from this step. If it happens every time, switch \"Hidden\" off for that step in Settings > A step, so the tool runs in the open."),
+		E("TR-414", "LOOT wrote no sorted list|LOOT's sorted list is empty|LOOT did not see", "LOOT could not sort this load order, so your order was left as it was.",
+			"Press Sort in Mod Organizer itself to read LOOT's own message (a rule that goes in a circle, no masterlist yet while offline), put that right, then run again from this step - or untick the LOOT sort step."),
 		E("TR-413", "its learned settings name a file outside their folder|saved no settings file while it was open", "The settings kept from the tool's own window are missing or damaged.",
 			"Learn them again: Settings > A step > Learn its settings, change something in the tool's window, save, and close it."),
 

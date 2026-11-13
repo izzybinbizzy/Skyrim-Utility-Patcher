@@ -73,6 +73,10 @@ public sealed class RunPreview
 		if (total > TimeSpan.Zero) {
 			l.Add($"About {Minutes(total)} in all{(untimed > 0 ? $", plus {untimed} step(s) never timed yet" : "")}.");
 		}
+		if (Steps.Any(s => s.Key == "loot")) {
+			l.Add("");
+			l.Add("LOOT sorts your plugins. The new order stays; Undo the last run takes it back.");
+		}
 		if (Forecast?.Lines() is { Count: > 0 } room) {
 			l.Add("");
 			l.AddRange(room);

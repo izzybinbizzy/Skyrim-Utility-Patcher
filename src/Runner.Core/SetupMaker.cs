@@ -62,6 +62,10 @@ public static class SetupMaker
 		}
 		var dynDll = states.Any(s => s.Value == '+' && Directory.Exists(mo2.ModDir(s.Key)) && File.Exists(Path.Combine(mo2.ModDir(s.Key), "SKSE", "Plugins", "DynDOLOD.dll")));
 		Add("cleansave", false, new JsonObject { ["launch_executable"] = skse, ["interior_cell"] = "QASmoke", ["wait_s"] = 60, ["dyndolod_wait_s"] = 30, ["dyndolod_off"] = dynDll, ["save"] = "" });
+		// off: it changes the player's load order, which only they can ask for
+		if (File.Exists(Steps.LootStep.Program(mo2))) {
+			Add(Steps.LootStep.StepKey, false, new JsonObject { ["deadline_min"] = 10 });
+		}
 		// the guided patchers, each only where Mod Organizer's list holds it: off, for the same reason as Wrye Bash below
 		void Guided(string a_key, string a_output, Mo2Executable? a_entry)
 		{

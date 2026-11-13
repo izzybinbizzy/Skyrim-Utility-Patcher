@@ -201,6 +201,7 @@ public static class SettingsPanel
 	// DynDOLOD's own help on the clean save
 	public static (string Url, string What)? HelpPage(string a_step) =>
 		a_step is "cleansave" or "playsave" ? ("https://dyndolod.info/Help/Clean-Save", "DynDOLOD's help on the clean save") :
+		a_step == Steps.LootStep.StepKey ? ("https://loot.github.io/", "LOOT's own page") :
 		ToolUpdates.Known.TryGetValue(a_step, out var src) ? (src.Page.Replace("?tab=files", "", StringComparison.Ordinal), "the tool's own page") : null;
 
 	static string Label(string a_key) => Labels.TryGetValue(a_key, out var l) ? l : char.ToUpperInvariant(a_key[0]) + a_key[1..].Replace('_', ' ');

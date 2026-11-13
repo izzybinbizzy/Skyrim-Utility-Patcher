@@ -24,7 +24,7 @@ public sealed class CheckContext
 public static class StepRegistry
 {
 	static readonly Dictionary<string, IStep> Steps = new IStep[] {
-		new ShaderStep(), new CleanSaveStep(), new WryeBashStep(), new SynthesisStep(), new LandscapeFixerStep(), new PgPatcherStep(),
+		new ShaderStep(), new CleanSaveStep(), new LootStep(), new WryeBashStep(), new SynthesisStep(), new LandscapeFixerStep(), new PgPatcherStep(),
 		new XLodGenStep(), new AcmosStep(), new GrassStep(), new TreeLodGenStep(), new TexGenStep(), new DynDolodStep(),
 		new AnvilLodStep(), new PandoraStep(), new PlaySaveStep(),
 	}.Concat(GuidedToolStep.All).ToDictionary(s => s.Key);

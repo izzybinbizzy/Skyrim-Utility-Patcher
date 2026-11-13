@@ -1001,6 +1001,9 @@ public static class Runner
 			// the player's plugin ticks as they left them, read before the order files go back
 			var marks = theirs.Count > 0 ? a_ctx.Profile.PluginMarks() : [];
 			a_ctx.Profile.Restore(a_snap);
+			if (a_ctx.Journal.Sorted) {
+				LootStep.KeepIn(a_ctx);
+			}
 			if (theirs.Count > 0) {
 				a_ctx.Log.Warn($"you changed {theirs.Count} mod(s) in Mod Organizer during the run - kept as you left them: " +
 					string.Join(", ", theirs.Select(p => (p.Value == '+' ? "on " : "off ") + p.Key)));

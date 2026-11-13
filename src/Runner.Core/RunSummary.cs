@@ -69,6 +69,9 @@ public sealed class RunSummary
 			s.Rows.Add(new Row(a_j.Built.Count == 1 ? "New output" : "New outputs",
 				string.Join(", ", a_j.Built.Select(m => sizes.TryGetValue(m, out var b) ? $"{m} ({DiskForecast.Size(b)})" : m)) + " - on in Mod Organizer"));
 		}
+		if (a_j.OrderChanged && !a_j.Undone) {
+			s.Rows.Add(new Row("Plugin order", "sorted by LOOT - the new order stays (History > Undo this run takes it back)"));
+		}
 		if (a_j.Retire.Count > 0 && !a_j.Undone) {
 			s.Rows.Add(new Row("Kept off", string.Join(", ", a_j.Retire) + " - replaced by what this run made"));
 		}

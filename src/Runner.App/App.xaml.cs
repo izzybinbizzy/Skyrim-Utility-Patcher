@@ -201,7 +201,7 @@ public partial class App : Application
 		// past runs: their logs written into a scratch folder for the history view to read, removed after
 		var runs = Path.Combine(Path.GetTempPath(), $"Tool Runner page runs {Guid.NewGuid():N}");
 		try {
-			var steps = StepCatalog.DefaultOrder.Where(k => k is not ("wryebash" or "anvillod" or "easynpc" or "upf" or "smash" or "reqtificator")).ToList();
+			var steps = StepCatalog.DefaultOrder.Where(k => k is not ("loot" or "wryebash" or "anvillod" or "easynpc" or "upf" or "smash" or "reqtificator")).ToList();
 			var full = new List<string> { "21:02:10  Tool Runner - " + name + " (profile " + name + "), " + steps.Count + " steps",
 				"21:02:10  every output switched off - each back on once its tool rebuilt it" };
 			var at = new DateTime(2026, 10, 27, 21, 2, 22);

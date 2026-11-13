@@ -9,6 +9,7 @@ public static class StepCatalog
 	public static readonly IReadOnlyList<StepInfo> All = [
 		new("shaders", "Shader caches", "The game compiles each shader mod's cache at its main menu (Community Shaders and its forks).", InGame: true),
 		new("cleansave", "Clean save", "DynDOLOD's clean save: switched off in game, your place noted, to QASmoke, saved; the old outputs off; loaded, saved.", InGame: true),
+		new("loot", "LOOT sort", "Sorts your plugins the way Mod Organizer's Sort button does, before the first tool, so every tool builds on that order. The new order stays; Undo the last run takes it back."),
 		new("easynpc", "EasyNPC", "Merges the NPC looks you pick - guided: the picks are yours, so you build it and press Done."),
 		new("upf", "zEdit's patchers", "Builds zEdit's Unified Patching Framework patch - guided: it has no unattended mode, so you build it and press Done."),
 		new("smash", "Mator Smash", "Builds the Smashed Patch - guided: Smash has no unattended mode, so you build it and press Done."),
@@ -37,9 +38,13 @@ public static class StepCatalog
 
 	public static string Name(string a_key) => Info(a_key).Name;
 
+	const string SortedFirst = "every tool should build on the sorted order";
+
 	// steps that must come before another for the outputs to be right - a setup that breaks one gets the warning window
 	public static readonly IReadOnlyList<(string Before, string After, string Why)> MustPrecede = [
 		("cleansave", "xlodgen", "the clean save is made before any output is rebuilt"),
+		.. new[] { "easynpc", "upf", "smash", "wryebash", "synthesis", "reqtificator", "landscapefixer", "pgpatcher", "xlodgen", "texgen", "dyndolod", "anvillod" }
+			.Select(k => ("loot", k, SortedFirst)),
 		("synthesis", "dyndolod", "DynDOLOD should be generated after every other patch (dyndolod.info)"),
 		("wryebash", "dyndolod", "DynDOLOD should be generated after every other patch (dyndolod.info)"),
 		("easynpc", "dyndolod", "DynDOLOD should be generated after every other patch (dyndolod.info)"),
@@ -71,6 +76,13 @@ public static class StepCatalog
 			int i = IndexOf(a_order, before), j = IndexOf(a_order, after);
 			if (i >= 0 && j >= 0 && i > j) {
 				outList.Add($"{Name(before)} runs after {Name(after)} - {why}.");
+			}
+		}
+		// an add-on is a patcher under any name: no table can list it
+		var loot = IndexOf(a_order, "loot");
+		for (int i = 0; i < loot; ++i) {
+			if (a_order[i].StartsWith(AddOns.KeyPrefix, StringComparison.Ordinal)) {
+				outList.Add($"{Name("loot")} runs after {Name(a_order[i])} - {SortedFirst}.");
 			}
 		}
 		return outList;
