@@ -456,13 +456,19 @@ public sealed class Profile(Mo2Instance a_mo2, string a_name, Func<bool> a_mo2Ru
 			result.Add(line);
 			result.AddRange(followers.GetValueOrDefault(Bare(line)) ?? []);
 		}
-		// in the file's own order: a master that also moves has gone first
+		// in the file's own order: a master that also moves has gone first. The unseen plugins right below it go with it, so two plugins LOOT said nothing
+		// about never swap places
 		foreach (var line in entries.Where(l => !rank.ContainsKey(Bare(l)))) {
 			var lastMaster = a_masters(Bare(line)).Select(m => result.FindIndex(l => string.Equals(Bare(l), m, StringComparison.OrdinalIgnoreCase))).DefaultIfEmpty(-1).Max();
 			var at = result.IndexOf(line);
 			if (lastMaster > at) {
-				result.RemoveAt(at);
-				result.Insert(lastMaster, line);
+				var count = 1;
+				while (at + count < lastMaster && !rank.ContainsKey(Bare(result[at + count]))) {
+					++count;
+				}
+				var block = result.GetRange(at, count);
+				result.RemoveRange(at, count);
+				result.InsertRange(lastMaster - count + 1, block);
 			}
 		}
 		return [.. a_lines.Where(l => l.StartsWith('#')), .. result];

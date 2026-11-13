@@ -35,30 +35,34 @@ public sealed class LootStep : IStep
 			$"--pluginListOutputPath {Mo2Control.Quote(a_sorted)} --language {language}" + (a_skipUpdate ? " --skipUpdateMasterlist" : "");
 	}
 
-	public void Run(RunContext a_ctx, StepSettings a_s)
+	public void Run(RunContext a_ctx, StepSettings a_s) => Run(a_ctx, (sorted, report, skipUpdate) => {
+		a_ctx.Activity(StepKey, "LOOT is sorting your plugins");
+		using var proc = a_ctx.Control.RunExecutable(Program(a_ctx.Mo2), Image, Arguments(a_ctx.Mo2, a_ctx.Setup.Profile, sorted, report, skipUpdate), a_ctx.Cancel, null, true);
+		Waits.Tool(a_ctx, StepKey, proc, a_s.Deadline(10), () => proc.HasExited ? Waits.Poll.Done : Waits.Poll.Wait);
+	});
+
+	// a_start: one run of lootcli to its end (the two files it should write, whether it skips its masterlist update)
+	public static void Run(RunContext a_ctx, Action<string, string, bool> a_start)
 	{
 		var sorted = Path.Combine(a_ctx.Journal.Folder, SortedFile);
 		var report = Path.Combine(a_ctx.Journal.Folder, ReportFile);
+		// its exit code says nothing (it ends 0 when the masterlist could not be fetched): the list is the verdict, and never one an earlier try left
+		bool Sort(bool a_skipUpdate)
+		{
+			File.Delete(sorted);
+			File.Delete(report);
+			a_start(sorted, report, a_skipUpdate);
+			return ReadSorted(sorted).Count > 0;
+		}
 		// the masterlist is fetched from LOOT's own site: a player who is offline gets a second try on the copy they have
-		if (!Sort(a_ctx, a_s, sorted, report, false)) {
+		if (!Sort(false)) {
 			a_ctx.Log.Warn("LOOT wrote no sorted list - trying again with the masterlist it already has");
-			if (!Sort(a_ctx, a_s, sorted, report, true)) {
+			if (!Sort(true)) {
 				throw new StepFailedException("LOOT wrote no sorted list, so your order was not changed. Mod Organizer's own Sort button shows why (a rule that goes in a circle, or no masterlist yet)");
 			}
 		}
 		a_ctx.Control.Close(null, a_ctx.Cancel);
 		Lay(a_ctx, sorted, report);
-	}
-
-	// its exit code says nothing (it ends 0 when the masterlist could not be fetched): the list is the verdict
-	static bool Sort(RunContext a_ctx, StepSettings a_s, string a_sorted, string a_report, bool a_skipUpdate)
-	{
-		File.Delete(a_sorted);
-		File.Delete(a_report);
-		a_ctx.Activity(StepKey, "LOOT is sorting your plugins");
-		using var proc = a_ctx.Control.RunExecutable(Program(a_ctx.Mo2), Image, Arguments(a_ctx.Mo2, a_ctx.Setup.Profile, a_sorted, a_report, a_skipUpdate), a_ctx.Cancel, null, true);
-		Waits.Tool(a_ctx, StepKey, proc, a_s.Deadline(10), () => proc.HasExited ? Waits.Poll.Done : Waits.Poll.Wait);
-		return ReadSorted(a_sorted).Count > 0;
 	}
 
 	// laid onto the lists with Mod Organizer closed, and noted: every later put-back of this run keeps it, and only Undo takes it back
@@ -74,6 +78,7 @@ public sealed class LootStep : IStep
 		}
 		var changed = a_ctx.Profile.SortPlugins(order);
 		a_ctx.Journal.Sorted = true;
+		a_ctx.Journal.OrderChanged = changed.Count > 0;
 		a_ctx.Journal.Save();
 		var said = changed.Count > 0 ? "LOOT sorted your plugins. The new order stays; Undo the last run takes it back." : "LOOT left your plugins in the order they were.";
 		a_ctx.Log.Say(said);
@@ -83,20 +88,18 @@ public sealed class LootStep : IStep
 		}
 	}
 
-	// the put-back brings the order files back as they were before the run: the sort that already finished goes on top again
+	// the put-back brings the order files back as they were before the run: the sort that already finished goes on top again. A write that fails is the
+	// put-back's failure (one file may hold the new order and the other the old), so putting the profile back stays on offer and lays both again
 	public static void KeepIn(RunContext a_ctx)
 	{
-		try {
-			var order = ReadSorted(Path.Combine(a_ctx.Journal.Folder, SortedFile));
-			if (order.Count == 0) {
-				a_ctx.Log.Warn("LOOT's sorted list is gone from the run's folder, so your plugins are in the order they had before the run");
-				return;
-			}
-			a_ctx.Profile.SortPlugins(order);
-			a_ctx.Log.Detail("LOOT's order kept");
-		} catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
-			a_ctx.Log.Warn("LOOT's order could not be laid back, so your plugins are in the order they had before the run: " + e.Message);
+		var order = ReadSorted(Path.Combine(a_ctx.Journal.Folder, SortedFile));
+		if (order.Count == 0) {
+			a_ctx.Journal.OrderChanged = false;
+			a_ctx.Log.Warn("LOOT's sorted list is gone from the run's folder, so your plugins are in the order they had before the run");
+			return;
 		}
+		a_ctx.Journal.OrderChanged = a_ctx.Profile.SortPlugins(order).Count > 0;
+		a_ctx.Log.Detail("LOOT's order kept");
 	}
 
 	public static List<string> ReadSorted(string a_file)
@@ -107,12 +110,13 @@ public sealed class LootStep : IStep
 		return Files.ReadSharedText(a_file).Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0 && !l.StartsWith('#')).ToList();
 	}
 
-	// a ticked plugin with a file behind it that LOOT did not list: it did not look through the virtual folder, and its list is of no use
+	// a ticked plugin with a file behind it (in the game, a ticked mod or overwrite) that LOOT did not list: it did not look through the virtual folder, and
+	// its list is of no use
 	public static List<string> NotSeen(Profile a_profile, IReadOnlyList<string> a_order)
 	{
 		var seen = a_order.ToHashSet(StringComparer.OrdinalIgnoreCase);
-		var there = a_profile.PluginPaths();
-		return a_profile.ActivePlugins().Where(p => there.ContainsKey(p) && !seen.Contains(p)).ToList();
+		var there = a_profile.PluginPaths().Keys.Concat(Plugins.InMod(a_profile.Mo2.OverwriteDir)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+		return a_profile.ActivePlugins().Where(p => there.Contains(p) && !seen.Contains(p)).ToList();
 	}
 
 	// what LOOT's report says is wrong, not its advice (a player reads LOOT itself for that), at most NotesShown lines

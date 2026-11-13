@@ -63,7 +63,7 @@ public sealed class RunPreview
 		}
 		if (Steps.Any(s => s.Key == "loot")) {
 			l.Add("");
-			l.Add("LOOT sorts your plugins before the first tool. The new order stays; Undo the last run takes it back.");
+			l.Add("LOOT sorts your plugins. The new order stays; Undo the last run takes it back.");
 		}
 		if (OffForTheRun.Count > 0) {
 			l.Add("");

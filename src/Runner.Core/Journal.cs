@@ -89,6 +89,8 @@ public sealed class Journal
 	public List<string> Built { get; set; } = [];
 	// LOOT's sort finished: its list is in this run's folder (LootStep.SortedFile) and every put-back of this run keeps it
 	public bool Sorted { get; set; }
+	// that sort left the plugin files other than they were before the run: Undo has an order to take back
+	public bool OrderChanged { get; set; }
 	public List<string> Retire { get; set; } = [];
 	public List<string> Added { get; set; } = [];
 	public List<ParkRecord> Parked { get; set; } = [];

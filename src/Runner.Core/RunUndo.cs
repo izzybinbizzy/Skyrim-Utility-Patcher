@@ -85,7 +85,7 @@ public static class RunUndo
 	}
 
 	// did this run leave anything an undo would take back? (one that built nothing and put everything back did not)
-	public static bool LeftSomething(Journal a_j) => a_j.Sorted || a_j.Built.Count > 0 || a_j.Retire.Count > 0 || a_j.Parked.Any(p => p.Replaced && !p.PutBack);
+	public static bool LeftSomething(Journal a_j) => a_j.OrderChanged || a_j.Built.Count > 0 || a_j.Retire.Count > 0 || a_j.Parked.Any(p => p.Replaced && !p.PutBack);
 
 	// a later run still standing that changed what undoing a_j would put back: the same setup's, one that moved the same output or tool
 	// folder, or another's on the same profile or with an output of a_j's - undoing a_j would lay its old lists and outputs over that run
